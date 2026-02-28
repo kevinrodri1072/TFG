@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Digital Twin Network</title>
+    <!-- Carreguem vis.js des d'internet -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">    <style>
+        #xarxa {
+            width: 100%;
+            height: 600px;
+            border: 1px solid #ccc;
+        }
+    </style>
+</head>
+<body>
+    <h1>Digital Twin Network</h1>
+    <div id="xarxa"></div>
+
+    <script>
+        fetch('/topologia')
+            .then(response => response.json())
+            .then(data => {
+                var nodes = new vis.DataSet(
+                    Object.keys(data.nodes).map(nom => {
+                        var tipus = data.nodes[nom].tipus;
+                        var imatge = tipus === 'host' ? '/static/host.png' : 
+                                    tipus === 'router' ? '/static/router.png' : '/static/switch.png';
+                        return {
+                            id: nom,
+                            label: nom,
+                            shape: 'image',
+                            image: imatge,
+                            size: 30
+                        };
+                    })
+                );
+                var edges = new vis.DataSet(
+                    data.links.map(link => ({
+                        from: link.from,
+                        to: link.to
+                    }))
+                );
+                var container = document.getElementById('xarxa');
+                var network = new vis.Network(container, {nodes: nodes, edges: edges}, {});
+            });
+    </script>
+</body>
+</html>
