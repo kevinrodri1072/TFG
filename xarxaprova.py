@@ -4,6 +4,7 @@ from mininet.cli import CLI
 
 # Matriu d'adjacència que representa la xarxa que tenim. Cada fila i columna representa una màquina i els uns representen que existeix una connexió entre ells.
 matriu_xarxa = [
+  # h1 h2 h3 h4 h5 r1 r2 sw1 sw2
     [0, 0, 0, 0, 0, 0, 0, 1, 0],  # h1
     [0, 0, 0, 0, 0, 0, 0, 1, 0],  # h2
     [0, 0, 0, 0, 0, 0, 0, 0, 1],  # h3
@@ -15,15 +16,19 @@ matriu_xarxa = [
     [0, 0, 1, 1, 1, 0, 1, 0, 0],  # sw2
 ]
 
-# Diccionari dels nodes de la xarxa.
+# Diccionari de nodes de la xarxa (nodes i les seves propietats).
 nodes = {
-    'h1' : {'Tipus': 'host', 'ip': '10.1.0.2/24'},
-    'h2' : {'Tipus': 'host', 'ip': '10.1.0.3/24'},
-    'h3' : {'Tipus': 'host', 'ip': '10.2.0.2/24'},
-    'h4' : {'Tipus': 'host', 'ip': '10.2.0.3/24'},
-    'h5' : {'Tipus': 'host', 'ip': '10.2.0.4/24'},
-    'r1' : {'Tipus': 'router', 'ips':{'eth0': '10.0.0.1/24', 'eth1': '10.1.0.1/24'}},
-    'r2' : {'Tipus': 'router', 'ips':{'eth0': '10.0.0.2/24', 'eth1': '10.2.0.1/24'}},
+    'h1' : {'Tipus': 'host', 'ip': '10.1.0.2/24', 'gw': '10.1.0.1'},
+    'h2' : {'Tipus': 'host', 'ip': '10.1.0.3/24', 'gw': '10.1.0.1'},
+    'h3' : {'Tipus': 'host', 'ip': '10.2.0.2/24', 'gw': '10.2.0.1'},
+    'h4' : {'Tipus': 'host', 'ip': '10.2.0.3/24', 'gw': '10.2.0.1'},
+    'h5' : {'Tipus': 'host', 'ip': '10.2.0.4/24', 'gw': '10.2.0.1'},
+    'r1' : {'Tipus': 'router',
+            'ips':{'eth0': '10.0.0.1/24', 'eth1': '10.1.0.1/24'},
+            'rutes': ['10.2.0.0/24 via 10.0.0.2']},
+    'r2' : {'Tipus': 'router', 
+            'ips':{'eth0': '10.0.0.2/24', 'eth1': '10.2.0.1/24'},
+            'rutes': ['10.1.0.0/24 via 10.0.0.1']},
     'sw1' : {'Tipus': 'switch'},
     'sw2' : {'Tipus': 'switch'}
 }
@@ -61,14 +66,14 @@ def iniciar_xarxa():
         if propietats['Tipus'] == 'router':
             mininet_nodes[nom].cmd('sysctl -w net.ipv4.ip_forward=1')
     # Afegim les rutes per defecte als hosts
-    mininet_nodes['h1'].cmd('ip route add default via 10.1.0.1')
-    mininet_nodes['h2'].cmd('ip route add default via 10.1.0.1')
-    mininet_nodes['h3'].cmd('ip route add default via 10.2.0.1')
-    mininet_nodes['h4'].cmd('ip route add default via 10.2.0.1')
-    mininet_nodes['h5'].cmd('ip route add default via 10.2.0.1')
+    for nom, propietats in nodes.items():
+        if propietats['Tipus'] == 'host':
+            mininet_nodes[nom].cmd(f'ip route add default via {propietats["gw"]}')
     # Afegim les rutes als routers
-    mininet_nodes['r1'].cmd('ip route add 10.2.0.0/24 via 10.0.0.2')
-    mininet_nodes['r2'].cmd('ip route add 10.1.0.0/24 via 10.0.0.1')
+    for nom, propietats in nodes.items():
+        if propietats['Tipus'] == 'router':
+            for ruta in propietats['rutes']:
+                mininet_nodes[nom].cmd(f'ip route add {ruta}')
     CLI(net)
     # Aturem la xarxa
     net.stop()
