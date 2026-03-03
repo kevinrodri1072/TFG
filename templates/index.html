@@ -15,8 +15,20 @@
 </head>
 <body>
     <h1>Digital Twin Network</h1>
+    <div id="controls">
+        <button onclick="mostrarFormulariHost()">Afegir Host</button>
+    </div>
+    <div id="formulari-host" style="display:none">
+        <h3>Afegir nou host</h3>
+        <input type="text" id="nom-host" placeholder="Nom (ex: h6)">
+        <select id="switch-host">
+            <option value="sw1">sw1</option>
+            <option value="sw2">sw2</option>
+        </select>
+        <button onclick="afegirHost()">Confirmar</button>
+        <button onclick="tancarFormulari()">Cancel·lar</button>
+    </div>
     <div id="xarxa"></div>
-
     <script>
         fetch('/topologia')
             .then(response => response.json())
@@ -44,6 +56,29 @@
                 var container = document.getElementById('xarxa');
                 var network = new vis.Network(container, {nodes: nodes, edges: edges}, {});
             });
+        function mostrarFormulariHost() {
+            document.getElementById('formulari-host').style.display = 'block';
+        }
+        function tancarFormulari() {
+            document.getElementById('formulari-host').style.display = 'none';
+        }
+        function afegirHost() {
+            var nom = document.getElementById('nom-host').value;
+            var sw = document.getElementById('switch-host').value;
+
+            fetch('/afegir_host', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({nom: nom, switch: sw})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.ok) {
+                    tancarFormulari();
+                    location.reload();
+                }
+            });
+        }
     </script>
 </body>
 </html>
