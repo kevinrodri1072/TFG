@@ -137,6 +137,38 @@ def actualitzar_matriu(nom, switch):
     matriu_xarxa[idx_nou][idx_switch] = 1
     matriu_xarxa[idx_switch][idx_nou] = 1
 
+def eliminar_de_matriu(nom):
+    noms = list(nodes.keys())
+    idx = noms.index(nom)
+    matriu_xarxa.pop(idx)
+    for fila in matriu_xarxa:
+        fila.pop(idx)
+
+def trobar_seguent_ip_router():
+    base = '10.0.0'
+    mascara = '24'
+    ips_usades = []
+    for nom, propietats in nodes.items():
+        if propietats['tipus'] == 'router':    
+            ip = propietats['ips']['eth0'].split('/')[0]
+            ips_usades.append(int(ip.split('.')[-1]))
+    seguent = 1
+    while seguent in ips_usades:
+        seguent += 1
+    return f'{base}.{seguent}/{mascara}'
+
+def trobar_seguent_subxarxa():
+    subxarxes_usades = []
+    for nom, propietats in nodes.items():
+        if propietats['tipus'] == 'router':
+            ip_eth1 = propietats['ips']['eth1'].split('/')[0]
+            segon_octet = int(ip_eth1.split('.')[1])
+            subxarxes_usades.append(segon_octet)
+    seguent = 1
+    while seguent in subxarxes_usades:
+        seguent += 1
+    return seguent
+
 if __name__ == '__main__':
     setLogLevel('info')
     iniciar_xarxa()

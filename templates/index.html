@@ -17,19 +17,33 @@
     <h1>Digital Twin Network</h1>
     <div id="controls">
         <button onclick="mostrarFormulariHost()">Afegir Host</button>
+        <button onclick="mostrarFormulariRouter()">Afegir Router</button>
+    </div>
+    <div id="panell-node" style="display:none; border:1px solid #ccc; padding:10px; margin:10px 0;">
+        <strong>Node seleccionat: </strong><span id="nom-node-seleccionat"></span>
+        <button onclick="eliminarNodeSeleccionat()">Eliminar</button>
     </div>
     <div id="formulari-host" style="display:none">
         <h3>Afegir nou host</h3>
         <input type="text" id="nom-host" placeholder="Nom (ex: h6)">
         <select id="switch-host">
-            <option value="sw1">sw1</option>
-            <option value="sw2">sw2</option>
+            <!-- Es carregarà dinàmicament. -->
         </select>
         <button onclick="afegirHost()">Confirmar</button>
         <button onclick="tancarFormulari()">Cancel·lar</button>
     </div>
+    <div id="formulari-router" style="display:none">
+        <h3>Afegir nou router</h3>
+        <input type="text" id="nom-router" placeholder="Nom (ex: r3)">
+        <select id="router-connectat">
+            <!-- Es carregarà dinàmicament -->
+        </select>
+        <button onclick="afegirRouter()">Confirmar</button>
+        <button onclick="tancarFormulariRouter()">Cancel·lar</button>
+    </div>
     <div id="xarxa"></div>
     <script>
+        var nodeSeleccionat = null;
         fetch('/topologia')
             .then(response => response.json())
             .then(data => {
@@ -54,10 +68,55 @@
                     }))
                 );
                 var container = document.getElementById('xarxa');
-                var network = new vis.Network(container, {nodes: nodes, edges: edges}, {});
+                var network = new vis.Network(container, {nodes: nodes, edges: edges}, {
+                    interaction: {
+                        navigationButtons: false,
+                        keyboard: false
+                    }
+                });
+                network.on('click', function(params) {
+                    if (params.nodes.length > 0) {
+                        nodeSeleccionat = params.nodes[0];
+                        document.getElementById('nom-node-seleccionat').textContent = nodeSeleccionat;
+                        document.getElementById('panell-node').style.display = 'block';
+                    } else {
+                        nodeSeleccionat = null;
+                        document.getElementById('panell-node').style.display = 'none';
+                    }
+                });   
             });
+        function eliminarNodeSeleccionat() {
+            if (nodeSeleccionat && confirm('Vols eliminar ' + nodeSeleccionat + '?')) {
+                fetch('/eliminar_node', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({nom: nodeSeleccionat})
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.ok) {
+                        location.reload();
+                    }
+                });
+            }
+        }
         function mostrarFormulariHost() {
-            document.getElementById('formulari-host').style.display = 'block';
+            fetch('/topologia')
+                .then(response => response.json())
+                .then(data => {
+                    var select = document.getElementById('switch-host');
+                    select.innerHTML = '';
+                    Object.keys(data.nodes).forEach(nom => {
+                        if (data.nodes[nom].tipus === 'switch') {
+                            var option = document.createElement('option');
+                            option.value = nom;
+                            option.textContent = nom;
+                            select.appendChild(option);
+                        }
+                    });
+                    // Mostrem el formulari AQUÍ, dins del then
+                    document.getElementById('formulari-host').style.display = 'block';
+                });
         }
         function tancarFormulari() {
             document.getElementById('formulari-host').style.display = 'none';
@@ -75,6 +134,46 @@
             .then(data => {
                 if (data.ok) {
                     tancarFormulari();
+                    location.reload();
+                }
+            });
+        }
+        function mostrarFormulariRouter() {
+            // Carreguem els routers existents al desplegable
+            fetch('/topologia')
+                .then(response => response.json())
+                .then(data => {
+                    var select = document.getElementById('router-connectat');
+                    select.innerHTML = '';
+                    Object.keys(data.nodes).forEach(nom => {
+                        if (data.nodes[nom].tipus === 'router') {
+                            var option = document.createElement('option');
+                            option.value = nom;
+                            option.textContent = nom;
+                            select.appendChild(option);
+                        }
+                    });
+                });
+            document.getElementById('formulari-router').style.display = 'block';
+        }
+
+        function tancarFormulariRouter() {
+            document.getElementById('formulari-router').style.display = 'none';
+        }
+
+        function afegirRouter() {
+            var nom = document.getElementById('nom-router').value;
+            var routerConnectat = document.getElementById('router-connectat').value;
+
+            fetch('/afegir_router', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({nom: nom, router_connectat: routerConnectat})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.ok) {
+                    tancarFormulariRouter();
                     location.reload();
                 }
             });

@@ -59,6 +59,74 @@ def afegir_host():
     
     return jsonify({'ok': True})
 
+@app.route('/eliminar_node', methods=['POST'])
+def eliminar_node():
+    if not xarxa.xarxa_llesta:
+        return jsonify({'ok': False, 'error': 'Xarxa no llesta'})
+    
+    dades = request.json
+    nom = dades['nom']
+    
+    # Eliminem de la matriu i del diccionari
+    xarxa.eliminar_de_matriu(nom)
+    del xarxa.nodes[nom]
+    
+    # Eliminem de Mininet
+    node = xarxa.mininet_nodes[nom]
+    xarxa.net.delNode(node)
+    del xarxa.mininet_nodes[nom]
+    
+    return jsonify({'ok': True})
+
+@app.route('/afegir_router', methods=['POST'])
+def afegir_router():
+    if not xarxa.xarxa_llesta:
+        return jsonify({'ok': False, 'error': 'Xarxa no llesta'})
+    
+    dades = request.json
+    nom_router = dades['nom']
+    router_connectat = dades['router_connectat']
+    
+    # Calculem el nom del nou switch
+    num_switch = len([n for n, p in xarxa.nodes.items() if p['tipus'] == 'switch']) + 1
+    nom_switch = f'sw{num_switch}'
+    
+    # Calculem les IPs
+    ip_eth0 = xarxa.trobar_seguent_ip_router()
+    seg_subxarxa = xarxa.trobar_seguent_subxarxa()
+    ip_eth1 = f'10.{seg_subxarxa}.0.1/24'
+    
+    xarxa.actualitzar_matriu(nom_router, router_connectat)
+    
+    # Afegim al diccionari
+    xarxa.nodes[nom_router] = {
+        'tipus': 'router',
+        'ips': {'eth0': ip_eth0, 'eth1': ip_eth1},
+        'rutes': []
+    }
+    
+    # Actualitzem la matriu
+    xarxa.actualitzar_matriu(nom_switch, nom_router)
+    xarxa.nodes[nom_switch] = {'tipus': 'switch'}
+    
+    # Afegim a Mininet
+    nou_router = xarxa.net.addHost(nom_router, ip=ip_eth0)
+    nou_switch = xarxa.net.addSwitch(nom_switch, failMode='standalone')
+    xarxa.mininet_nodes[nom_router] = nou_router
+    xarxa.mininet_nodes[nom_switch] = nou_switch
+    nou_switch.start([])
+    
+    # Connectem a Mininet
+    xarxa.net.addLink(nou_router, xarxa.mininet_nodes[router_connectat])
+    xarxa.net.addLink(nou_router, nou_switch)
+    
+    # Configurem IPs i forwarding
+    nou_router.cmd(f'ifconfig {nom_router}-eth0 {ip_eth0}')
+    nou_router.cmd(f'ifconfig {nom_router}-eth1 {ip_eth1}')
+    nou_router.cmd('sysctl -w net.ipv4.ip_forward=1')
+    
+    return jsonify({'ok': True})
+
 if __name__ == '__main__':
     t = threading.Thread(target=xarxa.iniciar_xarxa)
     t.daemon = True
