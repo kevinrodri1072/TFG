@@ -18,11 +18,41 @@ def topologia():
     for i in range(len(xarxa.matriu_xarxa)):
         for j in range(i+1, len(xarxa.matriu_xarxa)):
             if xarxa.matriu_xarxa[i][j] == 1:
-                links.append({'from': noms_nodes[i], 'to': noms_nodes[j]})
+                node_i = noms_nodes[i]
+                node_j = noms_nodes[j]
+                tipus_i = xarxa.nodes[node_i]['tipus']
+                tipus_j = xarxa.nodes[node_j]['tipus']
+                
+                # Saltem els links que involucren switches
+                if tipus_i == 'switch' or tipus_j == 'switch':
+                    continue
+                
+                links.append({'from': node_i, 'to': node_j})
+    
+    # Afegim links directes router-host saltant el switch
+    for nom_switch, props in xarxa.nodes.items():
+        if props['tipus'] == 'switch':
+            # Trobem el router i els hosts connectats a aquest switch
+            idx_switch = noms_nodes.index(nom_switch)
+            router = None
+            hosts = []
+            for i, val in enumerate(xarxa.matriu_xarxa[idx_switch]):
+                if val == 1:
+                    node = noms_nodes[i]
+                    if xarxa.nodes[node]['tipus'] == 'router':
+                        router = node
+                    elif xarxa.nodes[node]['tipus'] == 'host':
+                        hosts.append(node)
+            # Creem links directes router-host
+            if router:
+                for host in hosts:
+                    links.append({'from': router, 'to': host})
+    
     return jsonify({'nodes': xarxa.nodes, 'links': links})
 
 @app.route('/afegir_host', methods=['POST'])
 def afegir_host():
+    
     if not xarxa.xarxa_llesta:
         return jsonify({'ok': False, 'error': 'Xarxa no llesta'})
     
@@ -30,6 +60,9 @@ def afegir_host():
     nom = dades['nom']
     switch = dades['switch']
     
+    if nom in xarxa.nodes:
+        return jsonify({'ok': False, 'error': f'Ja existeix un node amb el nom {nom}'})
+
     # Calculem IP i gateway automàticament
     router = xarxa.trobar_router_del_switch(switch)
     ip = xarxa.trobar_seguent_ip(router)
@@ -67,19 +100,29 @@ def eliminar_node():
     dades = request.json
     nom = dades['nom']
     
-    # Eliminem de la matriu i del diccionari
-    xarxa.eliminar_de_matriu(nom)
-    del xarxa.nodes[nom]
-    
-    # Eliminem de Mininet
-    node = xarxa.mininet_nodes[nom]
-    xarxa.net.delNode(node)
-    del xarxa.mininet_nodes[nom]
+    # Si és un router, eliminem tota la subxarxa
+    if xarxa.nodes[nom]['tipus'] == 'router':
+        nodes_a_eliminar = xarxa.trobar_subxarxa_router(nom)
+        nodes_a_eliminar.append(nom)  # afegim el router mateix
+        for node in nodes_a_eliminar:
+            xarxa.eliminar_de_matriu(node)
+            node_mininet = xarxa.mininet_nodes[node]
+            xarxa.net.delNode(node_mininet)
+            del xarxa.mininet_nodes[node]
+            del xarxa.nodes[node]
+    else:
+        # Eliminem només el node
+        xarxa.eliminar_de_matriu(nom)
+        node_mininet = xarxa.mininet_nodes[nom]
+        xarxa.net.delNode(node_mininet)
+        del xarxa.mininet_nodes[nom]
+        del xarxa.nodes[nom]
     
     return jsonify({'ok': True})
 
 @app.route('/afegir_router', methods=['POST'])
 def afegir_router():
+    
     if not xarxa.xarxa_llesta:
         return jsonify({'ok': False, 'error': 'Xarxa no llesta'})
     
@@ -87,6 +130,9 @@ def afegir_router():
     nom_router = dades['nom']
     router_connectat = dades['router_connectat']
     
+    if nom_router in xarxa.nodes:
+        return jsonify({'ok': False, 'error': f'Ja existeix un node amb el nom {nom_router}'})
+
     # Calculem el nom del nou switch
     num_switch = len([n for n, p in xarxa.nodes.items() if p['tipus'] == 'switch']) + 1
     nom_switch = f'sw{num_switch}'

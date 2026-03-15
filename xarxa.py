@@ -169,6 +169,23 @@ def trobar_seguent_subxarxa():
         seguent += 1
     return seguent
 
+def trobar_subxarxa_router(router):
+    base = nodes[router]['ips']['eth1'].rsplit('.', 1)[0]
+    nodes_a_eliminar = []
+    for nom, propietats in nodes.items():
+        if propietats['tipus'] == 'host' and 'ip' in propietats:
+            ip = propietats['ip'].split('/')[0]
+            if ip.startswith(base):
+                nodes_a_eliminar.append(nom)
+    noms = list(nodes.keys())
+    idx_router = noms.index(router)
+    for i, val in enumerate(matriu_xarxa[idx_router]):
+        if val == 1 and nodes[noms[i]]['tipus'] == 'switch':
+            nodes_a_eliminar.append(noms[i])
+    return nodes_a_eliminar
+
+
+
 if __name__ == '__main__':
     setLogLevel('info')
     iniciar_xarxa()

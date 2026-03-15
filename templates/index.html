@@ -48,21 +48,25 @@
             .then(response => response.json())
             .then(data => {
                 var nodes = new vis.DataSet(
-                    Object.keys(data.nodes).map(nom => {
-                        var tipus = data.nodes[nom].tipus;
-                        var imatge = tipus === 'host' ? '/static/host.png' : 
-                                    tipus === 'router' ? '/static/router.png' : '/static/switch.png';
-                        return {
-                            id: nom,
-                            label: nom,
-                            shape: 'image',
-                            image: imatge,
-                            size: 30
-                        };
-                    })
+                    Object.keys(data.nodes)
+                        .filter(nom => data.nodes[nom].tipus !== 'switch')  // ← afegeix aquesta línia
+                        .map(nom => {
+                            var tipus = data.nodes[nom].tipus;
+                            var imatge = tipus === 'host' ? '/static/host.png' : '/static/router.png';
+                            return {
+                                id: nom,
+                                label: nom,
+                                shape: 'image',
+                                image: imatge,
+                                size: 30
+                            };
+                        })
                 );
                 var edges = new vis.DataSet(
-                    data.links.map(link => ({
+                    data.links.filter(link => 
+                        data.nodes[link.from].tipus !== 'switch' && 
+                        data.nodes[link.to].tipus !== 'switch'
+                    ).map(link => ({
                         from: link.from,
                         to: link.to
                     }))
@@ -135,6 +139,8 @@
                 if (data.ok) {
                     tancarFormulari();
                     location.reload();
+                } else {
+                    alert(data.error);
                 }
             });
         }
@@ -175,6 +181,8 @@
                 if (data.ok) {
                     tancarFormulariRouter();
                     location.reload();
+                } else {
+                    alert(data.error);
                 }
             });
         }
