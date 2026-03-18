@@ -58,13 +58,15 @@ def afegir_host():
     
     dades = request.json
     nom = dades['nom']
-    switch = dades['switch']
+    router = dades['router']
     
     if nom in xarxa.nodes:
         return jsonify({'ok': False, 'error': f'Ja existeix un node amb el nom {nom}'})
+    
+    
 
     # Calculem IP i gateway automàticament
-    router = xarxa.trobar_router_del_switch(switch)
+    switch = xarxa.trobar_switch_del_router(router)
     ip = xarxa.trobar_seguent_ip(router)
     gw = xarxa.nodes[router]['ips']['eth1'].split('/')[0]
     
@@ -122,13 +124,12 @@ def eliminar_node():
 
 @app.route('/afegir_router', methods=['POST'])
 def afegir_router():
-    
     if not xarxa.xarxa_llesta:
         return jsonify({'ok': False, 'error': 'Xarxa no llesta'})
     
     dades = request.json
     nom_router = dades['nom']
-    router_connectat = dades['router_connectat']
+    routers_connectats = dades['routers_connectats']  # ara és una llista
     
     if nom_router in xarxa.nodes:
         return jsonify({'ok': False, 'error': f'Ja existeix un node amb el nom {nom_router}'})
@@ -142,7 +143,8 @@ def afegir_router():
     seg_subxarxa = xarxa.trobar_seguent_subxarxa()
     ip_eth1 = f'10.{seg_subxarxa}.0.1/24'
     
-    xarxa.actualitzar_matriu(nom_router, router_connectat)
+    # Actualitzem la matriu per cada router connectat
+    xarxa.actualitzar_matriu_multi(nom_router, routers_connectats)
     
     # Afegim al diccionari
     xarxa.nodes[nom_router] = {
@@ -151,8 +153,7 @@ def afegir_router():
         'rutes': []
     }
     
-    # Actualitzem la matriu
-    xarxa.actualitzar_matriu(nom_switch, nom_router)
+    xarxa.actualitzar_matriu_multi(nom_switch, [nom_router])
     xarxa.nodes[nom_switch] = {'tipus': 'switch'}
     
     # Afegim a Mininet
@@ -162,8 +163,9 @@ def afegir_router():
     xarxa.mininet_nodes[nom_switch] = nou_switch
     nou_switch.start([])
     
-    # Connectem a Mininet
-    xarxa.net.addLink(nou_router, xarxa.mininet_nodes[router_connectat])
+    # Connectem a Mininet amb cada router
+    for router_connectat in routers_connectats:
+        xarxa.net.addLink(nou_router, xarxa.mininet_nodes[router_connectat])
     xarxa.net.addLink(nou_router, nou_switch)
     
     # Configurem IPs i forwarding

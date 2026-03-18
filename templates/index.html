@@ -35,7 +35,7 @@
     <div id="formulari-router" style="display:none">
         <h3>Afegir nou router</h3>
         <input type="text" id="nom-router" placeholder="Nom (ex: r3)">
-        <select id="router-connectat">
+        <select id="router-connectat" multiple>
             <!-- Es carregarà dinàmicament -->
         </select>
         <button onclick="afegirRouter()">Confirmar</button>
@@ -111,7 +111,7 @@
                     var select = document.getElementById('switch-host');
                     select.innerHTML = '';
                     Object.keys(data.nodes).forEach(nom => {
-                        if (data.nodes[nom].tipus === 'switch') {
+                        if (data.nodes[nom].tipus === 'router') {
                             var option = document.createElement('option');
                             option.value = nom;
                             option.textContent = nom;
@@ -132,7 +132,7 @@
             fetch('/afegir_host', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({nom: nom, switch: sw})
+                body: JSON.stringify({nom: nom, router: sw})
             })
             .then(response => response.json())
             .then(data => {
@@ -169,12 +169,13 @@
 
         function afegirRouter() {
             var nom = document.getElementById('nom-router').value;
-            var routerConnectat = document.getElementById('router-connectat').value;
+            var select = document.getElementById('router-connectat');
+            var routersConnectats = Array.from(select.selectedOptions).map(o => o.value);
 
             fetch('/afegir_router', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({nom: nom, router_connectat: routerConnectat})
+                body: JSON.stringify({nom: nom, routers_connectats: routersConnectats})
             })
             .then(response => response.json())
             .then(data => {

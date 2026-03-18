@@ -137,6 +137,26 @@ def actualitzar_matriu(nom, switch):
     matriu_xarxa[idx_nou][idx_switch] = 1
     matriu_xarxa[idx_switch][idx_nou] = 1
 
+def actualitzar_matriu_multi(nom, connectats):
+    noms = list(nodes.keys())
+    
+    # Afegim una columna de zeros a cada fila existent
+    for fila in matriu_xarxa:
+        fila.append(0)
+    
+    # Afegim una fila nova de zeros per al nou node
+    nova_fila = [0] * (len(noms) + 1)
+    matriu_xarxa.append(nova_fila)
+    
+    # L'índex del nou node és l'últim
+    idx_nou = len(noms)
+    
+    # Posem els 1s per a cada connexió
+    for connectat in connectats:
+        idx_connectat = noms.index(connectat)
+        matriu_xarxa[idx_nou][idx_connectat] = 1
+        matriu_xarxa[idx_connectat][idx_nou] = 1
+
 def eliminar_de_matriu(nom):
     noms = list(nodes.keys())
     idx = noms.index(nom)
@@ -184,6 +204,13 @@ def trobar_subxarxa_router(router):
             nodes_a_eliminar.append(noms[i])
     return nodes_a_eliminar
 
+def trobar_switch_del_router(router):
+    noms = list(nodes.keys())
+    idx_router = noms.index(router)
+    for i, val in enumerate(matriu_xarxa[idx_router]):
+        if val == 1 and nodes[noms[i]]['tipus'] == 'switch':
+            return noms[i]
+    return None
 
 
 if __name__ == '__main__':
