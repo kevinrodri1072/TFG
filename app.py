@@ -2,10 +2,19 @@ from flask import Flask, render_template, jsonify, request
 import xarxa
 import threading
 import time
+import requests
+
+DIGITAL_TWIN_IP = '192.168.1.20'
+DIGITAL_TWIN_PORT = 5000
+
+def sincronitzar(ruta, dades):
+    try:
+        dades['sync'] = True  # marquem que és una sincronització
+        requests.post(f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}{ruta}', json=dades)
+    except Exception as e:
+        print(f'Error sincronitzant: {e}')
 
 app = Flask(__name__)
-
-
 
 @app.route('/')
 def index():
@@ -59,6 +68,7 @@ def afegir_host():
     dades = request.json
     nom = dades['nom']
     router = dades['router']
+    es_sync = dades.get('sync', False)  # ← comprova si és sync
     
     if nom in xarxa.nodes:
         return jsonify({'ok': False, 'error': f'Ja existeix un node amb el nom {nom}'})
@@ -91,6 +101,9 @@ def afegir_host():
     # Activem les interfícies
     nou_host.cmd(f'ifconfig {nom}-eth0 {ip}')
     nou_host.cmd(f'ip route add default via {gw}')
+
+    if not es_sync:  # ← només sincronitzem si no és ja una sync
+        sincronitzar('/afegir_host', {'nom': nom, 'router': router})
     
     return jsonify({'ok': True})
 
@@ -101,6 +114,7 @@ def eliminar_node():
     
     dades = request.json
     nom = dades['nom']
+    es_sync = dades.get('sync', False)  # ← comprova si és sync
     
     # Si és un router, eliminem tota la subxarxa
     if xarxa.nodes[nom]['tipus'] == 'router':
@@ -120,6 +134,8 @@ def eliminar_node():
         del xarxa.mininet_nodes[nom]
         del xarxa.nodes[nom]
     
+    if not es_sync:  # ← només sincronitzem si no és ja una sync
+        sincronitzar('/eliminar_node', {'nom': nom})
     return jsonify({'ok': True})
 
 @app.route('/afegir_router', methods=['POST'])
@@ -130,7 +146,9 @@ def afegir_router():
     dades = request.json
     nom_router = dades['nom']
     routers_connectats = dades['routers_connectats']  # ara és una llista
-    
+    es_sync = dades.get('sync', False)  # ← comprova si és sync
+
+
     if nom_router in xarxa.nodes:
         return jsonify({'ok': False, 'error': f'Ja existeix un node amb el nom {nom_router}'})
 
@@ -172,7 +190,9 @@ def afegir_router():
     nou_router.cmd(f'ifconfig {nom_router}-eth0 {ip_eth0}')
     nou_router.cmd(f'ifconfig {nom_router}-eth1 {ip_eth1}')
     nou_router.cmd('sysctl -w net.ipv4.ip_forward=1')
-    
+
+    if not es_sync:  # ← només sincronitzem si no és ja una sync
+        sincronitzar('/afegir_router', {'nom': nom_router, 'routers_connectats': routers_connectats})
     return jsonify({'ok': True})
 
 if __name__ == '__main__':
