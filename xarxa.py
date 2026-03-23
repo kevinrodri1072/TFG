@@ -122,6 +122,30 @@ def trobar_seguent_ip(router):
     return f'{base}.{seguent}/{mascara}'
 
 def actualitzar_matriu(nom, switch):
+    noms = list(nodes.keys())
+    idx_switch = noms.index(switch)
+    print(f"noms: {noms}")
+    print(f"idx_switch: {idx_switch}")
+    
+    for fila in matriu_xarxa:
+        fila.append(0)
+    
+    nova_fila = [0] * len(matriu_xarxa[0])
+    matriu_xarxa.append(nova_fila)
+    
+    idx_nou = len(matriu_xarxa) -1
+    print(f"idx_nou: {idx_nou}")
+    print(f"len(matriu_xarxa): {len(matriu_xarxa)}")
+    print(f"len(matriu_xarxa[idx_nou]): {len(matriu_xarxa[idx_nou])}")
+    
+    tipus_nou    = nodes[nom]['tipus']
+    tipus_switch = nodes[switch]['tipus']
+    matriu_xarxa[idx_nou][idx_switch] = tipus_nou
+    matriu_xarxa[idx_switch][idx_nou] = tipus_switch
+
+'''
+
+def actualitzar_matriu(nom, switch):
     noms = list(nodes.keys())  # encara sense el nou node
     idx_switch = noms.index(switch)
     
@@ -130,7 +154,7 @@ def actualitzar_matriu(nom, switch):
         fila.append(0)
     
     # Afegim una fila nova de zeros per al nou node
-    nova_fila = [0] * (len(noms) + 1)
+    nova_fila = [0] * len(matriu_xarxa[0])
     matriu_xarxa.append(nova_fila)
     
     # L'índex del nou node és l'últim
@@ -143,6 +167,8 @@ def actualitzar_matriu(nom, switch):
     matriu_xarxa[idx_nou][idx_switch] = tipus_nou
     matriu_xarxa[idx_switch][idx_nou] = tipus_switch
 
+'''
+
 def actualitzar_matriu_multi(nom, connectats):
     noms = list(nodes.keys())
     
@@ -151,11 +177,11 @@ def actualitzar_matriu_multi(nom, connectats):
         fila.append(0)
     
     # Afegim una fila nova de zeros per al nou node
-    nova_fila = [0] * (len(noms) + 1)
+    nova_fila = [0] * len(matriu_xarxa[0])
     matriu_xarxa.append(nova_fila)
     
     # L'índex del nou node és l'últim
-    idx_nou = len(noms)
+    idx_nou = len(matriu_xarxa) - 1
     
     # Posem el tipus de cada node a la cel·la corresponent per a cada connexió
     tipus_nou = nodes[nom]['tipus']  # tipus del nou node (ex: 'router')

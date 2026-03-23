@@ -81,8 +81,8 @@ def afegir_host():
     gw = xarxa.nodes[router]['ips']['eth1'].split('/')[0]
     
     # Afegim al diccionari de nodes
-    xarxa.actualitzar_matriu(nom, switch)
     xarxa.nodes[nom] = {'tipus': 'host', 'ip': ip, 'gw': gw}
+    xarxa.actualitzar_matriu(nom, switch)
     
     # Afegim a Mininet
     nou_host = xarxa.net.addHost(nom, ip=ip)
@@ -161,18 +161,18 @@ def afegir_router():
     seg_subxarxa = xarxa.trobar_seguent_subxarxa()
     ip_eth1 = f'10.{seg_subxarxa}.0.1/24'
     
-    # Actualitzem la matriu per cada router connectat
-    xarxa.actualitzar_matriu_multi(nom_router, routers_connectats)
-    
     # Afegim al diccionari
     xarxa.nodes[nom_router] = {
         'tipus': 'router',
         'ips': {'eth0': ip_eth0, 'eth1': ip_eth1},
         'rutes': []
     }
+
+    # Actualitzem la matriu per cada router connectat
+    xarxa.actualitzar_matriu_multi(nom_router, routers_connectats)
     
-    xarxa.actualitzar_matriu_multi(nom_switch, [nom_router])
     xarxa.nodes[nom_switch] = {'tipus': 'switch'}
+    xarxa.actualitzar_matriu_multi(nom_switch, [nom_router])
     
     # Afegim a Mininet
     nou_router = xarxa.net.addHost(nom_router, ip=ip_eth0)
