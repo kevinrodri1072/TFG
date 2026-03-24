@@ -112,6 +112,10 @@
     <div id="modal-matriu">
         <div class="contingut">
             <h2>Matriu d'adjacència</h2>
+            <label style="font-size:13px; margin-bottom:8px; display:inline-block;">
+                <input type="checkbox" id="checkbox-switches" onchange="renderMatriu()" checked>
+                Mostrar switches
+            </label>
             <div style="overflow-x: auto;">
                 <table id="taula-matriu"></table>
             </div>
@@ -258,32 +262,82 @@
             });
         }
 
+        var matriuData = null;
+
         function mostrarMatriu() {
             fetch('/matriu')
                 .then(response => response.json())
                 .then(data => {
-                    var noms = data.noms;
-                    var matriu = data.matriu;
-                    var taula = document.getElementById('taula-matriu');
-                    taula.innerHTML = '';
-                    var cap = '<tr><th></th>';
-                    noms.forEach(nom => cap += `<th>${nom}</th>`);
-                    cap += '</tr>';
-                    taula.innerHTML += cap;
-                    matriu.forEach((fila, i) => {
-                        var tr = `<tr><th>${noms[i]}</th>`;
-                        fila.forEach(cel => {
-                            if (cel === 0)          tr += `<td class="cap-connexio">0</td>`;
-                            else if (cel === 'host')   tr += `<td class="connexio-host">host</td>`;
-                            else if (cel === 'router') tr += `<td class="connexio-router">router</td>`;
-                            else if (cel === 'switch') tr += `<td class="connexio-switch">switch</td>`;
-                            else                       tr += `<td>${cel}</td>`;
-                        });
-                        tr += '</tr>';
-                        taula.innerHTML += tr;
-                    });
+                    matriuData = data;
+                    renderMatriu();
                     document.getElementById('modal-matriu').style.display = 'block';
                 });
+        }
+
+        function renderMatriu() {
+            if (!matriuData) return;
+            var mostrarSwitches = document.getElementById('checkbox-switches').checked;
+            var noms = matriuData.noms;
+            var matriu = matriuData.matriu;
+
+            // Si no mostrem switches, filtrem les files i columnes de switches
+            // i connectem hosts directament als routers
+            var indexos, nomsFiltre;
+            if (mostrarSwitches) {
+                indexos = noms.map((_, i) => i);
+                nomsFiltre = noms;
+            } else {
+                indexos = noms.map((n, i) => ({ n, i }))
+                              .filter(x => !x.n.startsWith('sw'))
+                              .map(x => x.i);
+                nomsFiltre = indexos.map(i => noms[i]);
+            }
+
+            var taula = document.getElementById('taula-matriu');
+            taula.innerHTML = '';
+
+            // Capçalera
+            var cap = '<tr><th></th>';
+            nomsFiltre.forEach(nom => cap += `<th>${nom}</th>`);
+            cap += '</tr>';
+            taula.innerHTML += cap;
+
+            // Files
+            indexos.forEach(i => {
+                var tr = `<tr><th>${noms[i]}</th>`;
+                indexos.forEach(j => {
+                    var cel;
+                    if (!mostrarSwitches) {
+                        // Si els dos nodes no son switches, busquem connexió directa o via switch
+                        var tipusI = noms[i].startsWith('r') ? 'router' : 'host';
+                        var tipusJ = noms[j].startsWith('r') ? 'router' : 'host';
+                        if (i === j) {
+                            cel = 0;
+                        } else {
+                            // Connexió directa
+                            if (matriu[i][j] !== 0) {
+                                cel = matriu[i][j];
+                            } else {
+                                // Connexió via switch: busquem switch comú
+                                var switchComu = noms.findIndex((n, k) =>
+                                    n.startsWith('sw') && matriu[i][k] !== 0 && matriu[j][k] !== 0
+                                );
+                                cel = switchComu !== -1 ? tipusI : 0;
+                            }
+                        }
+                    } else {
+                        cel = matriu[i][j];
+                    }
+
+                    if (cel === 0)             tr += `<td class="cap-connexio">0</td>`;
+                    else if (cel === 'host')   tr += `<td class="connexio-host">host</td>`;
+                    else if (cel === 'router') tr += `<td class="connexio-router">router</td>`;
+                    else if (cel === 'switch') tr += `<td class="connexio-switch">switch</td>`;
+                    else                       tr += `<td>${cel}</td>`;
+                });
+                tr += '</tr>';
+                taula.innerHTML += tr;
+            });
         }
 
         function tancarMatriu() {
