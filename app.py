@@ -59,6 +59,14 @@ def topologia():
     
     return jsonify({'nodes': xarxa.nodes, 'links': links})
 
+@app.route('/matriu')
+def matriu():
+    noms = list(xarxa.nodes.keys())
+    return jsonify({
+        'noms': noms,
+        'matriu': xarxa.matriu_xarxa
+    })
+
 @app.route('/afegir_host', methods=['POST'])
 def afegir_host():
     
@@ -200,4 +208,4 @@ if __name__ == '__main__':
     t.daemon = True
     t.start()
     time.sleep(3)  # Esperem que Mininet arrenqui
-    app.run(debug=False)
+    app.run(host = '0.0.0.0', debug=False)

@@ -2,94 +2,186 @@
 <html>
 <head>
     <title>Digital Twin Network</title>
-    <!-- Carreguem vis.js des d'internet -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">    <style>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <style>
         #xarxa {
             width: 100%;
             height: 600px;
             border: 1px solid #ccc;
         }
+
+        /* Popup flotant */
+        #popup-node {
+            display: none;
+            position: fixed;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            padding: 8px 12px;
+            box-shadow: 2px 4px 10px rgba(0,0,0,0.2);
+            z-index: 500;
+            min-width: 120px;
+        }
+        #popup-node .popup-titol {
+            font-weight: bold;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        #popup-node button {
+            display: block;
+            width: 100%;
+            margin: 3px 0;
+            padding: 4px 8px;
+            cursor: pointer;
+        }
+
+        /* Modal de la matriu */
+        #modal-matriu {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            overflow: auto;
+        }
+        #modal-matriu .contingut {
+            background: white;
+            margin: 5% auto;
+            padding: 20px;
+            width: 90%;
+            max-width: 900px;
+            border-radius: 8px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        #modal-matriu h2 { margin-top: 0; }
+        #taula-matriu {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 13px;
+        }
+        #taula-matriu th, #taula-matriu td {
+            border: 1px solid #ccc;
+            padding: 6px 10px;
+            text-align: center;
+        }
+        #taula-matriu th { background-color: #f0f0f0; font-weight: bold; }
+        #taula-matriu td.connexio-host   { background-color: #d4edda; color: #155724; }
+        #taula-matriu td.connexio-router { background-color: #cce5ff; color: #004085; }
+        #taula-matriu td.connexio-switch { background-color: #fff3cd; color: #856404; }
+        #taula-matriu td.cap-connexio    { color: #aaa; }
     </style>
 </head>
 <body>
     <h1>Digital Twin Network</h1>
     <div id="controls">
-        <button onclick="mostrarFormulariHost()">Afegir Host</button>
         <button onclick="mostrarFormulariRouter()">Afegir Router</button>
+        <button onclick="mostrarMatriu()">Veure Matriu</button>
     </div>
-    <div id="panell-node" style="display:none; border:1px solid #ccc; padding:10px; margin:10px 0;">
-        <strong>Node seleccionat: </strong><span id="nom-node-seleccionat"></span>
-        <button onclick="eliminarNodeSeleccionat()">Eliminar</button>
+
+    <!-- Popup flotant al clicar un node -->
+    <div id="popup-node">
+        <div class="popup-titol" id="popup-nom"></div>
+        <!-- Vista per defecte: botons -->
+        <div id="popup-botons">
+            <button id="popup-btn-host" style="display:none" onclick="mostrarInputHost()">Afegir Host</button>
+            <button onclick="eliminarNodeSeleccionat()">Eliminar</button>
+        </div>
+        <!-- Vista afegir host: input inline -->
+        <div id="popup-afegir-host" style="display:none">
+            <input type="text" id="nom-host" placeholder="Nom (ex: h6)" style="width:100%; margin: 4px 0;">
+            <input type="hidden" id="switch-host">
+            <button onclick="afegirHost()">Confirmar</button>
+            <button onclick="tancarInputHost()">Cancel·lar</button>
+        </div>
     </div>
-    <div id="formulari-host" style="display:none">
-        <h3>Afegir nou host</h3>
-        <input type="text" id="nom-host" placeholder="Nom (ex: h6)">
-        <select id="switch-host">
-            <!-- Es carregarà dinàmicament. -->
-        </select>
-        <button onclick="afegirHost()">Confirmar</button>
-        <button onclick="tancarFormulari()">Cancel·lar</button>
-    </div>
-    <div id="formulari-router" style="display:none">
+
+    <!-- Formulari afegir router -->
+    <div id="formulari-router" style="display:none; border:1px solid #ccc; padding:10px; margin:10px 0;">
         <h3>Afegir nou router</h3>
         <input type="text" id="nom-router" placeholder="Nom (ex: r3)">
-        <select id="router-connectat" multiple>
-            <!-- Es carregarà dinàmicament -->
-        </select>
+        <select id="router-connectat" multiple></select>
         <button onclick="afegirRouter()">Confirmar</button>
         <button onclick="tancarFormulariRouter()">Cancel·lar</button>
     </div>
+
+    <!-- Modal matriu -->
+    <div id="modal-matriu">
+        <div class="contingut">
+            <h2>Matriu d'adjacència</h2>
+            <div style="overflow-x: auto;">
+                <table id="taula-matriu"></table>
+            </div>
+            <br>
+            <button onclick="tancarMatriu()">Tancar</button>
+        </div>
+    </div>
+
     <div id="xarxa"></div>
+
     <script>
         var nodeSeleccionat = null;
+        var topologiaData = null;
+
         fetch('/topologia')
             .then(response => response.json())
             .then(data => {
+                topologiaData = data;
                 var nodes = new vis.DataSet(
                     Object.keys(data.nodes)
-                        .filter(nom => data.nodes[nom].tipus !== 'switch')  // ← afegeix aquesta línia
+                        .filter(nom => data.nodes[nom].tipus !== 'switch')
                         .map(nom => {
                             var tipus = data.nodes[nom].tipus;
                             var imatge = tipus === 'host' ? '/static/host.png' : '/static/router.png';
-                            return {
-                                id: nom,
-                                label: nom,
-                                shape: 'image',
-                                image: imatge,
-                                size: 30
-                            };
+                            return { id: nom, label: nom, shape: 'image', image: imatge, size: 30 };
                         })
                 );
                 var edges = new vis.DataSet(
-                    data.links.filter(link => 
-                        data.nodes[link.from].tipus !== 'switch' && 
+                    data.links.filter(link =>
+                        data.nodes[link.from].tipus !== 'switch' &&
                         data.nodes[link.to].tipus !== 'switch'
-                    ).map(link => ({
-                        from: link.from,
-                        to: link.to
-                    }))
+                    ).map(link => ({ from: link.from, to: link.to }))
                 );
                 var container = document.getElementById('xarxa');
                 var network = new vis.Network(container, {nodes: nodes, edges: edges}, {
-                    interaction: {
-                        navigationButtons: false,
-                        keyboard: false
-                    }
+                    interaction: { navigationButtons: false, keyboard: false }
                 });
+
                 network.on('click', function(params) {
+                    var popup = document.getElementById('popup-node');
                     if (params.nodes.length > 0) {
                         nodeSeleccionat = params.nodes[0];
-                        document.getElementById('nom-node-seleccionat').textContent = nodeSeleccionat;
-                        document.getElementById('panell-node').style.display = 'block';
+                        var tipus = topologiaData.nodes[nodeSeleccionat].tipus;
+
+                        // Posicionem el popup a les coordenades del clic
+                        var x = params.event.srcEvent.clientX;
+                        var y = params.event.srcEvent.clientY;
+                        popup.style.left = (x + 10) + 'px';
+                        popup.style.top  = (y - 10) + 'px';
+
+                        document.getElementById('popup-nom').textContent = nodeSeleccionat + ' (' + tipus + ')';
+                        document.getElementById('popup-btn-host').style.display = tipus === 'router' ? 'block' : 'none';
+                        popup.style.display = 'block';
                     } else {
                         nodeSeleccionat = null;
-                        document.getElementById('panell-node').style.display = 'none';
+                        popup.style.display = 'none';
                     }
-                });   
+                });
             });
+
+        // Tancar popup en clicar fora
+        document.addEventListener('click', function(e) {
+            var popup = document.getElementById('popup-node');
+            if (!popup.contains(e.target) && !e.target.closest('#xarxa')) {
+                popup.style.display = 'none';
+            }
+        });
+
         function eliminarNodeSeleccionat() {
+            document.getElementById('popup-node').style.display = 'none';
             if (nodeSeleccionat && confirm('Vols eliminar ' + nodeSeleccionat + '?')) {
                 fetch('/eliminar_node', {
                     method: 'POST',
@@ -97,55 +189,38 @@
                     body: JSON.stringify({nom: nodeSeleccionat})
                 })
                 .then(response => response.json())
-                .then(data => {
-                    if (data.ok) {
-                        location.reload();
-                    }
-                });
+                .then(data => { if (data.ok) location.reload(); });
             }
         }
-        function mostrarFormulariHost() {
-            fetch('/topologia')
-                .then(response => response.json())
-                .then(data => {
-                    var select = document.getElementById('switch-host');
-                    select.innerHTML = '';
-                    Object.keys(data.nodes).forEach(nom => {
-                        if (data.nodes[nom].tipus === 'router') {
-                            var option = document.createElement('option');
-                            option.value = nom;
-                            option.textContent = nom;
-                            select.appendChild(option);
-                        }
-                    });
-                    // Mostrem el formulari AQUÍ, dins del then
-                    document.getElementById('formulari-host').style.display = 'block';
-                });
+
+        function mostrarInputHost() {
+            document.getElementById('nom-host').value = '';
+            document.getElementById('switch-host').value = nodeSeleccionat;
+            document.getElementById('popup-botons').style.display = 'none';
+            document.getElementById('popup-afegir-host').style.display = 'block';
         }
-        function tancarFormulari() {
-            document.getElementById('formulari-host').style.display = 'none';
+
+        function tancarInputHost() {
+            document.getElementById('popup-afegir-host').style.display = 'none';
+            document.getElementById('popup-botons').style.display = 'block';
         }
+
         function afegirHost() {
             var nom = document.getElementById('nom-host').value;
-            var sw = document.getElementById('switch-host').value;
-
+            var router = document.getElementById('switch-host').value;
             fetch('/afegir_host', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({nom: nom, router: sw})
+                body: JSON.stringify({nom: nom, router: router})
             })
             .then(response => response.json())
             .then(data => {
-                if (data.ok) {
-                    tancarFormulari();
-                    location.reload();
-                } else {
-                    alert(data.error);
-                }
+                if (data.ok) { location.reload(); }
+                else alert(data.error);
             });
         }
+
         function mostrarFormulariRouter() {
-            // Carreguem els routers existents al desplegable
             fetch('/topologia')
                 .then(response => response.json())
                 .then(data => {
@@ -171,7 +246,6 @@
             var nom = document.getElementById('nom-router').value;
             var select = document.getElementById('router-connectat');
             var routersConnectats = Array.from(select.selectedOptions).map(o => o.value);
-
             fetch('/afegir_router', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -179,13 +253,41 @@
             })
             .then(response => response.json())
             .then(data => {
-                if (data.ok) {
-                    tancarFormulariRouter();
-                    location.reload();
-                } else {
-                    alert(data.error);
-                }
+                if (data.ok) { tancarFormulariRouter(); location.reload(); }
+                else alert(data.error);
             });
+        }
+
+        function mostrarMatriu() {
+            fetch('/matriu')
+                .then(response => response.json())
+                .then(data => {
+                    var noms = data.noms;
+                    var matriu = data.matriu;
+                    var taula = document.getElementById('taula-matriu');
+                    taula.innerHTML = '';
+                    var cap = '<tr><th></th>';
+                    noms.forEach(nom => cap += `<th>${nom}</th>`);
+                    cap += '</tr>';
+                    taula.innerHTML += cap;
+                    matriu.forEach((fila, i) => {
+                        var tr = `<tr><th>${noms[i]}</th>`;
+                        fila.forEach(cel => {
+                            if (cel === 0)          tr += `<td class="cap-connexio">0</td>`;
+                            else if (cel === 'host')   tr += `<td class="connexio-host">host</td>`;
+                            else if (cel === 'router') tr += `<td class="connexio-router">router</td>`;
+                            else if (cel === 'switch') tr += `<td class="connexio-switch">switch</td>`;
+                            else                       tr += `<td>${cel}</td>`;
+                        });
+                        tr += '</tr>';
+                        taula.innerHTML += tr;
+                    });
+                    document.getElementById('modal-matriu').style.display = 'block';
+                });
+        }
+
+        function tancarMatriu() {
+            document.getElementById('modal-matriu').style.display = 'none';
         }
     </script>
 </body>
