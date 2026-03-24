@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Digital Twin Network</title>
+    <!-- Carreguem vis.js des d'internet -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">    <style>
+        #xarxa {
+            width: 100%;
+            height: 600px;
+            border: 1px solid #ccc;
+        }
+    </style>
+</head>
+<body>
+    <h1>Digital Twin Network</h1>
+    <div id="controls">
+        <button onclick="mostrarFormulariHost()">Afegir Host</button>
+        <button onclick="mostrarFormulariRouter()">Afegir Router</button>
+    </div>
+    <div id="panell-node" style="display:none; border:1px solid #ccc; padding:10px; margin:10px 0;">
+        <strong>Node seleccionat: </strong><span id="nom-node-seleccionat"></span>
+        <button onclick="eliminarNodeSeleccionat()">Eliminar</button>
+    </div>
+    <div id="formulari-host" style="display:none">
+        <h3>Afegir nou host</h3>
+        <input type="text" id="nom-host" placeholder="Nom (ex: h6)">
+        <select id="switch-host">
+            <!-- Es carregarà dinàmicament. -->
+        </select>
+        <button onclick="afegirHost()">Confirmar</button>
+        <button onclick="tancarFormulari()">Cancel·lar</button>
+    </div>
+    <div id="formulari-router" style="display:none">
+        <h3>Afegir nou router</h3>
+        <input type="text" id="nom-router" placeholder="Nom (ex: r3)">
+        <select id="router-connectat" multiple>
+            <!-- Es carregarà dinàmicament -->
+        </select>
+        <button onclick="afegirRouter()">Confirmar</button>
+        <button onclick="tancarFormulariRouter()">Cancel·lar</button>
+    </div>
+    <div id="xarxa"></div>
+    <script>
+        var nodeSeleccionat = null;
+        fetch('/topologia')
+            .then(response => response.json())
+            .then(data => {
+                var nodes = new vis.DataSet(
+                    Object.keys(data.nodes)
+                        .filter(nom => data.nodes[nom].tipus !== 'switch')  // ← afegeix aquesta línia
+                        .map(nom => {
+                            var tipus = data.nodes[nom].tipus;
+                            var imatge = tipus === 'host' ? '/static/host.png' : '/static/router.png';
+                            return {
+                                id: nom,
+                                label: nom,
+                                shape: 'image',
+                                image: imatge,
+                                size: 30
+                            };
+                        })
+                );
+                var edges = new vis.DataSet(
+                    data.links.filter(link => 
+                        data.nodes[link.from].tipus !== 'switch' && 
+                        data.nodes[link.to].tipus !== 'switch'
+                    ).map(link => ({
+                        from: link.from,
+                        to: link.to
+                    }))
+                );
+                var container = document.getElementById('xarxa');
+                var network = new vis.Network(container, {nodes: nodes, edges: edges}, {
+                    interaction: {
+                        navigationButtons: false,
+                        keyboard: false
+                    }
+                });
+                network.on('click', function(params) {
+                    if (params.nodes.length > 0) {
+                        nodeSeleccionat = params.nodes[0];
+                        document.getElementById('nom-node-seleccionat').textContent = nodeSeleccionat;
+                        document.getElementById('panell-node').style.display = 'block';
+                    } else {
+                        nodeSeleccionat = null;
+                        document.getElementById('panell-node').style.display = 'none';
+                    }
+                });   
+            });
+        function eliminarNodeSeleccionat() {
+            if (nodeSeleccionat && confirm('Vols eliminar ' + nodeSeleccionat + '?')) {
+                fetch('/eliminar_node', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({nom: nodeSeleccionat})
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.ok) {
+                        location.reload();
+                    }
+                });
+            }
+        }
+        function mostrarFormulariHost() {
+            fetch('/topologia')
+                .then(response => response.json())
+                .then(data => {
+                    var select = document.getElementById('switch-host');
+                    select.innerHTML = '';
+                    Object.keys(data.nodes).forEach(nom => {
+                        if (data.nodes[nom].tipus === 'router') {
+                            var option = document.createElement('option');
+                            option.value = nom;
+                            option.textContent = nom;
+                            select.appendChild(option);
+                        }
+                    });
+                    // Mostrem el formulari AQUÍ, dins del then
+                    document.getElementById('formulari-host').style.display = 'block';
+                });
+        }
+        function tancarFormulari() {
+            document.getElementById('formulari-host').style.display = 'none';
+        }
+        function afegirHost() {
+            var nom = document.getElementById('nom-host').value;
+            var sw = document.getElementById('switch-host').value;
+
+            fetch('/afegir_host', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({nom: nom, router: sw})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.ok) {
+                    tancarFormulari();
+                    location.reload();
+                } else {
+                    alert(data.error);
+                }
+            });
+        }
+        function mostrarFormulariRouter() {
+            // Carreguem els routers existents al desplegable
+            fetch('/topologia')
+                .then(response => response.json())
+                .then(data => {
+                    var select = document.getElementById('router-connectat');
+                    select.innerHTML = '';
+                    Object.keys(data.nodes).forEach(nom => {
+                        if (data.nodes[nom].tipus === 'router') {
+                            var option = document.createElement('option');
+                            option.value = nom;
+                            option.textContent = nom;
+                            select.appendChild(option);
+                        }
+                    });
+                });
+            document.getElementById('formulari-router').style.display = 'block';
+        }
+
+        function tancarFormulariRouter() {
+            document.getElementById('formulari-router').style.display = 'none';
+        }
+
+        function afegirRouter() {
+            var nom = document.getElementById('nom-router').value;
+            var select = document.getElementById('router-connectat');
+            var routersConnectats = Array.from(select.selectedOptions).map(o => o.value);
+
+            fetch('/afegir_router', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({nom: nom, routers_connectats: routersConnectats})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.ok) {
+                    tancarFormulariRouter();
+                    location.reload();
+                } else {
+                    alert(data.error);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
