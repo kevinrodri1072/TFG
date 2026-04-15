@@ -6,14 +6,14 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">
     <style>
-        #xarxa {
+        #network {
             width: 100%;
             height: 600px;
             border: 1px solid #ccc;
         }
 
-        /* Popup flotant */
-        #popup-node {
+        /* Floating popup */
+        #node-popup {
             display: none;
             position: fixed;
             background: white;
@@ -24,12 +24,18 @@
             z-index: 500;
             min-width: 120px;
         }
-        #popup-node .popup-titol {
+        #node-popup .popup-title {
             font-weight: bold;
             margin-bottom: 8px;
             font-size: 14px;
         }
-        #popup-node button {
+        #node-popup .popup-info {
+            font-size: 12px;
+            color: #555;
+            margin-bottom: 6px;
+            line-height: 1.6;
+        }
+        #node-popup button {
             display: block;
             width: 100%;
             margin: 3px 0;
@@ -37,8 +43,8 @@
             cursor: pointer;
         }
 
-        /* Modal de la matriu */
-        #modal-matriu {
+        /* Adjacency matrix modal */
+        #matrix-modal {
             display: none;
             position: fixed;
             top: 0; left: 0;
@@ -47,7 +53,7 @@
             z-index: 1000;
             overflow: auto;
         }
-        #modal-matriu .contingut {
+        #matrix-modal .content {
             background: white;
             margin: 5% auto;
             padding: 20px;
@@ -57,165 +63,187 @@
             max-height: 80vh;
             overflow-y: auto;
         }
-        #modal-matriu h2 { margin-top: 0; }
-        #taula-matriu {
+        #matrix-modal h2 { margin-top: 0; }
+        #matrix-table {
             border-collapse: collapse;
             width: 100%;
             font-size: 13px;
         }
-        #taula-matriu th, #taula-matriu td {
+        #matrix-table th, #matrix-table td {
             border: 1px solid #ccc;
             padding: 6px 10px;
             text-align: center;
         }
-        #taula-matriu th { background-color: #f0f0f0; font-weight: bold; }
-        #taula-matriu td.connexio-host   { background-color: #d4edda; color: #155724; }
-        #taula-matriu td.connexio-router { background-color: #cce5ff; color: #004085; }
-        #taula-matriu td.connexio-switch { background-color: #fff3cd; color: #856404; }
-        #taula-matriu td.cap-connexio    { color: #aaa; }
+        #matrix-table th { background-color: #f0f0f0; font-weight: bold; }
+        #matrix-table td.cell-host   { background-color: #d4edda; color: #155724; }
+        #matrix-table td.cell-router { background-color: #cce5ff; color: #004085; }
+        #matrix-table td.cell-switch { background-color: #fff3cd; color: #856404; }
+        #matrix-table td.cell-empty  { color: #aaa; }
     </style>
 </head>
 <body>
     <h1>Digital Twin Network</h1>
     <div id="controls">
-        <button onclick="mostrarFormulariRouter()">Afegir Router</button>
-        <button onclick="mostrarMatriu()">Veure Matriu</button>
+        <button onclick="showRouterForm()">Add Router</button>
+        <button onclick="showMatrix()">View Matrix</button>
+        <button onclick="saveNetwork()">Save Network</button>
+        <button onclick="document.getElementById('load-input').click()">Load Network</button>
+        <input type="file" id="load-input" accept=".mat" style="display:none" onchange="loadNetwork(this)">
     </div>
 
-    <!-- Popup flotant al clicar un node -->
-    <div id="popup-node">
-        <div class="popup-titol" id="popup-nom"></div>
-        <!-- Vista per defecte: botons -->
-        <div id="popup-botons">
-            <button id="popup-btn-host" style="display:none" onclick="mostrarInputHost()">Afegir Host</button>
-            <button onclick="eliminarNodeSeleccionat()">Eliminar</button>
+    <!-- Floating popup when hovering a node -->
+    <div id="node-popup">
+        <div class="popup-title" id="popup-title"></div>
+        <div class="popup-info" id="popup-info"></div>
+        <!-- Default view: buttons -->
+        <div id="popup-buttons">
+            <button id="btn-add-host" style="display:none" onclick="showAddHostInput()">Add Host</button>
+            <button onclick="removeSelectedNode()">Remove</button>
         </div>
-        <!-- Vista afegir host: input inline -->
-        <div id="popup-afegir-host" style="display:none">
-            <input type="text" id="nom-host" placeholder="Nom (ex: h6)" style="width:100%; margin: 4px 0;">
-            <input type="hidden" id="switch-host">
-            <button onclick="afegirHost()">Confirmar</button>
-            <button onclick="tancarInputHost()">Cancel·lar</button>
+        <!-- Add host view: inline input -->
+        <div id="popup-add-host" style="display:none">
+            <input type="text" id="host-name" placeholder="Name (e.g. h6)" style="width:100%; margin: 4px 0;">
+            <input type="hidden" id="host-router">
+            <button onclick="addHost()">Confirm</button>
+            <button onclick="closeAddHostInput()">Cancel</button>
         </div>
     </div>
 
-    <!-- Formulari afegir router -->
-    <div id="formulari-router" style="display:none; border:1px solid #ccc; padding:10px; margin:10px 0;">
-        <h3>Afegir nou router</h3>
-        <input type="text" id="nom-router" placeholder="Nom (ex: r3)">
-        <select id="router-connectat" multiple></select>
-        <button onclick="afegirRouter()">Confirmar</button>
-        <button onclick="tancarFormulariRouter()">Cancel·lar</button>
+    <!-- Add router form -->
+    <div id="router-form" style="display:none; border:1px solid #ccc; padding:10px; margin:10px 0;">
+        <h3>Add new router</h3>
+        <input type="text" id="router-name" placeholder="Name (e.g. r3)">
+        <select id="connected-router" multiple></select>
+        <button onclick="addRouter()">Confirm</button>
+        <button onclick="closeRouterForm()">Cancel</button>
     </div>
 
-    <!-- Modal matriu -->
-    <div id="modal-matriu">
-        <div class="contingut">
-            <h2>Matriu d'adjacència</h2>
+    <!-- Adjacency matrix modal -->
+    <div id="matrix-modal">
+        <div class="content">
+            <h2>Adjacency Matrix</h2>
             <label style="font-size:13px; margin-bottom:8px; display:inline-block;">
-                <input type="checkbox" id="checkbox-switches" onchange="renderMatriu()" checked>
-                Mostrar switches
+                <input type="checkbox" id="show-switches" onchange="renderMatrix()" checked>
+                Show switches
             </label>
             <div style="overflow-x: auto;">
-                <table id="taula-matriu"></table>
+                <table id="matrix-table"></table>
             </div>
             <br>
-            <button onclick="tancarMatriu()">Tancar</button>
+            <button onclick="closeMatrix()">Close</button>
         </div>
     </div>
 
-    <div id="xarxa"></div>
+    <div id="network"></div>
 
     <script>
-        var nodeSeleccionat = null;
-        var topologiaData = null;
+        var selectedNode = null;
+        var topologyData = null;
 
-        fetch('/topologia')
+        fetch('/topology')
             .then(response => response.json())
             .then(data => {
-                topologiaData = data;
+                topologyData = data;
                 var nodes = new vis.DataSet(
                     Object.keys(data.nodes)
-                        .filter(nom => data.nodes[nom].tipus !== 'switch')
-                        .map(nom => {
-                            var tipus = data.nodes[nom].tipus;
-                            var imatge = tipus === 'host' ? '/static/host.png' : '/static/router.png';
-                            return { id: nom, label: nom, shape: 'image', image: imatge, size: 30 };
+                        .filter(name => data.nodes[name].type !== 'switch')
+                        .map(name => {
+                            var type = data.nodes[name].type;
+                            var image = type === 'host' ? '/static/host.png' : '/static/router.png';
+                            return { id: name, label: name, shape: 'image', image: image, size: 30 };
                         })
                 );
                 var edges = new vis.DataSet(
                     data.links.filter(link =>
-                        data.nodes[link.from].tipus !== 'switch' &&
-                        data.nodes[link.to].tipus !== 'switch'
+                        data.nodes[link.from].type !== 'switch' &&
+                        data.nodes[link.to].type !== 'switch'
                     ).map(link => ({ from: link.from, to: link.to }))
                 );
-                var container = document.getElementById('xarxa');
+                var container = document.getElementById('network');
                 var network = new vis.Network(container, {nodes: nodes, edges: edges}, {
-                    interaction: { navigationButtons: false, keyboard: false }
+                    interaction: { navigationButtons: false, keyboard: false, hover: true }
                 });
 
-                network.on('click', function(params) {
-                    var popup = document.getElementById('popup-node');
-                    if (params.nodes.length > 0) {
-                        nodeSeleccionat = params.nodes[0];
-                        var tipus = topologiaData.nodes[nodeSeleccionat].tipus;
+                // Show popup on hover
+                network.on('hoverNode', function(params) {
+                    var popup = document.getElementById('node-popup');
+                    selectedNode = params.node;
+                    var type = topologyData.nodes[selectedNode].type;
 
-                        // Posicionem el popup a les coordenades del clic
-                        var x = params.event.srcEvent.clientX;
-                        var y = params.event.srcEvent.clientY;
-                        popup.style.left = (x + 10) + 'px';
-                        popup.style.top  = (y - 10) + 'px';
+                    var x = params.event.clientX;
+                    var y = params.event.clientY;
+                    popup.style.left = (x + 10) + 'px';
+                    popup.style.top  = (y - 10) + 'px';
 
-                        document.getElementById('popup-nom').textContent = nodeSeleccionat + ' (' + tipus + ')';
-                        document.getElementById('popup-btn-host').style.display = tipus === 'router' ? 'block' : 'none';
-                        popup.style.display = 'block';
-                    } else {
-                        nodeSeleccionat = null;
-                        popup.style.display = 'none';
+                    document.getElementById('popup-title').textContent = selectedNode + ' (' + type + ')';
+                    document.getElementById('btn-add-host').style.display = type === 'router' ? 'block' : 'none';
+
+                    // Show node info
+                    var infoDiv = document.getElementById('popup-info');
+                    var nodeProps = topologyData.nodes[selectedNode];
+                    if (type === 'host') {
+                        infoDiv.innerHTML = 'IP: ' + nodeProps.ip + '<br>GW: ' + nodeProps.gw;
+                    } else if (type === 'router') {
+                        infoDiv.innerHTML = 'eth0: ' + nodeProps.ips.eth0 + '<br>eth1: ' + nodeProps.ips.eth1;
                     }
+
+                    // Reset popup to default buttons view
+                    document.getElementById('popup-buttons').style.display = 'block';
+                    document.getElementById('popup-add-host').style.display = 'none';
+
+                    popup.style.display = 'block';
+                });
+
+                // Hide popup when mouse leaves node
+                network.on('blurNode', function(params) {
+                    setTimeout(function() {
+                        var popup = document.getElementById('node-popup');
+                        if (!popup.matches(':hover')) {
+                            popup.style.display = 'none';
+                            selectedNode = null;
+                        }
+                    }, 100);
                 });
             });
 
-        // Tancar popup en clicar fora
-        document.addEventListener('click', function(e) {
-            var popup = document.getElementById('popup-node');
-            if (!popup.contains(e.target) && !e.target.closest('#xarxa')) {
-                popup.style.display = 'none';
-            }
+        // Close popup when mouse leaves it
+        document.getElementById('node-popup').addEventListener('mouseleave', function() {
+            this.style.display = 'none';
+            selectedNode = null;
         });
 
-        function eliminarNodeSeleccionat() {
-            document.getElementById('popup-node').style.display = 'none';
-            if (nodeSeleccionat && confirm('Vols eliminar ' + nodeSeleccionat + '?')) {
-                fetch('/eliminar_node', {
+        function removeSelectedNode() {
+            document.getElementById('node-popup').style.display = 'none';
+            if (selectedNode && confirm('Do you want to remove ' + selectedNode + '?')) {
+                fetch('/remove_node', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({nom: nodeSeleccionat})
+                    body: JSON.stringify({name: selectedNode})
                 })
                 .then(response => response.json())
                 .then(data => { if (data.ok) location.reload(); });
             }
         }
 
-        function mostrarInputHost() {
-            document.getElementById('nom-host').value = '';
-            document.getElementById('switch-host').value = nodeSeleccionat;
-            document.getElementById('popup-botons').style.display = 'none';
-            document.getElementById('popup-afegir-host').style.display = 'block';
+        function showAddHostInput() {
+            document.getElementById('host-name').value = '';
+            document.getElementById('host-router').value = selectedNode;
+            document.getElementById('popup-buttons').style.display = 'none';
+            document.getElementById('popup-add-host').style.display = 'block';
         }
 
-        function tancarInputHost() {
-            document.getElementById('popup-afegir-host').style.display = 'none';
-            document.getElementById('popup-botons').style.display = 'block';
+        function closeAddHostInput() {
+            document.getElementById('popup-add-host').style.display = 'none';
+            document.getElementById('popup-buttons').style.display = 'block';
         }
 
-        function afegirHost() {
-            var nom = document.getElementById('nom-host').value;
-            var router = document.getElementById('switch-host').value;
-            fetch('/afegir_host', {
+        function addHost() {
+            var name = document.getElementById('host-name').value;
+            var router = document.getElementById('host-router').value;
+            fetch('/add_host', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({nom: nom, router: router})
+                body: JSON.stringify({name: name, router: router})
             })
             .then(response => response.json())
             .then(data => {
@@ -224,124 +252,148 @@
             });
         }
 
-        function mostrarFormulariRouter() {
-            fetch('/topologia')
+        function showRouterForm() {
+            fetch('/topology')
                 .then(response => response.json())
                 .then(data => {
-                    var select = document.getElementById('router-connectat');
+                    var select = document.getElementById('connected-router');
                     select.innerHTML = '';
-                    Object.keys(data.nodes).forEach(nom => {
-                        if (data.nodes[nom].tipus === 'router') {
+                    Object.keys(data.nodes).forEach(name => {
+                        if (data.nodes[name].type === 'router') {
                             var option = document.createElement('option');
-                            option.value = nom;
-                            option.textContent = nom;
+                            option.value = name;
+                            option.textContent = name;
                             select.appendChild(option);
                         }
                     });
                 });
-            document.getElementById('formulari-router').style.display = 'block';
+            document.getElementById('router-form').style.display = 'block';
         }
 
-        function tancarFormulariRouter() {
-            document.getElementById('formulari-router').style.display = 'none';
+        function closeRouterForm() {
+            document.getElementById('router-form').style.display = 'none';
         }
 
-        function afegirRouter() {
-            var nom = document.getElementById('nom-router').value;
-            var select = document.getElementById('router-connectat');
-            var routersConnectats = Array.from(select.selectedOptions).map(o => o.value);
-            fetch('/afegir_router', {
+        function addRouter() {
+            var name = document.getElementById('router-name').value;
+            var select = document.getElementById('connected-router');
+            var connectedRouters = Array.from(select.selectedOptions).map(o => o.value);
+            fetch('/add_router', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({nom: nom, routers_connectats: routersConnectats})
+                body: JSON.stringify({name: name, connected_routers: connectedRouters})
             })
             .then(response => response.json())
             .then(data => {
-                if (data.ok) { tancarFormulariRouter(); location.reload(); }
+                if (data.ok) { closeRouterForm(); location.reload(); }
                 else alert(data.error);
             });
         }
 
-        var matriuData = null;
+        var matrixData = null;
 
-        function mostrarMatriu() {
-            fetch('/matriu')
+        function showMatrix() {
+            fetch('/matrix')
                 .then(response => response.json())
                 .then(data => {
-                    matriuData = data;
-                    renderMatriu();
-                    document.getElementById('modal-matriu').style.display = 'block';
+                    matrixData = data;
+                    renderMatrix();
+                    document.getElementById('matrix-modal').style.display = 'block';
                 });
         }
 
-        function renderMatriu() {
-            if (!matriuData) return;
-            var mostrarSwitches = document.getElementById('checkbox-switches').checked;
-            var noms = matriuData.noms;
-            var matriu = matriuData.matriu;
+        function renderMatrix() {
+            if (!matrixData) return;
+            var showSwitches = document.getElementById('show-switches').checked;
+            var names = matrixData.names;
+            var matrix = matrixData.matrix;
 
-            // Si no mostrem switches, filtrem les files i columnes de switches
-            // i connectem hosts directament als routers
-            var indexos, nomsFiltre;
-            if (mostrarSwitches) {
-                indexos = noms.map((_, i) => i);
-                nomsFiltre = noms;
+            var indices, filteredNames;
+            if (showSwitches) {
+                indices = names.map((_, i) => i);
+                filteredNames = names;
             } else {
-                indexos = noms.map((n, i) => ({ n, i }))
-                              .filter(x => !x.n.startsWith('sw'))
-                              .map(x => x.i);
-                nomsFiltre = indexos.map(i => noms[i]);
+                indices = names.map((n, i) => ({ n, i }))
+                               .filter(x => !x.n.startsWith('sw'))
+                               .map(x => x.i);
+                filteredNames = indices.map(i => names[i]);
             }
 
-            var taula = document.getElementById('taula-matriu');
-            taula.innerHTML = '';
+            var table = document.getElementById('matrix-table');
+            table.innerHTML = '';
 
-            // Capçalera
-            var cap = '<tr><th></th>';
-            nomsFiltre.forEach(nom => cap += `<th>${nom}</th>`);
-            cap += '</tr>';
-            taula.innerHTML += cap;
+            // Header row
+            var header = '<tr><th></th>';
+            filteredNames.forEach(name => header += `<th>${name}</th>`);
+            header += '</tr>';
+            table.innerHTML += header;
 
-            // Files
-            indexos.forEach(i => {
-                var tr = `<tr><th>${noms[i]}</th>`;
-                indexos.forEach(j => {
-                    var cel;
-                    if (!mostrarSwitches) {
-                        // Si els dos nodes no son switches, busquem connexió directa o via switch
-                        var tipusI = noms[i].startsWith('r') ? 'router' : 'host';
-                        var tipusJ = noms[j].startsWith('r') ? 'router' : 'host';
+            // Data rows
+            indices.forEach(i => {
+                var tr = `<tr><th>${names[i]}</th>`;
+                indices.forEach(j => {
+                    var cell;
+                    if (!showSwitches) {
+                        var typeI = names[i].startsWith('r') ? 'router' : 'host';
                         if (i === j) {
-                            cel = 0;
+                            cell = 0;
+                        } else if (matrix[i][j] !== 0) {
+                            cell = matrix[i][j];
                         } else {
-                            // Connexió directa
-                            if (matriu[i][j] !== 0) {
-                                cel = matriu[i][j];
-                            } else {
-                                // Connexió via switch: busquem switch comú
-                                var switchComu = noms.findIndex((n, k) =>
-                                    n.startsWith('sw') && matriu[i][k] !== 0 && matriu[j][k] !== 0
-                                );
-                                cel = switchComu !== -1 ? tipusI : 0;
-                            }
+                            var commonSwitch = names.findIndex((n, k) =>
+                                n.startsWith('sw') && matrix[i][k] !== 0 && matrix[j][k] !== 0
+                            );
+                            cell = commonSwitch !== -1 ? typeI : 0;
                         }
                     } else {
-                        cel = matriu[i][j];
+                        cell = matrix[i][j];
                     }
 
-                    if (cel === 0)             tr += `<td class="cap-connexio">0</td>`;
-                    else if (cel === 'host')   tr += `<td class="connexio-host">host</td>`;
-                    else if (cel === 'router') tr += `<td class="connexio-router">router</td>`;
-                    else if (cel === 'switch') tr += `<td class="connexio-switch">switch</td>`;
-                    else                       tr += `<td>${cel}</td>`;
+                    if (cell === 0)             tr += `<td class="cell-empty">0</td>`;
+                    else if (cell === 'host')   tr += `<td class="cell-host">host</td>`;
+                    else if (cell === 'router') tr += `<td class="cell-router">router</td>`;
+                    else if (cell === 'switch') tr += `<td class="cell-switch">switch</td>`;
+                    else                        tr += `<td>${cell}</td>`;
                 });
                 tr += '</tr>';
-                taula.innerHTML += tr;
+                table.innerHTML += tr;
             });
         }
 
-        function tancarMatriu() {
-            document.getElementById('modal-matriu').style.display = 'none';
+        function closeMatrix() {
+            document.getElementById('matrix-modal').style.display = 'none';
+        }
+
+        function saveNetwork() {
+            var a = document.createElement('a');
+            a.href = '/export';
+            a.download = 'network.mat';
+            a.click();
+        }
+
+        function loadNetwork(input) {
+            var file = input.files[0];
+            if (!file) return;
+
+            var formData = new FormData();
+            formData.append('file', file);
+
+            fetch('/load_network', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.ok) {
+                    // Wait for Mininet to restart then reload
+                    setTimeout(() => location.reload(), 4000);
+                } else {
+                    alert('Error loading network: ' + data.error);
+                }
+            });
+
+            // Reset input so the same file can be loaded again
+            input.value = '';
         }
     </script>
 </body>

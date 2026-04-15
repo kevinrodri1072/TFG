@@ -1,16 +1,17 @@
-##### SCRIPT PYTHON QUE AIXECA UNA XARXA A MININET #####
+##### PYTHON SCRIPT THAT STARTS A MININET NETWORK #####
 
 from mininet.net import Mininet
 from mininet.log import setLogLevel
 from mininet.cli import CLI
 
-# Si es desitja afegir més màquines (ja sigui hosts o routers), el procés és simple: S'afegeix una columna i una fila a la matriu d'adjacència que representarà la nova màquina i es definirà
-# al diccionari de nodes aquesta nova màquina amb les seves propietats. 
+# To add more machines (hosts or routers), the process is simple: add a column and a row to the
+# adjacency matrix representing the new machine, and define the new machine in the node dictionary
+# with its properties.
 
-# Matriu d'adjacència que representa la xarxa que tenim. Cada fila i columna representa una màquina.
-# Les cel·les amb valor 0 indiquen que no hi ha connexió. Les cel·les amb un string indiquen el tipus
-# del node de la fila quan hi ha connexió (ex: 'host', 'router', 'switch').
-matriu_xarxa = [
+# Adjacency matrix representing the network. Each row and column represents a machine.
+# Cells with value 0 indicate no connection. Cells with a string indicate the type
+# of the row node when there is a connection (e.g. 'host', 'router', 'switch').
+network_matrix = [
   # h1       h2       h3       h4       h5       r1         r2        sw1       sw2
     [0,       0,       0,       0,       0,       0,         0,       'host',    0      ],  # h1
     [0,       0,       0,       0,       0,       0,         0,       'host',    0      ],  # h2
@@ -23,232 +24,230 @@ matriu_xarxa = [
     [0,       0,      'switch','switch','switch',  0,       'switch',  0,        0      ],  # sw2
 ]
 
-# Diccionari de nodes de la xarxa (nodes i les seves propietats). 
+# Node dictionary with each node's properties.
 nodes = {
-    'h1' : {'tipus': 'host', 'ip': '10.1.0.2/24', 'gw': '10.1.0.1'},
-    'h2' : {'tipus': 'host', 'ip': '10.1.0.3/24', 'gw': '10.1.0.1'},
-    'h3' : {'tipus': 'host', 'ip': '10.2.0.2/24', 'gw': '10.2.0.1'},
-    'h4' : {'tipus': 'host', 'ip': '10.2.0.3/24', 'gw': '10.2.0.1'},
-    'h5' : {'tipus': 'host', 'ip': '10.2.0.4/24', 'gw': '10.2.0.1'},
-    'r1' : {'tipus': 'router',
-            'ips':{'eth0': '10.0.0.1/24', 'eth1': '10.1.0.1/24'},
-            'rutes': ['10.2.0.0/24 via 10.0.0.2']},
-    'r2' : {'tipus': 'router', 
-            'ips':{'eth0': '10.0.0.2/24', 'eth1': '10.2.0.1/24'},
-            'rutes': ['10.1.0.0/24 via 10.0.0.1']},
-    'sw1' : {'tipus': 'switch'},
-    'sw2' : {'tipus': 'switch'}
+    'h1' : {'type': 'host', 'ip': '10.1.0.2/24', 'gw': '10.1.0.1'},
+    'h2' : {'type': 'host', 'ip': '10.1.0.3/24', 'gw': '10.1.0.1'},
+    'h3' : {'type': 'host', 'ip': '10.2.0.2/24', 'gw': '10.2.0.1'},
+    'h4' : {'type': 'host', 'ip': '10.2.0.3/24', 'gw': '10.2.0.1'},
+    'h5' : {'type': 'host', 'ip': '10.2.0.4/24', 'gw': '10.2.0.1'},
+    'r1' : {'type': 'router',
+            'ips': {'eth0': '10.0.0.1/24', 'eth1': '10.1.0.1/24'},
+            'routes': ['10.2.0.0/24 via 10.0.0.2']},
+    'r2' : {'type': 'router',
+            'ips': {'eth0': '10.0.0.2/24', 'eth1': '10.2.0.1/24'},
+            'routes': ['10.1.0.0/24 via 10.0.0.1']},
+    'sw1' : {'type': 'switch'},
+    'sw2' : {'type': 'switch'}
 }
 
 net = None
-# Creem una llista buida on anirem guardant les diferents màquines.
+# Empty dictionary to store Mininet node objects.
 mininet_nodes = {}
 
-xarxa_llesta = False
+network_ready = False
 
-# Funció que aixeca la xarxa
-def iniciar_xarxa():
-    global net, mininet_nodes, xarxa_llesta
-    # Creem la xarxa buida.
+# Function that starts the network
+def start_network():
+    global net, mininet_nodes, network_ready
+    # Create empty network.
     net = Mininet()
-    # Creem les diferents màquines de la nostra xarxa.
-    for nom, propietats in nodes.items():
-        if propietats['tipus'] == 'host':
-            mininet_nodes[nom] = net.addHost(nom, ip = propietats['ip'])
-        elif propietats['tipus'] == 'router':
-            mininet_nodes[nom] = net.addHost(nom, ip = propietats['ips']['eth0'])
-        elif propietats['tipus'] == 'switch':
-            mininet_nodes[nom] = net.addSwitch(nom, failMode = 'standalone')
-    # Creem una llista amb els noms dels nodes en el ordre de la matriu.
-    noms_nodes = list(nodes.keys())
-    # Creem els links entre les diferents màquines a partir de la matriu.
-    # Comprovem != 0 en lloc de == 1 perquè ara les cel·les contenen strings o 0.
-    for i in range(len(matriu_xarxa)):
-        for j in range(i+1, len(matriu_xarxa)):
-            if matriu_xarxa[i][j] != 0:
-                net.addLink(mininet_nodes[noms_nodes[i]], mininet_nodes[noms_nodes[j]])
-    # Arranquem la xarxa
+    # Create all network machines.
+    for name, props in nodes.items():
+        if props['type'] == 'host':
+            mininet_nodes[name] = net.addHost(name, ip=props['ip'])
+        elif props['type'] == 'router':
+            mininet_nodes[name] = net.addHost(name, ip=props['ips']['eth0'])
+        elif props['type'] == 'switch':
+            mininet_nodes[name] = net.addSwitch(name, failMode='standalone')
+    # Create list of node names in matrix order.
+    node_names = list(nodes.keys())
+    # Create links between machines based on the adjacency matrix.
+    # We check != 0 instead of == 1 because cells now contain strings or 0.
+    for i in range(len(network_matrix)):
+        for j in range(i + 1, len(network_matrix)):
+            if network_matrix[i][j] != 0:
+                net.addLink(mininet_nodes[node_names[i]], mininet_nodes[node_names[j]])
+    # Start the network
     net.start()
-    # Definim les IPs de les interfícies dels routers
-    for nom, propietats in nodes.items():
-        if propietats['tipus'] == 'router':
-            for eth, ip in propietats['ips'].items():
-                mininet_nodes[nom].cmd(f'ifconfig {nom}-{eth} {ip}')
-    # Activem IP Forwarding als routers
-    for nom, propietats in nodes.items():
-        if propietats['tipus'] == 'router':
-            mininet_nodes[nom].cmd('sysctl -w net.ipv4.ip_forward=1')
-    # Afegim les rutes per defecte als hosts
-    for nom, propietats in nodes.items():
-        if propietats['tipus'] == 'host':
-            mininet_nodes[nom].cmd(f'ip route add default via {propietats["gw"]}')
-    # Afegim les rutes als routers
-    for nom, propietats in nodes.items():
-        if propietats['tipus'] == 'router':
-            for ruta in propietats['rutes']:
-                mininet_nodes[nom].cmd(f'ip route add {ruta}')
-    xarxa_llesta = True
+    # Assign IPs to router interfaces
+    for name, props in nodes.items():
+        if props['type'] == 'router':
+            for eth, ip in props['ips'].items():
+                mininet_nodes[name].cmd(f'ifconfig {name}-{eth} {ip}')
+    # Enable IP forwarding on routers
+    for name, props in nodes.items():
+        if props['type'] == 'router':
+            mininet_nodes[name].cmd('sysctl -w net.ipv4.ip_forward=1')
+    # Add default routes on hosts
+    for name, props in nodes.items():
+        if props['type'] == 'host':
+            mininet_nodes[name].cmd(f'ip route add default via {props["gw"]}')
+    # Add routes on routers
+    for name, props in nodes.items():
+        if props['type'] == 'router':
+            for route in props['routes']:
+                mininet_nodes[name].cmd(f'ip route add {route}')
+    network_ready = True
     # net.stop()
 
-def trobar_router_del_switch(switch):
-    noms = list(nodes.keys())
-    idx_switch = noms.index(switch)
-    for i, val in enumerate(matriu_xarxa[idx_switch]):
-        # Comprovem != 0 per detectar connexió, i després mirem el tipus
-        if val != 0 and nodes[noms[i]]['tipus'] == 'router':
-            return noms[i]
+# Function that restarts the network with a new topology (matrix + nodes)
+def restart_network(new_matrix, new_nodes):
+    global net, mininet_nodes, network_ready, network_matrix, nodes
+
+    # Mark network as not ready while restarting
+    network_ready = False
+
+    # Stop current network
+    if net is not None:
+        net.stop()
+
+    # Clear Mininet nodes
+    mininet_nodes = {}
+
+    # Replace matrix and node dictionary
+    network_matrix.clear()
+    for row in new_matrix:
+        network_matrix.append(row)
+
+    nodes.clear()
+    nodes.update(new_nodes)
+
+    # Restart network with new topology
+    start_network()
+
+def find_router_of_switch(switch):
+    names = list(nodes.keys())
+    switch_idx = names.index(switch)
+    for i, val in enumerate(network_matrix[switch_idx]):
+        # Check != 0 to detect connection, then check type
+        if val != 0 and nodes[names[i]]['type'] == 'router':
+            return names[i]
     return None
 
-def trobar_seguent_ip(router):
-    # Agafem la IP del router cap a la subxarxa (eth1)
-    ip_router = nodes[router]['ips']['eth1']  # ex: '10.1.0.1/24'
-    # Agafem la base de la subxarxa
-    base = ip_router.rsplit('.', 1)[0]  # ex: '10.1.0'
-    mascara = ip_router.split('/')[1]   # ex: '24'
-    
-    # Recollim totes les IPs usades a aquesta subxarxa
-    ips_usades = []
-    for nom, propietats in nodes.items():
-        if propietats['tipus'] == 'host' and 'ip' in propietats:
-            ip = propietats['ip'].split('/')[0]  # ex: '10.1.0.2'
+def find_next_ip(router):
+    # Get the router IP towards the subnet (eth1)
+    router_ip = nodes[router]['ips']['eth1']  # e.g. '10.1.0.1/24'
+    # Get subnet base
+    base = router_ip.rsplit('.', 1)[0]  # e.g. '10.1.0'
+    mask = router_ip.split('/')[1]      # e.g. '24'
+
+    # Collect all used IPs in this subnet
+    used_ips = []
+    for name, props in nodes.items():
+        if props['type'] == 'host' and 'ip' in props:
+            ip = props['ip'].split('/')[0]  # e.g. '10.1.0.2'
             if ip.startswith(base):
-                ips_usades.append(int(ip.split('.')[-1]))  # ex: 2
-    
-    # Trobem el següent número lliure (comencem des del 2)
-    seguent = 2
-    while seguent in ips_usades:
-        seguent += 1
-    
-    return f'{base}.{seguent}/{mascara}'
+                used_ips.append(int(ip.split('.')[-1]))  # e.g. 2
 
-def actualitzar_matriu(nom, switch):
-    noms = list(nodes.keys())
-    idx_switch = noms.index(switch)
-    print(f"noms: {noms}")
-    print(f"idx_switch: {idx_switch}")
-    
-    for fila in matriu_xarxa:
-        fila.append(0)
-    
-    nova_fila = [0] * len(matriu_xarxa[0])
-    matriu_xarxa.append(nova_fila)
-    
-    idx_nou = len(matriu_xarxa) -1
-    print(f"idx_nou: {idx_nou}")
-    print(f"len(matriu_xarxa): {len(matriu_xarxa)}")
-    print(f"len(matriu_xarxa[idx_nou]): {len(matriu_xarxa[idx_nou])}")
-    
-    tipus_nou    = nodes[nom]['tipus']
-    tipus_switch = nodes[switch]['tipus']
-    matriu_xarxa[idx_nou][idx_switch] = tipus_nou
-    matriu_xarxa[idx_switch][idx_nou] = tipus_switch
+    # Find next available number (starting from 2)
+    next_num = 2
+    while next_num in used_ips:
+        next_num += 1
 
-'''
+    return f'{base}.{next_num}/{mask}'
 
-def actualitzar_matriu(nom, switch):
-    noms = list(nodes.keys())  # encara sense el nou node
-    idx_switch = noms.index(switch)
-    
-    # Afegim una columna de zeros a cada fila existent
-    for fila in matriu_xarxa:
-        fila.append(0)
-    
-    # Afegim una fila nova de zeros per al nou node
-    nova_fila = [0] * len(matriu_xarxa[0])
-    matriu_xarxa.append(nova_fila)
-    
-    # L'índex del nou node és l'últim
-    idx_nou = len(noms)
+def update_matrix(name, switch):
+    names = list(nodes.keys())
+    switch_idx = names.index(switch)
 
-    # Posem el tipus de cada node a la cel·la corresponent
-    tipus_nou    = nodes[nom]['tipus']     # tipus del nou node (ex: 'host')
-    tipus_switch = nodes[switch]['tipus']  # tipus del switch (ex: 'switch')
+    # Add a zero column to each existing row
+    for row in network_matrix:
+        row.append(0)
 
-    matriu_xarxa[idx_nou][idx_switch] = tipus_nou
-    matriu_xarxa[idx_switch][idx_nou] = tipus_switch
+    # Add a new zero row for the new node
+    new_row = [0] * len(network_matrix[0])
+    network_matrix.append(new_row)
 
-'''
+    # The new node index is the last one
+    new_idx = len(network_matrix) - 1
 
-def actualitzar_matriu_multi(nom, connectats):
-    noms = list(nodes.keys())
-    
-    # Afegim una columna de zeros a cada fila existent
-    for fila in matriu_xarxa:
-        fila.append(0)
-    
-    # Afegim una fila nova de zeros per al nou node
-    nova_fila = [0] * len(matriu_xarxa[0])
-    matriu_xarxa.append(nova_fila)
-    
-    # L'índex del nou node és l'últim
-    idx_nou = len(matriu_xarxa) - 1
-    
-    # Posem el tipus de cada node a la cel·la corresponent per a cada connexió
-    tipus_nou = nodes[nom]['tipus']  # tipus del nou node (ex: 'router')
-    for connectat in connectats:
-        idx_connectat = noms.index(connectat)
-        tipus_connectat = nodes[connectat]['tipus']  # tipus del node connectat
-        matriu_xarxa[idx_nou][idx_connectat] = tipus_nou
-        matriu_xarxa[idx_connectat][idx_nou] = tipus_connectat
+    # Set the type of each node in the corresponding cell
+    new_type    = nodes[name]['type']
+    switch_type = nodes[switch]['type']
+    network_matrix[new_idx][switch_idx] = new_type
+    network_matrix[switch_idx][new_idx] = switch_type
 
-def eliminar_de_matriu(nom):
-    noms = list(nodes.keys())
-    idx = noms.index(nom)
-    matriu_xarxa.pop(idx)
-    for fila in matriu_xarxa:
-        fila.pop(idx)
+def update_matrix_multi(name, connected):
+    names = list(nodes.keys())
 
-def trobar_seguent_ip_router():
+    # Add a zero column to each existing row
+    for row in network_matrix:
+        row.append(0)
+
+    # Add a new zero row for the new node
+    new_row = [0] * len(network_matrix[0])
+    network_matrix.append(new_row)
+
+    # The new node index is the last one
+    new_idx = len(network_matrix) - 1
+
+    # Set the type of each node in the corresponding cell for each connection
+    new_type = nodes[name]['type']  # type of new node (e.g. 'router')
+    for conn in connected:
+        conn_idx = names.index(conn)
+        conn_type = nodes[conn]['type']  # type of connected node
+        network_matrix[new_idx][conn_idx] = new_type
+        network_matrix[conn_idx][new_idx] = conn_type
+
+def remove_from_matrix(name):
+    names = list(nodes.keys())
+    idx = names.index(name)
+    network_matrix.pop(idx)
+    for row in network_matrix:
+        row.pop(idx)
+
+def find_next_router_ip():
     base = '10.0.0'
-    mascara = '24'
-    ips_usades = []
-    for nom, propietats in nodes.items():
-        if propietats['tipus'] == 'router':    
-            ip = propietats['ips']['eth0'].split('/')[0]
-            ips_usades.append(int(ip.split('.')[-1]))
-    seguent = 1
-    while seguent in ips_usades:
-        seguent += 1
-    return f'{base}.{seguent}/{mascara}'
+    mask = '24'
+    used_ips = []
+    for name, props in nodes.items():
+        if props['type'] == 'router':
+            ip = props['ips']['eth0'].split('/')[0]
+            used_ips.append(int(ip.split('.')[-1]))
+    next_num = 1
+    while next_num in used_ips:
+        next_num += 1
+    return f'{base}.{next_num}/{mask}'
 
-def trobar_seguent_subxarxa():
-    subxarxes_usades = []
-    for nom, propietats in nodes.items():
-        if propietats['tipus'] == 'router':
-            ip_eth1 = propietats['ips']['eth1'].split('/')[0]
-            segon_octet = int(ip_eth1.split('.')[1])
-            subxarxes_usades.append(segon_octet)
-    seguent = 1
-    while seguent in subxarxes_usades:
-        seguent += 1
-    return seguent
+def find_next_subnet():
+    used_subnets = []
+    for name, props in nodes.items():
+        if props['type'] == 'router':
+            ip_eth1 = props['ips']['eth1'].split('/')[0]
+            second_octet = int(ip_eth1.split('.')[1])
+            used_subnets.append(second_octet)
+    next_num = 1
+    while next_num in used_subnets:
+        next_num += 1
+    return next_num
 
-def trobar_subxarxa_router(router):
+def find_router_subnet(router):
     base = nodes[router]['ips']['eth1'].rsplit('.', 1)[0]
-    nodes_a_eliminar = []
-    for nom, propietats in nodes.items():
-        if propietats['tipus'] == 'host' and 'ip' in propietats:
-            ip = propietats['ip'].split('/')[0]
+    nodes_to_remove = []
+    for name, props in nodes.items():
+        if props['type'] == 'host' and 'ip' in props:
+            ip = props['ip'].split('/')[0]
             if ip.startswith(base):
-                nodes_a_eliminar.append(nom)
-    noms = list(nodes.keys())
-    idx_router = noms.index(router)
-    for i, val in enumerate(matriu_xarxa[idx_router]):
-        # Comprovem != 0 per detectar connexió, i després mirem el tipus
-        if val != 0 and nodes[noms[i]]['tipus'] == 'switch':
-            nodes_a_eliminar.append(noms[i])
-    return nodes_a_eliminar
+                nodes_to_remove.append(name)
+    names = list(nodes.keys())
+    router_idx = names.index(router)
+    for i, val in enumerate(network_matrix[router_idx]):
+        # Check != 0 to detect connection, then check type
+        if val != 0 and nodes[names[i]]['type'] == 'switch':
+            nodes_to_remove.append(names[i])
+    return nodes_to_remove
 
-def trobar_switch_del_router(router):
-    noms = list(nodes.keys())
-    idx_router = noms.index(router)
-    for i, val in enumerate(matriu_xarxa[idx_router]):
-        # Comprovem != 0 per detectar connexió, i després mirem el tipus
-        if val != 0 and nodes[noms[i]]['tipus'] == 'switch':
-            return noms[i]
+def find_switch_of_router(router):
+    names = list(nodes.keys())
+    router_idx = names.index(router)
+    for i, val in enumerate(network_matrix[router_idx]):
+        # Check != 0 to detect connection, then check type
+        if val != 0 and nodes[names[i]]['type'] == 'switch':
+            return names[i]
     return None
 
 
 if __name__ == '__main__':
     setLogLevel('info')
-    iniciar_xarxa()
+    start_network()
