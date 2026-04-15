@@ -8,7 +8,7 @@ import io
 import numpy as np
 from scipy.io import savemat, loadmat
 
-DIGITAL_TWIN_IP = '10.4.39.110'  # IP of the Twin.
+DIGITAL_TWIN_IP = '10.4.39.153'  # IP of the Twin.
 DIGITAL_TWIN_PORT = 5000 
 
 # Conversion map string <-> number for saving to .mat
@@ -106,15 +106,18 @@ def export():
 # Function that loads a new network from a .mat archive.
 @app.route('/load_network', methods=['POST'])
 def load_network():
-    is_sync = request.form.get('sync', 'false') == 'true'
-
-    if is_sync:
-        # Twin receives topology directly as JSON
-        data = request.json
+    """
+    Loads a new network topology from a .mat file (Original) or JSON (Twin).
+    """
+    # Check if the request is a JSON synchronization from the Original PC
+    if request.is_json:
+        data = request.get_json()
+        is_sync = data.get('sync', False)
         new_matrix = data['matrix']
-        new_nodes  = data['nodes']
+        new_nodes = data['nodes']
     else:
-        # Original PC receives a .mat file
+        # Request comes from the UI as a .mat file upload
+        is_sync = False
         file = request.files.get('file')
         if not file:
             return jsonify({'ok': False, 'error': 'No file received'})
@@ -122,21 +125,21 @@ def load_network():
         buffer = io.BytesIO(file.read())
         mat = loadmat(buffer)
 
-        # Convert matrix from numbers to strings
+        # Convert numeric matrix back to string types (host, router, switch)
         matrix_num = mat['matrix'].tolist()
         new_matrix = [
             [NUM_TO_TYPE[int(cell)] for cell in row]
             for row in matrix_num
         ]
 
-        # Rebuild node dictionary from JSON
+        # Deserialize the node dictionary
         nodes_json = str(mat['nodes_json'][0]) if isinstance(mat['nodes_json'], np.ndarray) else mat['nodes_json']
         new_nodes = json.loads(nodes_json)
 
-    # Restart network with new topology
+    # Restart the network in a separate thread to prevent Flask timeout
     threading.Thread(target=xarxa.restart_network, args=(new_matrix, new_nodes)).start()
 
-    # Synchronize to twin if not already a sync
+    # If this is the Original PC, push the new topology to the Twin
     if not is_sync:
         synchronize_full_network(new_matrix, new_nodes)
 
@@ -144,16 +147,19 @@ def load_network():
 
 # Function that sends the new matrix and the new nodes to the twin PC when a .mat archive is load to the original PC.
 def synchronize_full_network(new_matrix, new_nodes):
-    # Convert matrix to list of lists to send as JSON
+    """
+    Sends the processed topology to the Twin PC to ensure consistency.
+    """
     serializable_matrix = [
         [cell if isinstance(cell, str) else int(cell) for cell in row]
         for row in new_matrix
     ]
     try:
+        # Send data as JSON to the same endpoint
         requests.post(
             f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/load_network',
             json={'matrix': serializable_matrix, 'nodes': new_nodes, 'sync': True},
-            params={'sync': 'true'}
+            timeout=10
         )
     except Exception as e:
         print(f'Full network synchronization error: {e}')
@@ -297,4 +303,4 @@ if __name__ == '__main__':
     t.daemon = True
     t.start()
     time.sleep(3)
-    app.run(host='0.0.0.0', debug=False)
+    app.run(debug=False)
