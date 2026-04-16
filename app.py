@@ -27,7 +27,11 @@ def synchronize(route, data):
     try:
         data['sync'] = True  # mark as synchronization
         data['timestamp'] = time.time()  # timestamp to measure latency
-        requests.post(f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}{route}', json=data)
+        response = requests.post(f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}{route}', json=data)
+        result = response.json()
+        if 'latency_ms' in result:
+            op = route.strip('/')
+            record_sync_latency(op, result['latency_ms'])
     except Exception as e:
         print(f'Synchronization error: {e}')
 
@@ -124,12 +128,18 @@ def load_network():
     """
     Loads a new network topology from a .mat file (Original) or JSON (Twin).
     """
+    
     # Check if the request is a JSON synchronization from the Original PC
     if request.is_json:
         data = request.get_json()
         is_sync = data.get('sync', False)
         new_matrix = data['matrix']
         new_nodes = data['nodes']
+
+        if is_sync and 'timestamp' in data:
+            latency_ms = (time.time() - data['timestamp']) * 1000
+            record_sync_latency('load_network', latency_ms)
+        
     else:
         # Request comes from the UI as a .mat file upload
         is_sync = False
@@ -158,6 +168,9 @@ def load_network():
     if not is_sync:
         synchronize_full_network(new_matrix, new_nodes)
 
+    if is_sync and 'latency_ms' in locals():
+        return jsonify({'ok': True, 'latency_ms': round(latency_ms, 2)})
+
     return jsonify({'ok': True})
 
 # Function that sends the new matrix and the new nodes to the twin PC when a .mat archive is load to the original PC.
@@ -171,11 +184,13 @@ def synchronize_full_network(new_matrix, new_nodes):
     ]
     try:
         # Send data as JSON to the same endpoint
+        ts = time.time()
         requests.post(
             f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/load_network',
-            json={'matrix': serializable_matrix, 'nodes': new_nodes, 'sync': True},
-            timeout=10
+            json={'matrix': serializable_matrix, 'nodes': new_nodes, 'sync': True, 'timestamp': time.time()}, timeout=10
         )
+        latency_ms = (time.time() - ts) * 1000
+        record_sync_latency('load_network', latency_ms)
     except Exception as e:
         print(f'Full network synchronization error: {e}')
 
@@ -213,11 +228,17 @@ def add_host():
 
     new_host.cmd(f'ifconfig {name}-eth0 {ip}')
     new_host.cmd(f'ip route add default via {gw}')
+    new_host.cmd('ifconfig lo up')
+    new_host.cmd('ip link set lo up')
+    new_host.cmd(f'ip link set {name}-eth0 up')
+    sw_node.cmd(f'ip link set {sw_intf_name} up')
+    sw_node.cmd(f'ovs-vsctl add-port {switch} {sw_intf_name}') 
 
     if is_sync and 'timestamp' in data:
         latency_ms = (time.time() - data['timestamp']) * 1000
         print(f'[LATENCY] add_host: {latency_ms:.2f} ms')
         record_sync_latency('add_host', latency_ms)
+        return jsonify({'ok': True, 'latency_ms': round(latency_ms, 2)})
 
     if not is_sync:
         synchronize('/add_host', {'name': name, 'router': router})
@@ -255,7 +276,7 @@ def remove_node():
         latency_ms = (time.time() - data['timestamp']) * 1000
         print(f'[LATENCY] remove_node: {latency_ms:.2f} ms')
         record_sync_latency('remove_node', latency_ms)
-
+        return jsonify({'ok': True, 'latency_ms': round(latency_ms, 2)})
     if not is_sync:
         synchronize('/remove_node', {'name': name})
     return jsonify({'ok': True})
@@ -311,6 +332,7 @@ def add_router():
         latency_ms = (time.time() - data['timestamp']) * 1000
         print(f'[LATENCY] add_router: {latency_ms:.2f} ms')
         record_sync_latency('add_router', latency_ms)
+        return jsonify({'ok': True, 'latency_ms': round(latency_ms, 2)})
 
     if not is_sync:
         synchronize('/add_router', {'name': router_name, 'connected_routers': connected_routers})
@@ -366,24 +388,32 @@ def metrics_internal():
     bandwidth = {'min': None, 'avg': None, 'max': None}
     bw_values = []
 
-    # Start iperf server on dst
-    dst_node.cmd('pkill -f iperf; sleep 0.2')
-    dst_node.cmd('iperf -s -D')
-    time.sleep(0.3)
+    try:
+        dst_node.cmd('pkill -f iperf 2>/dev/null; sleep 0.2')
+        dst_node.sendCmd('iperf -s')
+        time.sleep(0.5)
 
-    for _ in range(3):
-        iperf_out = src_node.cmd(f'iperf -c {dst_ip} -t 2 -f m')
-        # Parse "X.X Mbits/sec"
-        bw_match = re.search(r'([\d.]+)\s+Mbits/sec', iperf_out)
-        if bw_match:
-            bw_values.append(float(bw_match.group(1)))
+        for _ in range(3):
+            iperf_out = src_node.cmd(f'iperf -c {dst_ip} -t 2 -f m')
+            bw_match = re.search(r'([\d.]+)\s+Mbits/sec', iperf_out)
+            if bw_match:
+                bw_values.append(float(bw_match.group(1)))
 
-    dst_node.cmd('pkill -f iperf')
+        dst_node.sendInt()
+        dst_node.waitOutput()
+    except Exception as e:
+        print(f'iperf error: {e}')
+        try:
+            dst_node.sendInt()
+            dst_node.waitOutput()
+        except:
+            pass
 
     if bw_values:
         bandwidth['min'] = round(min(bw_values), 2)
         bandwidth['avg'] = round(sum(bw_values) / len(bw_values), 2)
         bandwidth['max'] = round(max(bw_values), 2)
+
 
     # ── System CPU and RAM ──
     cpu_percent = psutil.cpu_percent(interval=0.5)
@@ -451,6 +481,24 @@ def metrics_hosts():
     hosts = [name for name, props in xarxa.nodes.items() if props['type'] == 'host']
     return jsonify({'hosts': hosts})
 
+@app.route('/debug')
+def debug():
+    output = {}
+    hosts = [name for name, props in xarxa.nodes.items() if props['type'] == 'host']
+    if len(hosts) >= 2:
+        src_name = hosts[-1]
+        src = xarxa.mininet_nodes[src_name]
+        gw = xarxa.nodes[src_name]['gw']
+        sw_name = xarxa.find_switch_of_router('r1')
+        sw = xarxa.mininet_nodes[sw_name]
+        r1 = xarxa.mininet_nodes['r1']
+        
+        output['src'] = src_name
+        output['src_ip_link'] = src.cmd('ip link show')
+        output['sw_ip_link'] = sw.cmd('ip link show')
+        output['r1_ip_link'] = r1.cmd('ip link show')
+        output['arp_request'] = src.cmd(f'arping -c 3 -I {src_name}-eth0 {gw}')
+    return jsonify(output)
 
 if __name__ == '__main__':
     t = threading.Thread(target=xarxa.start_network)
