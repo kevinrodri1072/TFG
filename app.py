@@ -5,8 +5,11 @@ import time
 import requests
 import json
 import io
+import re
+import psutil
 import numpy as np
 from scipy.io import savemat, loadmat
+from collections import deque
 
 DIGITAL_TWIN_IP = '10.4.39.153'  # IP of the Twin.
 DIGITAL_TWIN_PORT = 5000 
@@ -15,6 +18,9 @@ DIGITAL_TWIN_PORT = 5000
 TYPE_TO_NUM = {0: 0, 'host': 1, 'router': 2, 'switch': 3}
 NUM_TO_TYPE = {0: 0, 1: 'host', 2: 'router', 3: 'switch'}
 
+# Store last N sync latency measurements (for jitter calculation)
+sync_latency_history = deque(maxlen=50)
+sync_history_lock = threading.Lock()
 
 # Function that sends an HTTP POST petition to the twin PC whenever a change is done in the original PC.
 def synchronize(route, data):
@@ -24,6 +30,15 @@ def synchronize(route, data):
         requests.post(f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}{route}', json=data)
     except Exception as e:
         print(f'Synchronization error: {e}')
+
+def record_sync_latency(operation, latency_ms):
+    """Store a sync latency measurement in history."""
+    with sync_history_lock:
+        sync_latency_history.append({
+            'operation': operation,
+            'latency_ms': round(latency_ms, 2),
+            'timestamp': time.time()
+        })
 
 app = Flask(__name__)
 
@@ -200,8 +215,9 @@ def add_host():
     new_host.cmd(f'ip route add default via {gw}')
 
     if is_sync and 'timestamp' in data:
-        latency = time.time() - data['timestamp']
-        print(f'[LATENCY] add_host: {latency*1000:.2f} ms')
+        latency_ms = (time.time() - data['timestamp']) * 1000
+        print(f'[LATENCY] add_host: {latency_ms:.2f} ms')
+        record_sync_latency('add_host', latency_ms)
 
     if not is_sync:
         synchronize('/add_host', {'name': name, 'router': router})
@@ -236,8 +252,9 @@ def remove_node():
         del xarxa.nodes[name]
 
     if is_sync and 'timestamp' in data:
-        latency = time.time() - data['timestamp']
-        print(f'[LATENCY] remove_node: {latency*1000:.2f} ms')
+        latency_ms = (time.time() - data['timestamp']) * 1000
+        print(f'[LATENCY] remove_node: {latency_ms:.2f} ms')
+        record_sync_latency('remove_node', latency_ms)
 
     if not is_sync:
         synchronize('/remove_node', {'name': name})
@@ -291,12 +308,149 @@ def add_router():
     new_router.cmd('sysctl -w net.ipv4.ip_forward=1')
 
     if is_sync and 'timestamp' in data:
-        latency = time.time() - data['timestamp']
-        print(f'[LATENCY] add_router: {latency*1000:.2f} ms')
+        latency_ms = (time.time() - data['timestamp']) * 1000
+        print(f'[LATENCY] add_router: {latency_ms:.2f} ms')
+        record_sync_latency('add_router', latency_ms)
 
     if not is_sync:
         synchronize('/add_router', {'name': router_name, 'connected_routers': connected_routers})
     return jsonify({'ok': True})
+
+
+# ─────────────────────────────────────────────
+#  METRICS ROUTES
+# ─────────────────────────────────────────────
+
+@app.route('/metrics/internal')
+def metrics_internal():
+    """
+    Measures internal Mininet network metrics between two hosts:
+    - Latency (avg, min, max) via ping
+    - Jitter (std dev of RTTs) via ping
+    - Bandwidth (avg, min, max) via iperf
+    Also returns system CPU and RAM usage.
+    """
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    src = request.args.get('src')
+    dst = request.args.get('dst')
+
+    if not src or not dst:
+        return jsonify({'ok': False, 'error': 'src and dst parameters required'})
+
+    if src not in xarxa.nodes or dst not in xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Node not found'})
+
+    if xarxa.nodes[src]['type'] != 'host' or xarxa.nodes[dst]['type'] != 'host':
+        return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
+
+    src_node = xarxa.mininet_nodes[src]
+    dst_node = xarxa.mininet_nodes[dst]
+    dst_ip = xarxa.nodes[dst]['ip'].split('/')[0]
+
+    # ── Latency + Jitter via ping (10 packets) ──
+    ping_result = src_node.cmd(f'ping -c 10 -i 0.2 {dst_ip}')
+    latency = {'min': None, 'avg': None, 'max': None}
+    jitter = None
+
+    # Parse "rtt min/avg/max/mdev = X/X/X/X ms"
+    rtt_match = re.search(r'rtt min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)', ping_result)
+    if rtt_match:
+        latency['min'] = float(rtt_match.group(1))
+        latency['avg'] = float(rtt_match.group(2))
+        latency['max'] = float(rtt_match.group(3))
+        jitter        = float(rtt_match.group(4))  # mdev = jitter
+
+    # ── Bandwidth via iperf (3 runs of 2 seconds each) ──
+    bandwidth = {'min': None, 'avg': None, 'max': None}
+    bw_values = []
+
+    # Start iperf server on dst
+    dst_node.cmd('pkill -f iperf; sleep 0.2')
+    dst_node.cmd('iperf -s -D')
+    time.sleep(0.3)
+
+    for _ in range(3):
+        iperf_out = src_node.cmd(f'iperf -c {dst_ip} -t 2 -f m')
+        # Parse "X.X Mbits/sec"
+        bw_match = re.search(r'([\d.]+)\s+Mbits/sec', iperf_out)
+        if bw_match:
+            bw_values.append(float(bw_match.group(1)))
+
+    dst_node.cmd('pkill -f iperf')
+
+    if bw_values:
+        bandwidth['min'] = round(min(bw_values), 2)
+        bandwidth['avg'] = round(sum(bw_values) / len(bw_values), 2)
+        bandwidth['max'] = round(max(bw_values), 2)
+
+    # ── System CPU and RAM ──
+    cpu_percent = psutil.cpu_percent(interval=0.5)
+    ram = psutil.virtual_memory()
+
+    return jsonify({
+        'ok': True,
+        'src': src,
+        'dst': dst,
+        'latency_ms': latency,
+        'jitter_ms': jitter,
+        'bandwidth_mbps': bandwidth,
+        'system': {
+            'cpu_percent': cpu_percent,
+            'ram_used_mb': round(ram.used / 1024 / 1024, 1),
+            'ram_total_mb': round(ram.total / 1024 / 1024, 1),
+            'ram_percent': ram.percent
+        }
+    })
+
+
+@app.route('/metrics/sync')
+def metrics_sync():
+    """
+    Returns sync latency history and derived stats (avg, min, max, jitter).
+    """
+    with sync_history_lock:
+        history = list(sync_latency_history)
+
+    if not history:
+        return jsonify({
+            'ok': True,
+            'history': [],
+            'stats': None
+        })
+
+    latencies = [e['latency_ms'] for e in history]
+    avg = round(sum(latencies) / len(latencies), 2)
+    mn  = round(min(latencies), 2)
+    mx  = round(max(latencies), 2)
+
+    # Jitter = mean absolute difference between consecutive measurements
+    if len(latencies) > 1:
+        diffs = [abs(latencies[i] - latencies[i-1]) for i in range(1, len(latencies))]
+        jitter = round(sum(diffs) / len(diffs), 2)
+    else:
+        jitter = 0.0
+
+    return jsonify({
+        'ok': True,
+        'history': history,
+        'stats': {
+            'avg_ms': avg,
+            'min_ms': mn,
+            'max_ms': mx,
+            'jitter_ms': jitter,
+            'count': len(latencies)
+        }
+    })
+
+
+@app.route('/metrics/hosts')
+def metrics_hosts():
+    """Returns list of hosts available for metric measurement."""
+    hosts = [name for name, props in xarxa.nodes.items() if props['type'] == 'host']
+    return jsonify({'hosts': hosts})
+
 
 if __name__ == '__main__':
     t = threading.Thread(target=xarxa.start_network)

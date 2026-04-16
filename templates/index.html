@@ -6,13 +6,192 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">
     <style>
-        #network {
-            width: 100%;
-            height: 600px;
-            border: 1px solid #ccc;
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; background: #f5f5f5; }
+
+        h1 {
+            background: #2c3e50;
+            color: white;
+            padding: 12px 20px;
+            font-size: 18px;
         }
 
-        /* Floating popup */
+        #controls {
+            padding: 8px 12px;
+            background: #ecf0f1;
+            border-bottom: 1px solid #ccc;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        #controls button {
+            padding: 6px 12px;
+            cursor: pointer;
+            background: #2c3e50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        #controls button:hover { background: #34495e; }
+
+        /* ── Main layout ── */
+        #main-layout {
+            display: flex;
+            height: calc(100vh - 90px);
+        }
+
+        #network-container {
+            flex: 1;
+            min-width: 0;
+            position: relative;
+        }
+
+        #network {
+            width: 100%;
+            height: 100%;
+            border-right: 1px solid #ccc;
+            background: white;
+        }
+
+        /* ── Metrics sidebar ── */
+        #metrics-panel {
+            width: 320px;
+            background: #1e2a38;
+            color: #ecf0f1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            font-size: 13px;
+        }
+
+        .metrics-section {
+            border-bottom: 1px solid #2c3e50;
+            padding: 12px;
+        }
+
+        .metrics-section h3 {
+            font-size: 13px;
+            color: #3498db;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 0;
+            border-bottom: 1px solid #2c3e5055;
+        }
+        .metric-row:last-child { border-bottom: none; }
+        .metric-label { color: #95a5a6; font-size: 12px; }
+        .metric-value {
+            font-weight: bold;
+            color: #ecf0f1;
+            font-size: 13px;
+        }
+        .metric-value.good  { color: #2ecc71; }
+        .metric-value.warn  { color: #f39c12; }
+        .metric-value.bad   { color: #e74c3c; }
+
+        .metric-sub {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 4px;
+            margin-top: 4px;
+        }
+        .metric-sub-item {
+            background: #2c3e50;
+            border-radius: 4px;
+            padding: 4px 6px;
+            text-align: center;
+        }
+        .metric-sub-item .sub-label { font-size: 10px; color: #7f8c8d; }
+        .metric-sub-item .sub-value { font-size: 13px; font-weight: bold; }
+
+        /* Host selector */
+        .host-selectors {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+        .host-selectors select {
+            flex: 1;
+            background: #2c3e50;
+            color: white;
+            border: 1px solid #3498db;
+            border-radius: 4px;
+            padding: 4px;
+            font-size: 12px;
+        }
+        .btn-measure {
+            width: 100%;
+            padding: 7px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-top: 4px;
+        }
+        .btn-measure:hover { background: #2980b9; }
+        .btn-measure:disabled { background: #555; cursor: not-allowed; }
+
+        /* Progress bar for RAM/CPU */
+        .progress-bar {
+            background: #2c3e50;
+            border-radius: 3px;
+            height: 8px;
+            margin-top: 3px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s;
+        }
+
+        /* Sync history */
+        #sync-history-list {
+            max-height: 140px;
+            overflow-y: auto;
+        }
+        .sync-entry {
+            display: flex;
+            justify-content: space-between;
+            padding: 3px 0;
+            border-bottom: 1px solid #2c3e5055;
+            font-size: 11px;
+        }
+        .sync-entry:last-child { border-bottom: none; }
+        .sync-op { color: #95a5a6; }
+        .sync-ms { font-weight: bold; }
+
+        .status-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 4px;
+        }
+        .status-dot.green { background: #2ecc71; }
+        .status-dot.grey  { background: #7f8c8d; }
+
+        .measuring-spinner {
+            display: none;
+            font-size: 11px;
+            color: #f39c12;
+            margin-top: 6px;
+            text-align: center;
+        }
+
+        /* ── Floating popup ── */
         #node-popup {
             display: none;
             position: fixed;
@@ -43,7 +222,7 @@
             cursor: pointer;
         }
 
-        /* Adjacency matrix modal */
+        /* ── Matrix modal ── */
         #matrix-modal {
             display: none;
             position: fixed;
@@ -63,7 +242,7 @@
             max-height: 80vh;
             overflow-y: auto;
         }
-        #matrix-modal h2 { margin-top: 0; }
+        #matrix-modal h2 { margin-top: 0; margin-bottom: 12px; }
         #matrix-table {
             border-collapse: collapse;
             width: 100%;
@@ -79,6 +258,30 @@
         #matrix-table td.cell-router { background-color: #cce5ff; color: #004085; }
         #matrix-table td.cell-switch { background-color: #fff3cd; color: #856404; }
         #matrix-table td.cell-empty  { color: #aaa; }
+
+        /* Router form */
+        #router-form {
+            display: none;
+            position: fixed;
+            top: 80px; left: 50%;
+            transform: translateX(-50%);
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            padding: 16px;
+            z-index: 600;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            min-width: 260px;
+        }
+        #router-form h3 { margin-bottom: 10px; font-size: 15px; }
+        #router-form input, #router-form select {
+            width: 100%;
+            margin: 4px 0 8px 0;
+            padding: 6px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        #router-form button { margin-right: 6px; padding: 6px 14px; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -95,12 +298,10 @@
     <div id="node-popup">
         <div class="popup-title" id="popup-title"></div>
         <div class="popup-info" id="popup-info"></div>
-        <!-- Default view: buttons -->
         <div id="popup-buttons">
             <button id="btn-add-host" style="display:none" onclick="showAddHostInput()">Add Host</button>
             <button onclick="removeSelectedNode()">Remove</button>
         </div>
-        <!-- Add host view: inline input -->
         <div id="popup-add-host" style="display:none">
             <input type="text" id="host-name" placeholder="Name (e.g. h6)" style="width:100%; margin: 4px 0;">
             <input type="hidden" id="host-router">
@@ -110,10 +311,11 @@
     </div>
 
     <!-- Add router form -->
-    <div id="router-form" style="display:none; border:1px solid #ccc; padding:10px; margin:10px 0;">
+    <div id="router-form">
         <h3>Add new router</h3>
         <input type="text" id="router-name" placeholder="Name (e.g. r3)">
-        <select id="connected-router" multiple></select>
+        <select id="connected-router" multiple size="4"></select>
+        <br>
         <button onclick="addRouter()">Confirm</button>
         <button onclick="closeRouterForm()">Cancel</button>
     </div>
@@ -134,12 +336,138 @@
         </div>
     </div>
 
-    <div id="network"></div>
+    <!-- ── Main layout ── -->
+    <div id="main-layout">
+        <div id="network-container">
+            <div id="network"></div>
+        </div>
+
+        <!-- ── Metrics sidebar ── -->
+        <div id="metrics-panel">
+
+            <!-- Internal network metrics -->
+            <div class="metrics-section">
+                <h3><i class="fa fa-bar-chart"></i> Internal Network</h3>
+
+                <div class="host-selectors">
+                    <select id="metric-src"><option value="">Source</option></select>
+                    <select id="metric-dst"><option value="">Destination</option></select>
+                </div>
+                <button class="btn-measure" onclick="measureInternal()">Measure</button>
+                <div class="measuring-spinner" id="measuring-spinner">⏳ Measuring... (may take ~15s)</div>
+
+                <!-- Latency -->
+                <div style="margin-top:10px;">
+                    <div class="metric-row">
+                        <span class="metric-label">Latency avg</span>
+                        <span class="metric-value" id="lat-avg">—</span>
+                    </div>
+                    <div class="metric-sub">
+                        <div class="metric-sub-item">
+                            <div class="sub-label">MIN</div>
+                            <div class="sub-value" id="lat-min">—</div>
+                        </div>
+                        <div class="metric-sub-item">
+                            <div class="sub-label">AVG</div>
+                            <div class="sub-value" id="lat-avg2">—</div>
+                        </div>
+                        <div class="metric-sub-item">
+                            <div class="sub-label">MAX</div>
+                            <div class="sub-value" id="lat-max">—</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Jitter -->
+                <div class="metric-row" style="margin-top:8px;">
+                    <span class="metric-label">Jitter (mdev)</span>
+                    <span class="metric-value" id="jitter-val">—</span>
+                </div>
+
+                <!-- Bandwidth -->
+                <div style="margin-top:8px;">
+                    <div class="metric-row">
+                        <span class="metric-label">Bandwidth avg</span>
+                        <span class="metric-value" id="bw-avg">—</span>
+                    </div>
+                    <div class="metric-sub">
+                        <div class="metric-sub-item">
+                            <div class="sub-label">MIN</div>
+                            <div class="sub-value" id="bw-min">—</div>
+                        </div>
+                        <div class="metric-sub-item">
+                            <div class="sub-label">AVG</div>
+                            <div class="sub-value" id="bw-avg2">—</div>
+                        </div>
+                        <div class="metric-sub-item">
+                            <div class="sub-label">MAX</div>
+                            <div class="sub-value" id="bw-max">—</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- System resources -->
+            <div class="metrics-section">
+                <h3><i class="fa fa-server"></i> System Resources</h3>
+
+                <div class="metric-row">
+                    <span class="metric-label">CPU Usage</span>
+                    <span class="metric-value" id="cpu-val">—</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="cpu-bar" style="width:0%; background:#3498db;"></div>
+                </div>
+
+                <div class="metric-row" style="margin-top:8px;">
+                    <span class="metric-label">RAM Usage</span>
+                    <span class="metric-value" id="ram-val">—</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="ram-bar" style="width:0%; background:#9b59b6;"></div>
+                </div>
+                <div style="font-size:11px; color:#7f8c8d; margin-top:3px;" id="ram-detail">—</div>
+            </div>
+
+            <!-- Digital Twin sync metrics -->
+            <div class="metrics-section">
+                <h3><i class="fa fa-refresh"></i> Digital Twin Sync</h3>
+
+                <div class="metric-row">
+                    <span class="metric-label"><span class="status-dot grey" id="sync-dot"></span>Operations tracked</span>
+                    <span class="metric-value" id="sync-count">0</span>
+                </div>
+                <div class="metric-sub" style="margin-top:6px;">
+                    <div class="metric-sub-item">
+                        <div class="sub-label">MIN</div>
+                        <div class="sub-value" id="sync-min">—</div>
+                    </div>
+                    <div class="metric-sub-item">
+                        <div class="sub-label">AVG</div>
+                        <div class="sub-value" id="sync-avg">—</div>
+                    </div>
+                    <div class="metric-sub-item">
+                        <div class="sub-label">MAX</div>
+                        <div class="sub-value" id="sync-max">—</div>
+                    </div>
+                </div>
+                <div class="metric-row" style="margin-top:8px;">
+                    <span class="metric-label">Sync Jitter</span>
+                    <span class="metric-value" id="sync-jitter">—</span>
+                </div>
+
+                <div style="margin-top:10px; font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recent operations:</div>
+                <div id="sync-history-list"></div>
+            </div>
+
+        </div><!-- end metrics-panel -->
+    </div><!-- end main-layout -->
 
     <script>
         var selectedNode = null;
         var topologyData = null;
 
+        // ── Load topology and build vis.js network ──
         fetch('/topology')
             .then(response => response.json())
             .then(data => {
@@ -164,21 +492,14 @@
                     interaction: { navigationButtons: false, keyboard: false, hover: true }
                 });
 
-                // Show popup on hover
                 network.on('hoverNode', function(params) {
                     var popup = document.getElementById('node-popup');
                     selectedNode = params.node;
                     var type = topologyData.nodes[selectedNode].type;
-
-                    var x = params.event.clientX;
-                    var y = params.event.clientY;
-                    popup.style.left = (x + 10) + 'px';
-                    popup.style.top  = (y - 10) + 'px';
-
+                    popup.style.left = (params.event.clientX + 10) + 'px';
+                    popup.style.top  = (params.event.clientY - 10) + 'px';
                     document.getElementById('popup-title').textContent = selectedNode + ' (' + type + ')';
                     document.getElementById('btn-add-host').style.display = type === 'router' ? 'block' : 'none';
-
-                    // Show node info
                     var infoDiv = document.getElementById('popup-info');
                     var nodeProps = topologyData.nodes[selectedNode];
                     if (type === 'host') {
@@ -186,16 +507,12 @@
                     } else if (type === 'router') {
                         infoDiv.innerHTML = 'eth0: ' + nodeProps.ips.eth0 + '<br>eth1: ' + nodeProps.ips.eth1;
                     }
-
-                    // Reset popup to default buttons view
                     document.getElementById('popup-buttons').style.display = 'block';
                     document.getElementById('popup-add-host').style.display = 'none';
-
                     popup.style.display = 'block';
                 });
 
-                // Hide popup when mouse leaves node
-                network.on('blurNode', function(params) {
+                network.on('blurNode', function() {
                     setTimeout(function() {
                         var popup = document.getElementById('node-popup');
                         if (!popup.matches(':hover')) {
@@ -204,14 +521,17 @@
                         }
                     }, 100);
                 });
+
+                // Populate host selectors
+                loadHostSelectors();
             });
 
-        // Close popup when mouse leaves it
         document.getElementById('node-popup').addEventListener('mouseleave', function() {
             this.style.display = 'none';
             selectedNode = null;
         });
 
+        // ── Node popup actions ──
         function removeSelectedNode() {
             document.getElementById('node-popup').style.display = 'none';
             if (selectedNode && confirm('Do you want to remove ' + selectedNode + '?')) {
@@ -220,7 +540,7 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({name: selectedNode})
                 })
-                .then(response => response.json())
+                .then(r => r.json())
                 .then(data => { if (data.ok) location.reload(); });
             }
         }
@@ -245,25 +565,25 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({name: name, router: router})
             })
-            .then(response => response.json())
+            .then(r => r.json())
             .then(data => {
-                if (data.ok) { location.reload(); }
+                if (data.ok) location.reload();
                 else alert(data.error);
             });
         }
 
+        // ── Router form ──
         function showRouterForm() {
             fetch('/topology')
-                .then(response => response.json())
+                .then(r => r.json())
                 .then(data => {
                     var select = document.getElementById('connected-router');
                     select.innerHTML = '';
                     Object.keys(data.nodes).forEach(name => {
                         if (data.nodes[name].type === 'router') {
-                            var option = document.createElement('option');
-                            option.value = name;
-                            option.textContent = name;
-                            select.appendChild(option);
+                            var opt = document.createElement('option');
+                            opt.value = name; opt.textContent = name;
+                            select.appendChild(opt);
                         }
                     });
                 });
@@ -283,18 +603,19 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({name: name, connected_routers: connectedRouters})
             })
-            .then(response => response.json())
+            .then(r => r.json())
             .then(data => {
                 if (data.ok) { closeRouterForm(); location.reload(); }
                 else alert(data.error);
             });
         }
 
+        // ── Matrix modal ──
         var matrixData = null;
 
         function showMatrix() {
             fetch('/matrix')
-                .then(response => response.json())
+                .then(r => r.json())
                 .then(data => {
                     matrixData = data;
                     renderMatrix();
@@ -307,7 +628,6 @@
             var showSwitches = document.getElementById('show-switches').checked;
             var names = matrixData.names;
             var matrix = matrixData.matrix;
-
             var indices, filteredNames;
             if (showSwitches) {
                 indices = names.map((_, i) => i);
@@ -318,28 +638,21 @@
                                .map(x => x.i);
                 filteredNames = indices.map(i => names[i]);
             }
-
             var table = document.getElementById('matrix-table');
             table.innerHTML = '';
-
-            // Header row
             var header = '<tr><th></th>';
             filteredNames.forEach(name => header += `<th>${name}</th>`);
             header += '</tr>';
             table.innerHTML += header;
-
-            // Data rows
             indices.forEach(i => {
                 var tr = `<tr><th>${names[i]}</th>`;
                 indices.forEach(j => {
                     var cell;
                     if (!showSwitches) {
                         var typeI = names[i].startsWith('r') ? 'router' : 'host';
-                        if (i === j) {
-                            cell = 0;
-                        } else if (matrix[i][j] !== 0) {
-                            cell = matrix[i][j];
-                        } else {
+                        if (i === j) cell = 0;
+                        else if (matrix[i][j] !== 0) cell = matrix[i][j];
+                        else {
                             var commonSwitch = names.findIndex((n, k) =>
                                 n.startsWith('sw') && matrix[i][k] !== 0 && matrix[j][k] !== 0
                             );
@@ -348,7 +661,6 @@
                     } else {
                         cell = matrix[i][j];
                     }
-
                     if (cell === 0)             tr += `<td class="cell-empty">0</td>`;
                     else if (cell === 'host')   tr += `<td class="cell-host">host</td>`;
                     else if (cell === 'router') tr += `<td class="cell-router">router</td>`;
@@ -374,27 +686,142 @@
         function loadNetwork(input) {
             var file = input.files[0];
             if (!file) return;
-
             var formData = new FormData();
             formData.append('file', file);
-
-            fetch('/load_network', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.ok) {
-                    // Wait for Mininet to restart then reload
-                    setTimeout(() => location.reload(), 4000);
-                } else {
-                    alert('Error loading network: ' + data.error);
-                }
-            });
-
-            // Reset input so the same file can be loaded again
+            fetch('/load_network', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.ok) setTimeout(() => location.reload(), 4000);
+                    else alert('Error loading network: ' + data.error);
+                });
             input.value = '';
         }
+
+        // ── Metrics ──
+
+        function loadHostSelectors() {
+            fetch('/metrics/hosts')
+                .then(r => r.json())
+                .then(data => {
+                    var src = document.getElementById('metric-src');
+                    var dst = document.getElementById('metric-dst');
+                    src.innerHTML = '<option value="">Source</option>';
+                    dst.innerHTML = '<option value="">Destination</option>';
+                    data.hosts.forEach(h => {
+                        src.innerHTML += `<option value="${h}">${h}</option>`;
+                        dst.innerHTML += `<option value="${h}">${h}</option>`;
+                    });
+                    // Default selection
+                    if (data.hosts.length >= 2) {
+                        src.value = data.hosts[0];
+                        dst.value = data.hosts[1];
+                    }
+                });
+        }
+
+        function measureInternal() {
+            var src = document.getElementById('metric-src').value;
+            var dst = document.getElementById('metric-dst').value;
+            if (!src || !dst) { alert('Select source and destination hosts'); return; }
+            if (src === dst) { alert('Source and destination must be different'); return; }
+
+            var btn = document.querySelector('.btn-measure');
+            btn.disabled = true;
+            document.getElementById('measuring-spinner').style.display = 'block';
+
+            fetch(`/metrics/internal?src=${src}&dst=${dst}`)
+                .then(r => r.json())
+                .then(data => {
+                    btn.disabled = false;
+                    document.getElementById('measuring-spinner').style.display = 'none';
+                    if (!data.ok) { alert('Error: ' + data.error); return; }
+
+                    // Latency
+                    var lat = data.latency_ms;
+                    var latAvg = lat.avg !== null ? lat.avg.toFixed(2) + ' ms' : '—';
+                    document.getElementById('lat-avg').textContent  = latAvg;
+                    document.getElementById('lat-avg2').textContent = lat.avg  !== null ? lat.avg.toFixed(2)  : '—';
+                    document.getElementById('lat-min').textContent  = lat.min  !== null ? lat.min.toFixed(2)  : '—';
+                    document.getElementById('lat-max').textContent  = lat.max  !== null ? lat.max.toFixed(2)  : '—';
+
+                    // Color latency
+                    var latEl = document.getElementById('lat-avg');
+                    if (lat.avg !== null) {
+                        latEl.className = 'metric-value ' + (lat.avg < 5 ? 'good' : lat.avg < 20 ? 'warn' : 'bad');
+                    }
+
+                    // Jitter
+                    document.getElementById('jitter-val').textContent =
+                        data.jitter_ms !== null ? data.jitter_ms.toFixed(2) + ' ms' : '—';
+
+                    // Bandwidth
+                    var bw = data.bandwidth_mbps;
+                    document.getElementById('bw-avg').textContent  = bw.avg !== null ? bw.avg + ' Mbps' : '—';
+                    document.getElementById('bw-avg2').textContent = bw.avg !== null ? bw.avg : '—';
+                    document.getElementById('bw-min').textContent  = bw.min !== null ? bw.min : '—';
+                    document.getElementById('bw-max').textContent  = bw.max !== null ? bw.max : '—';
+
+                    // System
+                    var sys = data.system;
+                    document.getElementById('cpu-val').textContent = sys.cpu_percent + '%';
+                    document.getElementById('cpu-bar').style.width = sys.cpu_percent + '%';
+                    document.getElementById('cpu-bar').style.background =
+                        sys.cpu_percent < 60 ? '#3498db' : sys.cpu_percent < 85 ? '#f39c12' : '#e74c3c';
+
+                    document.getElementById('ram-val').textContent = sys.ram_percent + '%';
+                    document.getElementById('ram-bar').style.width = sys.ram_percent + '%';
+                    document.getElementById('ram-detail').textContent =
+                        sys.ram_used_mb.toFixed(0) + ' MB / ' + sys.ram_total_mb.toFixed(0) + ' MB';
+                })
+                .catch(() => {
+                    btn.disabled = false;
+                    document.getElementById('measuring-spinner').style.display = 'none';
+                    alert('Connection error');
+                });
+        }
+
+        function refreshSyncMetrics() {
+            fetch('/metrics/sync')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.ok) return;
+                    var stats = data.stats;
+                    var dot = document.getElementById('sync-dot');
+
+                    if (!stats) {
+                        document.getElementById('sync-count').textContent = '0';
+                        dot.className = 'status-dot grey';
+                        return;
+                    }
+
+                    dot.className = 'status-dot green';
+                    document.getElementById('sync-count').textContent = stats.count;
+                    document.getElementById('sync-avg').textContent   = stats.avg_ms + ' ms';
+                    document.getElementById('sync-min').textContent   = stats.min_ms + ' ms';
+                    document.getElementById('sync-max').textContent   = stats.max_ms + ' ms';
+                    document.getElementById('sync-jitter').textContent = stats.jitter_ms + ' ms';
+
+                    // Recent history (last 8)
+                    var list = document.getElementById('sync-history-list');
+                    list.innerHTML = '';
+                    var recent = data.history.slice(-8).reverse();
+                    recent.forEach(entry => {
+                        var d = new Date(entry.timestamp * 1000);
+                        var time = d.toLocaleTimeString('ca-ES', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                        var color = entry.latency_ms < 100 ? '#2ecc71' : entry.latency_ms < 300 ? '#f39c12' : '#e74c3c';
+                        list.innerHTML += `
+                            <div class="sync-entry">
+                                <span class="sync-op">${time} · ${entry.operation}</span>
+                                <span class="sync-ms" style="color:${color}">${entry.latency_ms} ms</span>
+                            </div>`;
+                    });
+                });
+        }
+
+        // Refresh sync metrics every 3 seconds
+        refreshSyncMetrics();
+        setInterval(refreshSyncMetrics, 3000);
+
     </script>
 </body>
 </html>
