@@ -300,6 +300,7 @@
         <div class="popup-info" id="popup-info"></div>
         <div id="popup-buttons">
             <button id="btn-add-host" style="display:none" onclick="showAddHostInput()">Add Host</button>
+            <button onclick="showRenameInput()">Rename</button>
             <button onclick="removeSelectedNode()">Remove</button>
         </div>
         <div id="popup-add-host" style="display:none">
@@ -308,8 +309,12 @@
             <button onclick="addHost()">Confirm</button>
             <button onclick="closeAddHostInput()">Cancel</button>
         </div>
+        <div id="popup-rename" style="display:none">
+            <input type="text" id="rename-input" placeholder="New name" style="width:100%; margin: 4px 0;">
+            <button onclick="renameNode()">Confirm</button>
+            <button onclick="closeRenameInput()">Cancel</button>
+        </div>
     </div>
-
     <!-- Add router form -->
     <div id="router-form">
         <h3>Add new router</h3>
@@ -509,6 +514,7 @@
                     }
                     document.getElementById('popup-buttons').style.display = 'block';
                     document.getElementById('popup-add-host').style.display = 'none';
+                    document.getElementById('popup-rename').style.display = 'none';
                     popup.style.display = 'block';
                 });
 
@@ -555,6 +561,34 @@
         function closeAddHostInput() {
             document.getElementById('popup-add-host').style.display = 'none';
             document.getElementById('popup-buttons').style.display = 'block';
+        }
+
+        function showRenameInput() {
+            document.getElementById('rename-input').value = selectedNode;
+            document.getElementById('popup-buttons').style.display = 'none';
+            document.getElementById('popup-rename').style.display = 'block';
+        }
+
+        function closeRenameInput() {
+            document.getElementById('popup-rename').style.display = 'none';
+            document.getElementById('popup-buttons').style.display = 'block';
+        }
+
+        function renameNode() {
+            var oldName = selectedNode;
+            var newName = document.getElementById('rename-input').value.trim();
+            if (!newName || newName === oldName) { closeRenameInput(); return; }
+            document.getElementById('node-popup').style.display = 'none';
+            fetch('/rename_node', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({old_name: oldName, new_name: newName})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.ok) setTimeout(() => location.reload(), 4000);
+                else alert(data.error);
+            });
         }
 
         function addHost() {

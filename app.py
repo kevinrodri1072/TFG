@@ -283,6 +283,7 @@ def add_router():
     xarxa.net.addLink(new_router, new_switch, intfName1=intf_eth_lan)
     new_router.cmd(f'ifconfig {intf_eth_lan} {ip_eth1}')
     new_router.cmd(f'ip link set {intf_eth_lan} up')
+    xarxa.nodes[router_name]['ips'][f'eth{eth_idx}'] = ip_eth1
     sw_intf = f'{switch_name}-eth1'
     new_switch.cmd(f'ip link set {sw_intf} up')
     new_switch.cmd(f'ovs-vsctl add-port {switch_name} {sw_intf}')
@@ -474,25 +475,75 @@ def metrics_hosts():
     hosts = [name for name, props in xarxa.nodes.items() if props['type'] == 'host']
     return jsonify({'hosts': hosts})
 
+@app.route('/rename_node', methods=['POST'])
+def rename_node():
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+    data = request.json
+    old_name = data['old_name']
+    new_name = data['new_name']
+    is_sync = data.get('sync', False)
+
+    if not new_name.replace('_', '').replace('-', '').isalnum() or new_name[0].isupper():
+        return jsonify({'ok': False, 'error': 'Name must be lowercase alphanumeric (e.g. h6, router1)'})
+
+    if old_name not in xarxa.nodes:
+        return jsonify({'ok': False, 'error': f'Node {old_name} not found'})
+    if new_name in xarxa.nodes:
+        return jsonify({'ok': False, 'error': f'A node named {new_name} already exists'})
+
+    # Build new nodes dict with renamed key
+    new_nodes = {}
+    for name, props in xarxa.nodes.items():
+        if name == old_name:
+            new_nodes[new_name] = props
+        else:
+            new_nodes[name] = props
+
+    # Update p2p_links references in all routers
+    for name, props in new_nodes.items():
+        if props['type'] == 'router':
+            for link in props.get('p2p_links', []):
+                if link['peer'] == old_name:
+                    link['peer'] = new_name
+
+    # Update host gateways if renaming a router
+    # (gw IPs don't change, so no update needed)
+
+    # Restart network with renamed node
+    # Restart network with renamed node
+    import copy
+    matrix_copy = copy.deepcopy(xarxa.network_matrix)
+    threading.Thread(target=xarxa.restart_network,
+                    args=(matrix_copy, new_nodes)).start()
+
+    if not is_sync:
+        synchronize('/rename_node', {'old_name': old_name, 'new_name': new_name})
+
+    if is_sync and 'timestamp' in data:
+        latency_ms = (time.time() - data['timestamp']) * 1000
+        record_sync_latency('rename_node', latency_ms)
+        return jsonify({'ok': True, 'latency_ms': round(latency_ms, 2)})
+
+    return jsonify({'ok': True})
+
 @app.route('/debug')
 def debug():
     output = {}
-    # Tots els hosts
     for name, props in xarxa.nodes.items():
-        if props['type'] == 'host':
+        if props['type'] == 'router':
             node = xarxa.mininet_nodes[name]
-            output[f'{name}_route'] = node.cmd('ip route')
-            output[f'{name}_ping_gw'] = node.cmd(f'ping -c 1 -W 1 {props["gw"]}')
-    # r4
-    r4 = xarxa.mininet_nodes.get('r4')
-    if r4:
-        output['r4_ip_addr'] = r4.cmd('ip addr show')
-        output['r4_ip_route'] = r4.cmd('ip route')
-    # sw4
-    sw4 = xarxa.mininet_nodes.get('sw4')
-    if sw4:
-        output['sw4_ports'] = sw4.cmd('ovs-vsctl list-ports sw4')
-        output['sw4_ip_link'] = sw4.cmd('ip link show')
+            output[name] = {
+                'ip_route': node.cmd('ip route'),
+                'ip_addr': node.cmd('ip addr show'),
+            }
+    hosts = [n for n, p in xarxa.nodes.items() if p['type'] == 'host']
+    if len(hosts) >= 2:
+        h_a = xarxa.mininet_nodes[hosts[-2]]
+        h_b = xarxa.mininet_nodes[hosts[-1]]
+        ip_b = xarxa.nodes[hosts[-1]]['ip'].split('/')[0]
+        output[f'ping_{hosts[-2]}_to_{hosts[-1]}'] = h_a.cmd(f'ping -c 1 -W 1 {ip_b}')
+        output['router3_nodes_dict'] = xarxa.nodes.get('router3', {})
     return jsonify(output)
 
 if __name__ == '__main__':
