@@ -923,17 +923,7 @@
         function refreshSyncMetrics() {
             fetch('/metrics/sync')
                 .then(r => r.json())
-                .then(data => {
-                    if (!data.ok) return;
-                    // If no local data, try to fetch from remote (Twin fetching from Original)
-                    if (!data.stats) {
-                        fetch('/metrics/sync/remote')
-                            .then(r => r.json())
-                            .then(remoteData => updateSyncDashboard(remoteData));
-                    } else {
-                        updateSyncDashboard(data);
-                    }
-                });
+                .then(data => updateSyncDashboard(data));
         }
 
         function updateSyncDashboard(data) {

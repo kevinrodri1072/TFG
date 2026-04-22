@@ -13,7 +13,6 @@ from scipy.io import savemat, loadmat
 from collections import deque
 
 DIGITAL_TWIN_IP = '10.4.39.153'  # IP of the Twin
-ORIGINAL_IP     = '10.4.39.151'  # IP of the Original  ← afegeix això
 DIGITAL_TWIN_PORT = 5000
 
 TYPE_TO_NUM = {0: 0, 'host': 1, 'router': 2, 'switch': 3}
@@ -26,26 +25,6 @@ sync_history_lock    = threading.Lock()
 
 metrics_running = False
 
-def record_sync_latency(operation, latency_ms):
-    """Guarda la mètrica localment i intenta notificar al Twin."""
-    entry = {
-        'operation': operation,
-        'latency_ms': round(latency_ms, 2),
-        'timestamp': time.time()
-    }
-    with sync_history_lock:
-        sync_latency_history.append(entry)
-    
-    # Intentem avisar al Twin perquè ell també actualitzi el seu dashboard
-    try:
-        requests.post(
-            f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/sync_metrics',
-            json={'operation': operation, 'latency_ms': latency_ms},
-            timeout=1
-        )
-    except:
-        pass
-
 def synchronize(route, data):
     try:
         data['sync'] = True
@@ -55,30 +34,32 @@ def synchronize(route, data):
             json=data, timeout=10
         )
         latency_ms = round((time.time() - start_time) * 1000, 2)
-        
-        # Guardem localment a l'Original
-        entry = {
-            'operation': route,
-            'latency_ms': latency_ms,
-            'timestamp': time.time()
-        }
-        with sync_history_lock:
-            sync_latency_history.append(entry)
-
-        # NOVA ACCIÓ: Enviem la mètrica al Bessó perquè ell també la tingui
-        requests.post(
-            f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/sync_metrics',
-            json={'operation': route, 'latency_ms': latency_ms},
-            timeout=2
-        )
-        
+        if response.status_code == 200:
+            record_sync_latency(route.strip('/'), latency_ms)
         return response.json()
     except Exception as e:
-        print(f"Sync error: {e}")
+        print(f'Sync error: {e}')
         return None
 
-app = Flask(__name__)
+def record_sync_latency(operation, latency_ms):
+    entry = {
+        'operation':  operation,
+        'latency_ms': round(latency_ms, 2),
+        'timestamp':  time.time()
+    }
+    with sync_history_lock:
+        sync_latency_history.append(entry)
+    # Push to Twin so its dashboard also shows the metrics
+    try:
+        requests.post(
+            f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/sync_metrics',
+            json={'operation': operation, 'latency_ms': latency_ms},
+            timeout=1
+        )
+    except:
+        pass
 
+app = Flask(__name__)
 
 @app.route('/')
 def index():
@@ -138,16 +119,6 @@ def export():
     return send_file(buffer, mimetype='application/octet-stream',
                      as_attachment=True, download_name='network.mat')
 
-@app.route('/metrics/sync/remote')
-def metrics_sync_remote():
-    try:
-        r = requests.get(
-            f'http://{ORIGINAL_IP}:{DIGITAL_TWIN_PORT}/metrics/sync',
-            timeout=5
-        )
-        return jsonify(r.json())
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)})
 
 @app.route('/load_network', methods=['POST'])
 def load_network():
