@@ -12,7 +12,8 @@ import numpy as np
 from scipy.io import savemat, loadmat
 from collections import deque
 
-DIGITAL_TWIN_IP   = '10.4.39.153'  # IP of the Twin.
+DIGITAL_TWIN_IP = '10.4.39.153'  # IP of the Twin
+ORIGINAL_IP     = '10.4.39.151'  # IP of the Original  ← afegeix això
 DIGITAL_TWIN_PORT = 5000
 
 TYPE_TO_NUM = {0: 0, 'host': 1, 'router': 2, 'switch': 3}
@@ -27,7 +28,6 @@ metrics_running = False
 
 
 def synchronize(route, data):
-    """Send a sync request to the Twin and record the RTT as sync latency."""
     try:
         data['sync'] = True
         start_time = time.time()
@@ -35,21 +35,28 @@ def synchronize(route, data):
             f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}{route}',
             json=data, timeout=10
         )
-        latency_ms = (time.time() - start_time) * 1000
-        if response.status_code == 200:
-            record_sync_latency(route.strip('/'), latency_ms)
+        latency_ms = round((time.time() - start_time) * 1000, 2)
+        
+        # Guardem localment a l'Original
+        entry = {
+            'operation': route,
+            'latency_ms': latency_ms,
+            'timestamp': time.time()
+        }
+        with sync_history_lock:
+            sync_latency_history.append(entry)
+
+        # NOVA ACCIÓ: Enviem la mètrica al Bessó perquè ell també la tingui
+        requests.post(
+            f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/sync_metrics',
+            json={'operation': route, 'latency_ms': latency_ms},
+            timeout=2
+        )
+        
+        return response.json()
     except Exception as e:
-        print(f'Synchronization error: {e}')
-
-
-def record_sync_latency(operation, latency_ms):
-    with sync_history_lock:
-        sync_latency_history.append({
-            'operation':  operation,
-            'latency_ms': round(latency_ms, 2),
-            'timestamp':  time.time()
-        })
-
+        print(f"Sync error: {e}")
+        return None
 
 app = Flask(__name__)
 
@@ -114,10 +121,9 @@ def export():
 
 @app.route('/metrics/sync/remote')
 def metrics_sync_remote():
-    """Fetch sync metrics from the Original PC (used by the Twin dashboard)."""
     try:
         r = requests.get(
-            f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/metrics/sync',
+            f'http://{ORIGINAL_IP}:{DIGITAL_TWIN_PORT}/metrics/sync',
             timeout=5
         )
         return jsonify(r.json())
@@ -611,7 +617,16 @@ def metrics_global():
         }
     })
 
-
+@app.route('/sync_metrics', methods=['POST'])
+def update_sync_metrics():
+    data = request.json
+    with sync_history_lock:
+        sync_latency_history.append({
+            'operation': data.get('operation', 'External Update'),
+            'latency_ms': data.get('latency_ms'),
+            'timestamp': time.time()
+        })
+    return jsonify({'ok': True})
 if __name__ == '__main__':
     t = threading.Thread(target=xarxa.start_network)
     t.daemon = True
