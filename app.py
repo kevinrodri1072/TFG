@@ -216,6 +216,23 @@ def remove_node():
     is_sync = data.get('sync', False)
 
     if xarxa.nodes[name]['type'] == 'router':
+        # 1. Clean p2p_links and IPs from neighboring routers
+        for rname, props in xarxa.nodes.items():
+            if props['type'] == 'router' and rname != name:
+                if 'p2p_links' in props:
+                    # Find which local interfaces connect to the router being removed
+                    intfs_to_remove = {
+                        l['local_intf'] for l in props['p2p_links'] if l['peer'] == name
+                    }
+                    # Remove those IPs
+                    for intf in intfs_to_remove:
+                        props['ips'].pop(intf, None)
+                    # Remove the p2p_links entries
+                    props['p2p_links'] = [
+                        l for l in props['p2p_links'] if l['peer'] != name
+                    ]
+
+        # 2. Remove the router and its subnet
         nodes_to_remove = xarxa.find_router_subnet(name)
         nodes_to_remove.append(name)
         for node in nodes_to_remove:
@@ -223,6 +240,9 @@ def remove_node():
             xarxa.net.delNode(xarxa.mininet_nodes[node])
             del xarxa.mininet_nodes[node]
             del xarxa.nodes[node]
+
+        # 3. Recalculate routes for remaining routers
+        _update_all_routes()
     else:
         xarxa.remove_from_matrix(name)
         xarxa.net.delNode(xarxa.mininet_nodes[name])
