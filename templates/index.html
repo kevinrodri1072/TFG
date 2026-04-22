@@ -909,37 +909,42 @@
                 .then(r => r.json())
                 .then(data => {
                     if (!data.ok) return;
-                    var stats = data.stats;
-                    var dot = document.getElementById('sync-dot');
-
-                    if (!stats) {
-                        document.getElementById('sync-count').textContent = '0';
-                        dot.className = 'status-dot grey';
-                        return;
+                    // If no local data, try to fetch from remote (Twin fetching from Original)
+                    if (!data.stats) {
+                        fetch('/metrics/sync/remote')
+                            .then(r => r.json())
+                            .then(remoteData => updateSyncDashboard(remoteData));
+                    } else {
+                        updateSyncDashboard(data);
                     }
-
-                    dot.className = 'status-dot green';
-                    document.getElementById('sync-count').textContent = stats.count;
-                    document.getElementById('sync-avg').textContent   = stats.avg_ms + ' ms';
-                    document.getElementById('sync-min').textContent   = stats.min_ms + ' ms';
-                    document.getElementById('sync-max').textContent   = stats.max_ms + ' ms';
-                    document.getElementById('sync-jitter').textContent = stats.jitter_ms + ' ms';
-
-                    // Recent history (last 8)
-                    var list = document.getElementById('sync-history-list');
-                    list.innerHTML = '';
-                    var recent = data.history.slice(-8).reverse();
-                    recent.forEach(entry => {
-                        var d = new Date(entry.timestamp * 1000);
-                        var time = d.toLocaleTimeString('ca-ES', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-                        var color = entry.latency_ms < 100 ? '#2ecc71' : entry.latency_ms < 300 ? '#f39c12' : '#e74c3c';
-                        list.innerHTML += `
-                            <div class="sync-entry">
-                                <span class="sync-op">${time} · ${entry.operation}</span>
-                                <span class="sync-ms" style="color:${color}">${entry.latency_ms} ms</span>
-                            </div>`;
-                    });
                 });
+        }
+
+        function updateSyncDashboard(data) {
+            if (!data.ok) return;
+            var stats = data.stats;
+            var dot = document.getElementById('sync-dot');
+            if (!stats) {
+                document.getElementById('sync-count').textContent = '0';
+                dot.className = 'status-dot grey';
+                return;
+            }
+            dot.className = 'status-dot green';
+            document.getElementById('sync-count').textContent  = stats.count;
+            document.getElementById('sync-avg').textContent    = stats.avg_ms + ' ms';
+            document.getElementById('sync-min').textContent    = stats.min_ms + ' ms';
+            document.getElementById('sync-max').textContent    = stats.max_ms + ' ms';
+            document.getElementById('sync-jitter').textContent = stats.jitter_ms + ' ms';
+
+            var list   = document.getElementById('sync-history-list');
+            list.innerHTML = '';
+            var recent = data.history.slice(-8).reverse();
+            recent.forEach(entry => {
+                var d     = new Date(entry.timestamp * 1000);
+                var time  = d.toLocaleTimeString('ca-ES', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                var color = entry.latency_ms < 100 ? '#2ecc71' : entry.latency_ms < 300 ? '#f39c12' : '#e74c3c';
+                list.innerHTML += `<div class="sync-entry"><span class="sync-op">${time} · ${entry.operation}</span><span class="sync-ms" style="color:${color}">${entry.latency_ms} ms</span></div>`;
+            });
         }
 
         // Refresh sync metrics every 3 seconds

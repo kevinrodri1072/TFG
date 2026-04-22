@@ -112,6 +112,17 @@ def export():
     return send_file(buffer, mimetype='application/octet-stream',
                      as_attachment=True, download_name='network.mat')
 
+@app.route('/metrics/sync/remote')
+def metrics_sync_remote():
+    """Fetch sync metrics from the Original PC (used by the Twin dashboard)."""
+    try:
+        r = requests.get(
+            f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/metrics/sync',
+            timeout=5
+        )
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
 
 @app.route('/load_network', methods=['POST'])
 def load_network():
