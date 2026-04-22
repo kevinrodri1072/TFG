@@ -132,6 +132,8 @@ def metrics_sync_remote():
 
 @app.route('/load_network', methods=['POST'])
 def load_network():
+    start_time = time.time() # Comencem a comptar
+    
     if request.is_json:
         data      = request.get_json()
         is_sync   = data.get('sync', False)
@@ -149,10 +151,33 @@ def load_network():
         nodes_json = str(mat['nodes_json'][0]) if isinstance(mat['nodes_json'], np.ndarray) else mat['nodes_json']
         new_nodes  = json.loads(nodes_json)
 
+    # Iniciem el reinici local
     threading.Thread(target=xarxa.restart_network, args=(new_matrix, new_nodes)).start()
 
     if not is_sync:
+        # Si som l'original, sincronitzem amb el Twin
         synchronize_full_network(new_matrix, new_nodes)
+        
+        # Calculem el RTT de la sincronització
+        latency_ms = round((time.time() - start_time) * 1000, 2)
+        
+        # REGISTRE PER AL DASHBOARD (Original)
+        with sync_history_lock:
+            sync_latency_history.append({
+                'operation': 'Load Network',
+                'latency_ms': latency_ms,
+                'timestamp': time.time()
+            })
+            
+        # Opcional: Avisar al Twin de la mètrica (com hem fet abans)
+        try:
+            requests.post(
+                f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/sync_metrics',
+                json={'operation': 'Load Network', 'latency_ms': latency_ms},
+                timeout=2
+            )
+        except:
+            pass
 
     return jsonify({'ok': True})
 

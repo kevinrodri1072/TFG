@@ -754,13 +754,29 @@
         function loadNetwork(input) {
             var file = input.files[0];
             if (!file) return;
+            
             var formData = new FormData();
             formData.append('file', file);
+            
+            // Mostrem un missatge o canviem el punt a groc per indicar procés
+            document.querySelector('.status-dot').className = 'status-dot orange';
+
             fetch('/load_network', { method: 'POST', body: formData })
                 .then(r => r.json())
                 .then(data => {
-                    if (data.ok) setTimeout(() => location.reload(), 4000);
-                    else alert('Error loading network: ' + data.error);
+                    if (data.ok) {
+                        // En lloc de fer un reload immediat, actualitzem les mètriques i la topologia
+                        setTimeout(() => {
+                            refreshSyncMetrics(); // Demanem les noves dades de latència al servidor
+                            updateTopology();     // Dibuixem la nova xarxa al vis.js
+                            
+                            // Si realment necessites el reload, fes-lo més tard
+                            // setTimeout(() => location.reload(), 2000); 
+                        }, 1000);
+                    } else {
+                        alert('Error loading network: ' + data.error);
+                        document.querySelector('.status-dot').className = 'status-dot red';
+                    }
                 });
             input.value = '';
         }
