@@ -7,44 +7,57 @@ import json
 import io
 import re
 import psutil
+import copy
 import numpy as np
 from scipy.io import savemat, loadmat
 from collections import deque
 
-DIGITAL_TWIN_IP = '10.4.39.153'  # IP of the Twin.
-DIGITAL_TWIN_PORT = 5000 
+DIGITAL_TWIN_IP   = '10.4.39.153'  # IP of the Twin.
+DIGITAL_TWIN_PORT = 5000
 
 TYPE_TO_NUM = {0: 0, 'host': 1, 'router': 2, 'switch': 3}
 NUM_TO_TYPE = {0: 0, 1: 'host', 2: 'router', 3: 'switch'}
 
+# Sync latency history — only the Original writes to this.
+# The Twin never records anything; latency is measured as RTT from the Original.
 sync_latency_history = deque(maxlen=50)
-sync_history_lock = threading.Lock()
+sync_history_lock    = threading.Lock()
+
+metrics_running = False
+
 
 def synchronize(route, data):
+    """Send a sync request to the Twin and record the RTT as sync latency."""
     try:
         data['sync'] = True
-        data['timestamp'] = time.time()
-        response = requests.post(f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}{route}', json=data)
-        result = response.json()
-        if 'latency_ms' in result:
-            op = route.strip('/')
-            record_sync_latency(op, result['latency_ms'])
+        start_time = time.time()
+        response = requests.post(
+            f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}{route}',
+            json=data, timeout=10
+        )
+        latency_ms = (time.time() - start_time) * 1000
+        if response.status_code == 200:
+            record_sync_latency(route.strip('/'), latency_ms)
     except Exception as e:
         print(f'Synchronization error: {e}')
+
 
 def record_sync_latency(operation, latency_ms):
     with sync_history_lock:
         sync_latency_history.append({
-            'operation': operation,
+            'operation':  operation,
             'latency_ms': round(latency_ms, 2),
-            'timestamp': time.time()
+            'timestamp':  time.time()
         })
 
+
 app = Flask(__name__)
+
 
 @app.route('/')
 def index():
     return render_template('index.html')
+
 
 @app.route('/topology')
 def topology():
@@ -55,16 +68,13 @@ def topology():
             if xarxa.network_matrix[i][j] != 0:
                 node_i = node_names[i]
                 node_j = node_names[j]
-                type_i = xarxa.nodes[node_i]['type']
-                type_j = xarxa.nodes[node_j]['type']
-                if type_i == 'switch' or type_j == 'switch':
+                if xarxa.nodes[node_i]['type'] == 'switch' or xarxa.nodes[node_j]['type'] == 'switch':
                     continue
                 links.append({'from': node_i, 'to': node_j})
     for switch_name, props in xarxa.nodes.items():
         if props['type'] == 'switch':
             switch_idx = node_names.index(switch_name)
-            router = None
-            hosts = []
+            router, hosts = None, []
             for i, val in enumerate(xarxa.network_matrix[switch_idx]):
                 if val != 0:
                     node = node_names[i]
@@ -77,82 +87,103 @@ def topology():
                     links.append({'from': router, 'to': host})
     return jsonify({'nodes': xarxa.nodes, 'links': links})
 
+
 @app.route('/matrix')
 def matrix():
     names = list(xarxa.nodes.keys())
     return jsonify({'names': names, 'matrix': xarxa.network_matrix})
 
+
 @app.route('/export')
 def export():
-    matrix_num = np.array([[TYPE_TO_NUM[cell] for cell in row] for row in xarxa.network_matrix], dtype=np.int32)
+    matrix_num = np.array(
+        [[TYPE_TO_NUM[cell] for cell in row] for row in xarxa.network_matrix],
+        dtype=np.int32
+    )
     node_names = list(xarxa.nodes.keys())
     nodes_json = json.dumps(xarxa.nodes)
     buffer = io.BytesIO()
-    savemat(buffer, {'matrix': matrix_num, 'node_names': np.array(node_names, dtype=object), 'nodes_json': nodes_json})
+    savemat(buffer, {
+        'matrix':     matrix_num,
+        'node_names': np.array(node_names, dtype=object),
+        'nodes_json': nodes_json
+    })
     buffer.seek(0)
-    return send_file(buffer, mimetype='application/octet-stream', as_attachment=True, download_name='network.mat')
+    return send_file(buffer, mimetype='application/octet-stream',
+                     as_attachment=True, download_name='network.mat')
+
 
 @app.route('/load_network', methods=['POST'])
 def load_network():
     if request.is_json:
-        data = request.get_json()
-        is_sync = data.get('sync', False)
+        data      = request.get_json()
+        is_sync   = data.get('sync', False)
         new_matrix = data['matrix']
-        new_nodes = data['nodes']
-        if is_sync and 'timestamp' in data:
-            latency_ms = (time.time() - data['timestamp']) * 1000
-            record_sync_latency('load_network', latency_ms)
+        new_nodes  = data['nodes']
     else:
         is_sync = False
         file = request.files.get('file')
         if not file:
             return jsonify({'ok': False, 'error': 'No file received'})
-        buffer = io.BytesIO(file.read())
-        mat = loadmat(buffer)
+        buffer     = io.BytesIO(file.read())
+        mat        = loadmat(buffer)
         matrix_num = mat['matrix'].tolist()
         new_matrix = [[NUM_TO_TYPE[int(cell)] for cell in row] for row in matrix_num]
         nodes_json = str(mat['nodes_json'][0]) if isinstance(mat['nodes_json'], np.ndarray) else mat['nodes_json']
-        new_nodes = json.loads(nodes_json)
+        new_nodes  = json.loads(nodes_json)
 
     threading.Thread(target=xarxa.restart_network, args=(new_matrix, new_nodes)).start()
+
     if not is_sync:
         synchronize_full_network(new_matrix, new_nodes)
-    if is_sync and 'latency_ms' in locals():
-        return jsonify({'ok': True, 'latency_ms': round(latency_ms, 2)})
+
     return jsonify({'ok': True})
 
+
 def synchronize_full_network(new_matrix, new_nodes):
-    serializable_matrix = [[cell if isinstance(cell, str) else int(cell) for cell in row] for row in new_matrix]
+    serializable_matrix = [
+        [cell if isinstance(cell, str) else int(cell) for cell in row]
+        for row in new_matrix
+    ]
     try:
-        ts = time.time()
-        requests.post(f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/load_network',
-            json={'matrix': serializable_matrix, 'nodes': new_nodes, 'sync': True, 'timestamp': time.time()}, timeout=10)
-        latency_ms = (time.time() - ts) * 1000
+        start_time = time.time()
+        requests.post(
+            f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/load_network',
+            json={'matrix': serializable_matrix, 'nodes': new_nodes, 'sync': True},
+            timeout=10
+        )
+        latency_ms = (time.time() - start_time) * 1000
         record_sync_latency('load_network', latency_ms)
     except Exception as e:
         print(f'Full network synchronization error: {e}')
+
 
 @app.route('/add_host', methods=['POST'])
 def add_host():
     if not xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
-    data = request.json
-    name = data['name']
-    router = data['router']
-    is_sync = data.get('sync', False)
+    data      = request.json
+    name      = data['name']
+    router    = data['router']
+    is_sync   = data.get('sync', False)
+
     if name in xarxa.nodes:
         return jsonify({'ok': False, 'error': f'A node named {name} already exists'})
-    switch = xarxa.find_switch_of_router(router)
-    ip = xarxa.find_next_ip(router)
-    lan_ip = next(ip for ip in xarxa.nodes[router]['ips'].values() if '/24' in ip)
-    gw = lan_ip.split('/')[0]
+
+    switch   = xarxa.find_switch_of_router(router)
+    ip       = xarxa.find_next_ip(router)
+    lan_ip   = next(ip for ip in xarxa.nodes[router]['ips'].values() if '/24' in ip)
+    gw       = lan_ip.split('/')[0]
+
     xarxa.nodes[name] = {'type': 'host', 'ip': ip, 'gw': gw}
     xarxa.update_matrix(name, switch)
-    new_host = xarxa.net.addHost(name, ip=ip)
+
+    new_host     = xarxa.net.addHost(name, ip=ip)
     xarxa.mininet_nodes[name] = new_host
-    sw_node = xarxa.mininet_nodes[switch]
-    num_intfs = len(sw_node.intfList())
+    sw_node      = xarxa.mininet_nodes[switch]
+    num_intfs    = len(sw_node.intfList())
     sw_intf_name = f'{switch}-eth{num_intfs}'
+
     xarxa.net.addLink(new_host, sw_node, intfName1=f'{name}-eth0', intfName2=sw_intf_name)
     new_host.cmd(f'ifconfig {name}-eth0 {ip}')
     new_host.cmd(f'ip route add default via {gw}')
@@ -161,124 +192,100 @@ def add_host():
     new_host.cmd(f'ip link set {name}-eth0 up')
     sw_node.cmd(f'ip link set {sw_intf_name} up')
     sw_node.cmd(f'ovs-vsctl add-port {switch} {sw_intf_name}')
-    if is_sync and 'timestamp' in data:
-        latency_ms = (time.time() - data['timestamp']) * 1000
-        record_sync_latency('add_host', latency_ms)
-        return jsonify({'ok': True, 'latency_ms': round(latency_ms, 2)})
+
     if not is_sync:
         synchronize('/add_host', {'name': name, 'router': router})
     return jsonify({'ok': True})
+
 
 @app.route('/remove_node', methods=['POST'])
 def remove_node():
     if not xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
-    data = request.json
-    name = data['name']
+    data    = request.json
+    name    = data['name']
     is_sync = data.get('sync', False)
+
     if xarxa.nodes[name]['type'] == 'router':
         nodes_to_remove = xarxa.find_router_subnet(name)
         nodes_to_remove.append(name)
         for node in nodes_to_remove:
             xarxa.remove_from_matrix(node)
-            mininet_node = xarxa.mininet_nodes[node]
-            xarxa.net.delNode(mininet_node)
+            xarxa.net.delNode(xarxa.mininet_nodes[node])
             del xarxa.mininet_nodes[node]
             del xarxa.nodes[node]
     else:
         xarxa.remove_from_matrix(name)
-        mininet_node = xarxa.mininet_nodes[name]
-        xarxa.net.delNode(mininet_node)
+        xarxa.net.delNode(xarxa.mininet_nodes[name])
         del xarxa.mininet_nodes[name]
         del xarxa.nodes[name]
-    if is_sync and 'timestamp' in data:
-        latency_ms = (time.time() - data['timestamp']) * 1000
-        record_sync_latency('remove_node', latency_ms)
-        return jsonify({'ok': True, 'latency_ms': round(latency_ms, 2)})
+
     if not is_sync:
         synchronize('/remove_node', {'name': name})
     return jsonify({'ok': True})
+
 
 @app.route('/add_router', methods=['POST'])
 def add_router():
     if not xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
-    data = request.json
-    router_name = data['name']
+    data              = request.json
+    router_name       = data['name']
     connected_routers = data['connected_routers']
-    is_sync = data.get('sync', False)
+    is_sync           = data.get('sync', False)
+
     if router_name in xarxa.nodes:
         return jsonify({'ok': False, 'error': f'A node named {router_name} already exists'})
 
-    # Calculate switch and host subnet
-    switch_num = len([n for n, p in xarxa.nodes.items() if p['type'] == 'switch']) + 1
+    switch_num  = len([n for n, p in xarxa.nodes.items() if p['type'] == 'switch']) + 1
     switch_name = f'sw{switch_num}'
-    subnet_num = xarxa.find_next_subnet()
-    ip_eth1 = f'10.{subnet_num}.0.1/24'
+    subnet_num  = xarxa.find_next_subnet()
+    ip_eth1     = f'10.{subnet_num}.0.1/24'
 
-    # Initialize router in nodes dict
     xarxa.nodes[router_name] = {
-        'type': 'router',
-        'ips': {'lan': ip_eth1},
-        'routes': [],
-        'p2p_links': []
+        'type': 'router', 'ips': {'lan': ip_eth1}, 'routes': [], 'p2p_links': []
     }
     xarxa.update_matrix_multi(router_name, connected_routers)
     xarxa.nodes[switch_name] = {'type': 'switch'}
     xarxa.update_matrix_multi(switch_name, [router_name])
 
-    # Create Mininet nodes
-    new_router = xarxa.net.addHost(router_name, ip='127.0.0.1')
-    new_switch = xarxa.net.addSwitch(switch_name, failMode='standalone')
+    new_router  = xarxa.net.addHost(router_name, ip='127.0.0.1')
+    new_switch  = xarxa.net.addSwitch(switch_name, failMode='standalone')
     xarxa.mininet_nodes[router_name] = new_router
     xarxa.mininet_nodes[switch_name] = new_switch
     new_switch.start([])
 
-    # Create p2p links with each connected router
     eth_idx = 0
     for connected_router in connected_routers:
-        p2p = xarxa.find_next_p2p_subnet()
-
-        intf_new = f'{router_name}-eth{eth_idx}'
+        p2p          = xarxa.find_next_p2p_subnet()
+        intf_new     = f'{router_name}-eth{eth_idx}'
         existing_node = xarxa.mininet_nodes[connected_router]
-        num_existing_intfs = len(existing_node.intfList())
-        intf_existing = f'{connected_router}-eth{num_existing_intfs}'
+        intf_existing = f'{connected_router}-eth{len(existing_node.intfList())}'
 
         xarxa.net.addLink(new_router, existing_node, intfName1=intf_new, intfName2=intf_existing)
-
         new_router.cmd(f'ifconfig {intf_new} {p2p["ip_a"]}/30')
         existing_node.cmd(f'ifconfig {intf_existing} {p2p["ip_b"]}/30')
         new_router.cmd(f'ip link set {intf_new} up')
         existing_node.cmd(f'ip link set {intf_existing} up')
 
-        # Store p2p info in new router
         xarxa.nodes[router_name]['ips'][f'eth{eth_idx}'] = f'{p2p["ip_a"]}/30'
         xarxa.nodes[router_name]['p2p_links'].append({
-            'peer': connected_router,
-            'local_ip': p2p['ip_a'],
-            'peer_ip': p2p['ip_b'],
-            'subnet': p2p['subnet'],
-            'local_intf': f'eth{eth_idx}'
+            'peer': connected_router, 'local_ip': p2p['ip_a'],
+            'peer_ip': p2p['ip_b'], 'subnet': p2p['subnet'], 'local_intf': f'eth{eth_idx}'
         })
 
-        # Store p2p info in existing router
-        existing_props = xarxa.nodes[connected_router]
-        existing_eth_idx = len([k for k in existing_props['ips'] if k.startswith('eth')])
+        existing_props    = xarxa.nodes[connected_router]
+        existing_eth_idx  = len([k for k in existing_props['ips'] if k.startswith('eth')])
         existing_intf_name = f'eth{existing_eth_idx}'
         existing_props['ips'][existing_intf_name] = f'{p2p["ip_b"]}/30'
         if 'p2p_links' not in existing_props:
             existing_props['p2p_links'] = []
         existing_props['p2p_links'].append({
-            'peer': router_name,
-            'local_ip': p2p['ip_b'],
-            'peer_ip': p2p['ip_a'],
-            'subnet': p2p['subnet'],
-            'local_intf': existing_intf_name
+            'peer': router_name, 'local_ip': p2p['ip_b'],
+            'peer_ip': p2p['ip_a'], 'subnet': p2p['subnet'], 'local_intf': existing_intf_name
         })
-
         eth_idx += 1
 
-    # Link new router to its switch (LAN side)
     intf_eth_lan = f'{router_name}-eth{eth_idx}'
     xarxa.net.addLink(new_router, new_switch, intfName1=intf_eth_lan)
     new_router.cmd(f'ifconfig {intf_eth_lan} {ip_eth1}')
@@ -287,44 +294,55 @@ def add_router():
     sw_intf = f'{switch_name}-eth1'
     new_switch.cmd(f'ip link set {sw_intf} up')
     new_switch.cmd(f'ovs-vsctl add-port {switch_name} {sw_intf}')
-
-    # Enable IP forwarding
     new_router.cmd('sysctl -w net.ipv4.ip_forward=1')
     new_router.cmd('ifconfig lo up')
 
-    # Recalculate all routing tables
     _update_all_routes()
 
-    if is_sync and 'timestamp' in data:
-        latency_ms = (time.time() - data['timestamp']) * 1000
-        record_sync_latency('add_router', latency_ms)
-        return jsonify({'ok': True, 'latency_ms': round(latency_ms, 2)})
     if not is_sync:
         synchronize('/add_router', {'name': router_name, 'connected_routers': connected_routers})
     return jsonify({'ok': True})
 
 
-def _update_all_routes():
-    """
-    Recalculates routing tables for all routers using BFS.
-    For each router, adds routes to ALL prefixes in the network:
-    - Host subnets (10.x.0.0/24)
-    - P2P subnets (10.0.x.0/30)
-    """
-    router_names = [n for n, p in xarxa.nodes.items() if p['type'] == 'router']
+@app.route('/rename_node', methods=['POST'])
+def rename_node():
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+    data     = request.json
+    old_name = data['old_name']
+    new_name = data['new_name']
+    is_sync  = data.get('sync', False)
 
-    # Build adjacency graph
+    if not new_name.replace('_', '').replace('-', '').isalnum() or new_name[0].isupper():
+        return jsonify({'ok': False, 'error': 'Name must be lowercase alphanumeric (e.g. h6, router1)'})
+    if old_name not in xarxa.nodes:
+        return jsonify({'ok': False, 'error': f'Node {old_name} not found'})
+    if new_name in xarxa.nodes:
+        return jsonify({'ok': False, 'error': f'A node named {new_name} already exists'})
+
+    new_nodes = {(new_name if n == old_name else n): p for n, p in xarxa.nodes.items()}
+    for props in new_nodes.values():
+        if props['type'] == 'router':
+            for link in props.get('p2p_links', []):
+                if link['peer'] == old_name:
+                    link['peer'] = new_name
+
+    matrix_copy = copy.deepcopy(xarxa.network_matrix)
+    threading.Thread(target=xarxa.restart_network, args=(matrix_copy, new_nodes)).start()
+
+    if not is_sync:
+        synchronize('/rename_node', {'old_name': old_name, 'new_name': new_name})
+    return jsonify({'ok': True})
+
+
+def _update_all_routes():
+    router_names = [n for n, p in xarxa.nodes.items() if p['type'] == 'router']
     adjacency = {r: [] for r in router_names}
     for r in router_names:
         for link in xarxa.nodes[r].get('p2p_links', []):
-            adjacency[r].append({
-                'neighbor': link['peer'],
-                'peer_ip': link['peer_ip'],
-            })
+            adjacency[r].append({'neighbor': link['peer'], 'peer_ip': link['peer_ip']})
 
-    # Collect ALL prefixes in the network
-    all_host_subnets = {}   # router -> host subnet
-    all_p2p_subnets = {}    # subnet -> None (just the set of all p2p subnets)
+    all_host_subnets, all_p2p_subnets = {}, {}
     for r in router_names:
         lan_ip = next(ip for ip in xarxa.nodes[r]['ips'].values() if '/24' in ip)
         all_host_subnets[r] = lan_ip.split('/')[0].rsplit('.', 1)[0] + '.0/24'
@@ -333,12 +351,7 @@ def _update_all_routes():
 
     for src in router_names:
         src_node = xarxa.mininet_nodes[src]
-
-        # BFS to find next-hop to every other router
-        visited = {src}
-        next_hop_map = {}  # dst_router -> next_hop_ip
-        queue = [(src, None)]
-
+        visited, next_hop_map, queue = {src}, {}, [(src, None)]
         while queue:
             current, first_hop = queue.pop(0)
             for link in adjacency[current]:
@@ -349,7 +362,6 @@ def _update_all_routes():
                     next_hop_map[neighbor] = hop
                     queue.append((neighbor, hop))
 
-        # Flush old non-kernel routes
         routes_out = src_node.cmd('ip route show')
         for line in routes_out.strip().split('\n'):
             if line and 'proto kernel' not in line and 'scope link' not in line:
@@ -358,26 +370,21 @@ def _update_all_routes():
                     src_node.cmd(f'ip route del {route_dst} 2>/dev/null || true')
 
         new_routes = []
-
-        # Add routes to all host subnets
         for dst_router, next_hop in next_hop_map.items():
             subnet = all_host_subnets[dst_router]
             src_node.cmd(f'ip route add {subnet} via {next_hop} 2>/dev/null || true')
             new_routes.append(f'{subnet} via {next_hop}')
 
-        # Add routes to all p2p subnets not directly connected
-        local_p2p_subnets = {l['subnet'] for l in xarxa.nodes[src].get('p2p_links', [])}
+        local_p2p = {l['subnet'] for l in xarxa.nodes[src].get('p2p_links', [])}
         for p2p_subnet in all_p2p_subnets:
-            if p2p_subnet not in local_p2p_subnets:
-                # Find which router has this p2p link and what next_hop to use
+            if p2p_subnet not in local_p2p:
                 for dst_router, next_hop in next_hop_map.items():
-                    router_p2p_subnets = {l['subnet'] for l in xarxa.nodes[dst_router].get('p2p_links', [])}
-                    if p2p_subnet in router_p2p_subnets:
+                    if p2p_subnet in {l['subnet'] for l in xarxa.nodes[dst_router].get('p2p_links', [])}:
                         src_node.cmd(f'ip route add {p2p_subnet} via {next_hop} 2>/dev/null || true')
                         new_routes.append(f'{p2p_subnet} via {next_hop}')
                         break
-
         xarxa.nodes[src]['routes'] = new_routes
+
 
 # ─────────────────────────────────────────────
 #  METRICS ROUTES
@@ -385,8 +392,12 @@ def _update_all_routes():
 
 @app.route('/metrics/internal')
 def metrics_internal():
+    global metrics_running
     if not xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
+    if metrics_running:
+        return jsonify({'ok': False, 'error': 'A measurement is already running'})
+
     src = request.args.get('src')
     dst = request.args.get('dst')
     if not src or not dst:
@@ -396,29 +407,29 @@ def metrics_internal():
     if xarxa.nodes[src]['type'] != 'host' or xarxa.nodes[dst]['type'] != 'host':
         return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
 
+    metrics_running = True
     src_node = xarxa.mininet_nodes[src]
     dst_node = xarxa.mininet_nodes[dst]
-    dst_ip = xarxa.nodes[dst]['ip'].split('/')[0]
+    dst_ip   = xarxa.nodes[dst]['ip'].split('/')[0]
 
     ping_result = src_node.cmd(f'ping -c 10 -i 0.2 {dst_ip}')
     latency = {'min': None, 'avg': None, 'max': None}
-    jitter = None
+    jitter  = None
     rtt_match = re.search(r'rtt min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)', ping_result)
     if rtt_match:
         latency['min'] = float(rtt_match.group(1))
         latency['avg'] = float(rtt_match.group(2))
         latency['max'] = float(rtt_match.group(3))
-        jitter        = float(rtt_match.group(4))
+        jitter         = float(rtt_match.group(4))
 
-    bandwidth = {'min': None, 'avg': None, 'max': None}
-    bw_values = []
+    bandwidth, bw_values = {'min': None, 'avg': None, 'max': None}, []
     try:
         dst_node.cmd('pkill -f iperf 2>/dev/null; sleep 0.2')
         dst_node.sendCmd('iperf -s')
         time.sleep(0.5)
-        for _ in range(3):
-            iperf_out = src_node.cmd(f'iperf -c {dst_ip} -t 2 -f m')
-            bw_match = re.search(r'([\d.]+)\s+Mbits/sec', iperf_out)
+        for _ in range(10):
+            iperf_out = src_node.cmd(f'iperf -c {dst_ip} -t 1 -f m')
+            bw_match  = re.search(r'([\d.]+)\s+Mbits/sec', iperf_out)
             if bw_match:
                 bw_values.append(float(bw_match.group(1)))
         dst_node.sendInt()
@@ -437,18 +448,20 @@ def metrics_internal():
         bandwidth['max'] = round(max(bw_values), 2)
 
     cpu_percent = psutil.cpu_percent(interval=0.5)
-    ram = psutil.virtual_memory()
+    ram         = psutil.virtual_memory()
+    metrics_running = False
 
     return jsonify({
         'ok': True, 'src': src, 'dst': dst,
         'latency_ms': latency, 'jitter_ms': jitter, 'bandwidth_mbps': bandwidth,
         'system': {
-            'cpu_percent': cpu_percent,
-            'ram_used_mb': round(ram.used / 1024 / 1024, 1),
+            'cpu_percent':  cpu_percent,
+            'ram_used_mb':  round(ram.used  / 1024 / 1024, 1),
             'ram_total_mb': round(ram.total / 1024 / 1024, 1),
-            'ram_percent': ram.percent
+            'ram_percent':  ram.percent
         }
     })
+
 
 @app.route('/metrics/sync')
 def metrics_sync():
@@ -461,7 +474,7 @@ def metrics_sync():
     mn  = round(min(latencies), 2)
     mx  = round(max(latencies), 2)
     if len(latencies) > 1:
-        diffs = [abs(latencies[i] - latencies[i-1]) for i in range(1, len(latencies))]
+        diffs  = [abs(latencies[i] - latencies[i-1]) for i in range(1, len(latencies))]
         jitter = round(sum(diffs) / len(diffs), 2)
     else:
         jitter = 0.0
@@ -470,81 +483,123 @@ def metrics_sync():
         'stats': {'avg_ms': avg, 'min_ms': mn, 'max_ms': mx, 'jitter_ms': jitter, 'count': len(latencies)}
     })
 
+
 @app.route('/metrics/hosts')
 def metrics_hosts():
     hosts = [name for name, props in xarxa.nodes.items() if props['type'] == 'host']
     return jsonify({'hosts': hosts})
 
-@app.route('/rename_node', methods=['POST'])
-def rename_node():
+
+@app.route('/metrics/global')
+def metrics_global():
+    global metrics_running
     if not xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
-    data = request.json
-    old_name = data['old_name']
-    new_name = data['new_name']
-    is_sync = data.get('sync', False)
+    if metrics_running:
+        return jsonify({'ok': False, 'error': 'A measurement is already running'})
 
-    if not new_name.replace('_', '').replace('-', '').isalnum() or new_name[0].isupper():
-        return jsonify({'ok': False, 'error': 'Name must be lowercase alphanumeric (e.g. h6, router1)'})
-
-    if old_name not in xarxa.nodes:
-        return jsonify({'ok': False, 'error': f'Node {old_name} not found'})
-    if new_name in xarxa.nodes:
-        return jsonify({'ok': False, 'error': f'A node named {new_name} already exists'})
-
-    # Build new nodes dict with renamed key
-    new_nodes = {}
-    for name, props in xarxa.nodes.items():
-        if name == old_name:
-            new_nodes[new_name] = props
-        else:
-            new_nodes[name] = props
-
-    # Update p2p_links references in all routers
-    for name, props in new_nodes.items():
-        if props['type'] == 'router':
-            for link in props.get('p2p_links', []):
-                if link['peer'] == old_name:
-                    link['peer'] = new_name
-
-    # Update host gateways if renaming a router
-    # (gw IPs don't change, so no update needed)
-
-    # Restart network with renamed node
-    # Restart network with renamed node
-    import copy
-    matrix_copy = copy.deepcopy(xarxa.network_matrix)
-    threading.Thread(target=xarxa.restart_network,
-                    args=(matrix_copy, new_nodes)).start()
-
-    if not is_sync:
-        synchronize('/rename_node', {'old_name': old_name, 'new_name': new_name})
-
-    if is_sync and 'timestamp' in data:
-        latency_ms = (time.time() - data['timestamp']) * 1000
-        record_sync_latency('rename_node', latency_ms)
-        return jsonify({'ok': True, 'latency_ms': round(latency_ms, 2)})
-
-    return jsonify({'ok': True})
-
-@app.route('/debug')
-def debug():
-    output = {}
-    for name, props in xarxa.nodes.items():
-        if props['type'] == 'router':
-            node = xarxa.mininet_nodes[name]
-            output[name] = {
-                'ip_route': node.cmd('ip route'),
-                'ip_addr': node.cmd('ip addr show'),
-            }
     hosts = [n for n, p in xarxa.nodes.items() if p['type'] == 'host']
-    if len(hosts) >= 2:
-        h_a = xarxa.mininet_nodes[hosts[-2]]
-        h_b = xarxa.mininet_nodes[hosts[-1]]
-        ip_b = xarxa.nodes[hosts[-1]]['ip'].split('/')[0]
-        output[f'ping_{hosts[-2]}_to_{hosts[-1]}'] = h_a.cmd(f'ping -c 1 -W 1 {ip_b}')
-        output['router3_nodes_dict'] = xarxa.nodes.get('router3', {})
-    return jsonify(output)
+    if len(hosts) < 2:
+        return jsonify({'ok': False, 'error': 'Need at least 2 hosts'})
+
+    metrics_running = True
+    pairs = [(hosts[i], hosts[j]) for i in range(len(hosts)) for j in range(i+1, len(hosts))]
+
+    ping_results, ping_lock = {}, threading.Lock()
+
+    def ping_pair(src, dst):
+        src_node = xarxa.mininet_nodes[src]
+        dst_ip   = xarxa.nodes[dst]['ip'].split('/')[0]
+        out      = src_node.cmd(f'ping -c 5 -i 0.2 {dst_ip}')
+        match    = re.search(r'rtt min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)', out)
+        if match:
+            with ping_lock:
+                ping_results[f'{src}->{dst}'] = {
+                    'min': float(match.group(1)), 'avg': float(match.group(2)),
+                    'max': float(match.group(3)), 'jitter': float(match.group(4)),
+                }
+
+    def get_parallel_groups(pairs):
+        groups, remaining = [], list(pairs)
+        while remaining:
+            group, used = [], set()
+            for pair in remaining[:]:
+                s, d = pair
+                if s not in used and d not in used:
+                    group.append(pair); used.add(s); used.add(d); remaining.remove(pair)
+            groups.append(group)
+        return groups
+
+    for group in get_parallel_groups(pairs):
+        threads = [threading.Thread(target=ping_pair, args=(s, d)) for s, d in group]
+        for t in threads: t.start()
+        for t in threads: t.join()
+
+    bw_results = {}
+    for src, dst in pairs:
+        src_node = xarxa.mininet_nodes[src]
+        dst_node = xarxa.mininet_nodes[dst]
+        dst_ip   = xarxa.nodes[dst]['ip'].split('/')[0]
+        try:
+            dst_node.cmd('pkill -f iperf 2>/dev/null; sleep 0.1')
+            dst_node.sendCmd('iperf -s')
+            time.sleep(0.3)
+            bw_values = []
+            for _ in range(3):
+                out     = src_node.cmd(f'iperf -c {dst_ip} -t 1 -f m')
+                bw_match = re.search(r'([\d.]+)\s+Mbits/sec', out)
+                if bw_match:
+                    bw_values.append(float(bw_match.group(1)))
+            dst_node.sendInt()
+            dst_node.waitOutput()
+            if bw_values:
+                bw_results[f'{src}->{dst}'] = {
+                    'min': round(min(bw_values), 2),
+                    'avg': round(sum(bw_values)/len(bw_values), 2),
+                    'max': round(max(bw_values), 2),
+                }
+        except Exception as e:
+            print(f'iperf error {src}->{dst}: {e}')
+            try:
+                dst_node.sendInt(); dst_node.waitOutput()
+            except:
+                pass
+
+    def safe_stats(values):
+        if not values: return {'min': None, 'avg': None, 'max': None}
+        return {'min': round(min(values), 2), 'avg': round(sum(values)/len(values), 2), 'max': round(max(values), 2)}
+
+    all_avg_lat = [v['avg']    for v in ping_results.values()]
+    all_min_lat = [v['min']    for v in ping_results.values()]
+    all_max_lat = [v['max']    for v in ping_results.values()]
+    all_jitter  = [v['jitter'] for v in ping_results.values()]
+    all_avg_bw  = [v['avg']    for v in bw_results.values()]
+    all_min_bw  = [v['min']    for v in bw_results.values()]
+    all_max_bw  = [v['max']    for v in bw_results.values()]
+
+    cpu_percent = psutil.cpu_percent(interval=0.5)
+    ram         = psutil.virtual_memory()
+    metrics_running = False
+
+    return jsonify({
+        'ok': True,
+        'pairs_tested':       len(pairs),
+        'latency_ms':         safe_stats(all_avg_lat),
+        'latency_min_ms':     round(min(all_min_lat), 2) if all_min_lat else None,
+        'latency_max_ms':     round(max(all_max_lat), 2) if all_max_lat else None,
+        'jitter_ms':          safe_stats(all_jitter),
+        'bandwidth_mbps':     safe_stats(all_avg_bw),
+        'bandwidth_min_mbps': round(min(all_min_bw), 2) if all_min_bw else None,
+        'bandwidth_max_mbps': round(max(all_max_bw), 2) if all_max_bw else None,
+        'per_pair':           {'latency': ping_results, 'bandwidth': bw_results},
+        'system': {
+            'cpu_percent':  cpu_percent,
+            'ram_used_mb':  round(ram.used  / 1024 / 1024, 1),
+            'ram_total_mb': round(ram.total / 1024 / 1024, 1),
+            'ram_percent':  ram.percent
+        }
+    })
+
 
 if __name__ == '__main__':
     t = threading.Thread(target=xarxa.start_network)

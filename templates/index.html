@@ -411,7 +411,42 @@
                     </div>
                 </div>
             </div>
+            <!-- Global network metrics -->
+            <div class="metrics-section">
+                <h3><i class="fa fa-globe"></i> Global Network</h3>
+                <button class="btn-measure" onclick="measureGlobal()" id="btn-global">Global Scan</button>
+                <div class="measuring-spinner" id="global-spinner">⏳ Scanning all pairs...</div>
+                <div id="global-pairs" style="font-size:11px; color:#7f8c8d; margin-top:6px;"></div>
 
+                <div style="margin-top:10px;">
+                    <div class="metric-row">
+                        <span class="metric-label">Latency avg</span>
+                        <span class="metric-value" id="g-lat-avg">—</span>
+                    </div>
+                    <div class="metric-sub">
+                        <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="g-lat-min">—</div></div>
+                        <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="g-lat-avg2">—</div></div>
+                        <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="g-lat-max">—</div></div>
+                    </div>
+                </div>
+
+                <div class="metric-row" style="margin-top:8px;">
+                    <span class="metric-label">Jitter avg</span>
+                    <span class="metric-value" id="g-jitter">—</span>
+                </div>
+
+                <div style="margin-top:8px;">
+                    <div class="metric-row">
+                        <span class="metric-label">Bandwidth avg</span>
+                        <span class="metric-value" id="g-bw-avg">—</span>
+                    </div>
+                    <div class="metric-sub">
+                        <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="g-bw-min">—</div></div>
+                        <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="g-bw-avg2">—</div></div>
+                        <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="g-bw-max">—</div></div>
+                    </div>
+                </div>
+            </div>
             <!-- System resources -->
             <div class="metrics-section">
                 <h3><i class="fa fa-server"></i> System Resources</h3>
@@ -433,7 +468,6 @@
                 </div>
                 <div style="font-size:11px; color:#7f8c8d; margin-top:3px;" id="ram-detail">—</div>
             </div>
-
             <!-- Digital Twin sync metrics -->
             <div class="metrics-section">
                 <h3><i class="fa fa-refresh"></i> Digital Twin Sync</h3>
@@ -464,7 +498,7 @@
                 <div style="margin-top:10px; font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recent operations:</div>
                 <div id="sync-history-list"></div>
             </div>
-
+            
         </div><!-- end metrics-panel -->
     </div><!-- end main-layout -->
 
@@ -814,6 +848,62 @@
                 });
         }
 
+        function measureGlobal() {
+            var btn = document.getElementById('btn-global');
+            btn.disabled = true;
+            document.getElementById('global-spinner').style.display = 'block';
+            document.getElementById('global-pairs').textContent = '';
+
+            fetch('/metrics/global')
+                .then(r => r.json())
+                .then(data => {
+                    btn.disabled = false;
+                    document.getElementById('global-spinner').style.display = 'none';
+                    if (!data.ok) { alert('Error: ' + data.error); return; }
+
+                    document.getElementById('global-pairs').textContent =
+                        data.pairs_tested + ' pairs tested';
+
+                    // Latency
+                    var lat = data.latency_ms;
+                    document.getElementById('g-lat-avg').textContent  = lat.avg !== null ? lat.avg + ' ms' : '—';
+                    document.getElementById('g-lat-avg2').textContent = lat.avg !== null ? lat.avg : '—';
+                    document.getElementById('g-lat-min').textContent  = data.latency_min_ms !== null ? data.latency_min_ms : '—';
+                    document.getElementById('g-lat-max').textContent  = data.latency_max_ms !== null ? data.latency_max_ms : '—';
+
+                    var latEl = document.getElementById('g-lat-avg');
+                    if (lat.avg !== null)
+                        latEl.className = 'metric-value ' + (lat.avg < 5 ? 'good' : lat.avg < 20 ? 'warn' : 'bad');
+
+                    // Jitter
+                    var j = data.jitter_ms;
+                    document.getElementById('g-jitter').textContent = j.avg !== null ? j.avg + ' ms' : '—';
+
+                    // Bandwidth
+                    var bw = data.bandwidth_mbps;
+                    document.getElementById('g-bw-avg').textContent  = bw.avg !== null ? bw.avg + ' Mbps' : '—';
+                    document.getElementById('g-bw-avg2').textContent = bw.avg !== null ? bw.avg : '—';
+                    document.getElementById('g-bw-min').textContent  = data.bandwidth_min_mbps !== null ? data.bandwidth_min_mbps : '—';
+                    document.getElementById('g-bw-max').textContent  = data.bandwidth_max_mbps !== null ? data.bandwidth_max_mbps : '—';
+                    
+                    // System
+                    var sys = data.system;
+                    document.getElementById('cpu-val').textContent = sys.cpu_percent + '%';
+                    document.getElementById('cpu-bar').style.width = sys.cpu_percent + '%';
+                    document.getElementById('cpu-bar').style.background =
+                        sys.cpu_percent < 60 ? '#3498db' : sys.cpu_percent < 85 ? '#f39c12' : '#e74c3c';
+                    document.getElementById('ram-val').textContent = sys.ram_percent + '%';
+                    document.getElementById('ram-bar').style.width = sys.ram_percent + '%';
+                    document.getElementById('ram-detail').textContent =
+                        sys.ram_used_mb.toFixed(0) + ' MB / ' + sys.ram_total_mb.toFixed(0) + ' MB';
+                })
+                .catch(() => {
+                    btn.disabled = false;
+                    document.getElementById('global-spinner').style.display = 'none';
+                    alert('Connection error');
+                });
+        }
+        
         function refreshSyncMetrics() {
             fetch('/metrics/sync')
                 .then(r => r.json())
