@@ -586,6 +586,45 @@ def _update_all_routes():
 #  METRICS ROUTES
 # ─────────────────────────────────────────────
 
+@app.route('/ip_dashboard')
+def ip_dashboard():
+    flat    = []
+    subnets = {}  # subnet_str -> list of members
+
+    for name, props in xarxa.nodes.items():
+        t = props['type']
+        if t == 'host':
+            ip = props.get('ip', '—')
+            gw = props.get('gw', None)
+            flat.append({'node': name, 'type': t, 'intf': 'eth0', 'ip': ip, 'gw': gw})
+            # Group by subnet
+            subnet = ip.rsplit('.', 1)[0] + '.0/' + ip.split('/')[1] if '/' in ip else ip
+            subnets.setdefault(subnet, []).append(
+                {'node': name, 'type': t, 'intf': 'eth0', 'ip': ip, 'gw': gw})
+
+        elif t == 'router':
+            for intf, ip in props.get('ips', {}).items():
+                if intf == 'lan':
+                    continue
+                gw = None
+                flat.append({'node': name, 'type': t, 'intf': intf, 'ip': ip, 'gw': gw})
+                subnet = ip.rsplit('.', 1)[0] + '.0/' + ip.split('/')[1] if '/' in ip else ip
+                subnets.setdefault(subnet, []).append(
+                    {'node': name, 'type': t, 'intf': intf, 'ip': ip, 'gw': gw})
+
+    # Sort flat by type priority then name
+    type_order = {'router': 0, 'host': 1, 'switch': 2}
+    flat.sort(key=lambda r: (type_order.get(r['type'], 9), r['node']))
+
+    # Build sorted subnet list
+    subnet_list = [
+        {'subnet': s, 'members': sorted(members, key=lambda m: (m['type'], m['node']))}
+        for s, members in sorted(subnets.items())
+    ]
+
+    return jsonify({'ok': True, 'flat': flat, 'subnets': subnet_list})
+
+
 @app.route('/router_routes')
 def get_router_routes():
     router = request.args.get('router')

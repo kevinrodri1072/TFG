@@ -289,6 +289,7 @@
     <div id="controls">
         <button onclick="showRouterForm()">Add Router</button>
         <button onclick="showMatrix()">View Matrix</button>
+        <button onclick="showIPDashboard()">IP Dashboard</button>
         <button onclick="saveNetwork()">Save Network</button>
         <button onclick="document.getElementById('load-input').click()">Load Network</button>
         <input type="file" id="load-input" accept=".mat" style="display:none" onchange="loadNetwork(this)">
@@ -360,6 +361,37 @@
             </div>
         </div>
     </div>
+    <!-- IP Dashboard modal -->
+    <div id="ip-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; overflow:auto;">
+        <div style="background:white; margin:4% auto; padding:20px; width:92%; max-width:820px; border-radius:8px; max-height:85vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <h2 style="margin:0;">IP Dashboard</h2>
+                <div style="display:flex; gap:6px;">
+                    <button id="ip-tab-flat"    onclick="setIPView('flat')"    style="padding:5px 14px; border-radius:4px; border:1px solid #2c3e50; background:#2c3e50; color:white; cursor:pointer; font-size:13px;">Flat</button>
+                    <button id="ip-tab-grouped" onclick="setIPView('grouped')" style="padding:5px 14px; border-radius:4px; border:1px solid #ccc; background:white; color:#333; cursor:pointer; font-size:13px;">By Subnet</button>
+                    <button onclick="closeIPDashboard()" style="padding:5px 14px; background:#e74c3c; color:white; border:none; border-radius:4px; cursor:pointer; font-size:13px; margin-left:8px;">✕</button>
+                </div>
+            </div>
+            <!-- Flat view -->
+            <div id="ip-view-flat">
+                <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead>
+                        <tr style="background:#f0f0f0;">
+                            <th style="padding:7px 10px; text-align:left; border:1px solid #ccc;">Node</th>
+                            <th style="padding:7px 10px; text-align:left; border:1px solid #ccc;">Type</th>
+                            <th style="padding:7px 10px; text-align:left; border:1px solid #ccc;">Interface</th>
+                            <th style="padding:7px 10px; text-align:left; border:1px solid #ccc;">IP / Mask</th>
+                            <th style="padding:7px 10px; text-align:left; border:1px solid #ccc;">Gateway</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ip-flat-tbody"></tbody>
+                </table>
+            </div>
+            <!-- Grouped view -->
+            <div id="ip-view-grouped" style="display:none;"></div>
+        </div>
+    </div>
+
     <div id="matrix-modal">
         <div class="content">
             <h2>Adjacency Matrix</h2>
@@ -984,6 +1016,90 @@
                         sys.ram_used_mb.toFixed(0) + ' MB / ' + sys.ram_total_mb.toFixed(0) + ' MB';
                 })
                 .catch(() => {});
+        }
+
+        // ── IP Dashboard ──
+        var ipView = 'flat';
+
+        function showIPDashboard() {
+            document.getElementById('ip-modal').style.display = 'block';
+            setIPView('flat');
+            loadIPDashboard();
+        }
+
+        function closeIPDashboard() {
+            document.getElementById('ip-modal').style.display = 'none';
+        }
+
+        function setIPView(view) {
+            ipView = view;
+            document.getElementById('ip-view-flat').style.display    = view === 'flat'    ? 'block' : 'none';
+            document.getElementById('ip-view-grouped').style.display = view === 'grouped' ? 'block' : 'none';
+            document.getElementById('ip-tab-flat').style.background    = view === 'flat'    ? '#2c3e50' : 'white';
+            document.getElementById('ip-tab-flat').style.color         = view === 'flat'    ? 'white'   : '#333';
+            document.getElementById('ip-tab-flat').style.borderColor   = view === 'flat'    ? '#2c3e50' : '#ccc';
+            document.getElementById('ip-tab-grouped').style.background = view === 'grouped' ? '#2c3e50' : 'white';
+            document.getElementById('ip-tab-grouped').style.color      = view === 'grouped' ? 'white'   : '#333';
+            document.getElementById('ip-tab-grouped').style.borderColor= view === 'grouped' ? '#2c3e50' : '#ccc';
+        }
+
+        function loadIPDashboard() {
+            fetch('/ip_dashboard')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.ok) return;
+                    renderFlatView(data.flat);
+                    renderGroupedView(data.subnets);
+                });
+        }
+
+        function renderFlatView(rows) {
+            var typeColors = { host: '#d4edda', router: '#cce5ff', switch: '#fff3cd' };
+            var tbody = document.getElementById('ip-flat-tbody');
+            tbody.innerHTML = '';
+            rows.forEach(r => {
+                var bg = typeColors[r.type] || 'white';
+                tbody.innerHTML += `
+                    <tr style="background:${bg};">
+                        <td style="padding:6px 10px; border:1px solid #eee; font-weight:bold;">${r.node}</td>
+                        <td style="padding:6px 10px; border:1px solid #eee;">${r.type}</td>
+                        <td style="padding:6px 10px; border:1px solid #eee; font-family:monospace;">${r.intf}</td>
+                        <td style="padding:6px 10px; border:1px solid #eee; font-family:monospace;">${r.ip}</td>
+                        <td style="padding:6px 10px; border:1px solid #eee; font-family:monospace;">${r.gw || '—'}</td>
+                    </tr>`;
+            });
+        }
+
+        function renderGroupedView(subnets) {
+            var div = document.getElementById('ip-view-grouped');
+            div.innerHTML = '';
+            subnets.forEach(s => {
+                var rows = s.members.map(m => `
+                    <tr>
+                        <td style="padding:5px 10px; border:1px solid #eee; font-weight:bold;">${m.node}</td>
+                        <td style="padding:5px 10px; border:1px solid #eee;">${m.type}</td>
+                        <td style="padding:5px 10px; border:1px solid #eee; font-family:monospace;">${m.intf}</td>
+                        <td style="padding:5px 10px; border:1px solid #eee; font-family:monospace;">${m.ip}</td>
+                        <td style="padding:5px 10px; border:1px solid #eee; font-family:monospace;">${m.gw || '—'}</td>
+                    </tr>`).join('');
+                div.innerHTML += `
+                    <div style="margin-bottom:18px;">
+                        <div style="background:#2c3e50; color:white; padding:7px 12px; border-radius:4px 4px 0 0; font-size:13px; font-weight:bold; display:flex; justify-content:space-between;">
+                            <span>🌐 ${s.subnet}</span>
+                            <span style="font-weight:normal; font-size:12px;">${s.members.length} node${s.members.length !== 1 ? 's' : ''}</span>
+                        </div>
+                        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                            <thead><tr style="background:#f8f9fa;">
+                                <th style="padding:5px 10px; text-align:left; border:1px solid #ccc;">Node</th>
+                                <th style="padding:5px 10px; text-align:left; border:1px solid #ccc;">Type</th>
+                                <th style="padding:5px 10px; text-align:left; border:1px solid #ccc;">Interface</th>
+                                <th style="padding:5px 10px; text-align:left; border:1px solid #ccc;">IP / Mask</th>
+                                <th style="padding:5px 10px; text-align:left; border:1px solid #ccc;">Gateway</th>
+                            </tr></thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                    </div>`;
+            });
         }
 
         // ── Routes modal ──
