@@ -211,13 +211,19 @@ def add_host():
     sw_intf_name = f'{switch}-eth{num_intfs}'
 
     xarxa.net.addLink(new_host, sw_node, intfName1=f'{name}-eth0', intfName2=sw_intf_name)
-    new_host.cmd(f'ifconfig {name}-eth0 {ip}')
-    new_host.cmd(f'ip route add default via {gw}')
-    new_host.cmd('ifconfig lo up')
-    new_host.cmd('ip link set lo up')
-    new_host.cmd(f'ip link set {name}-eth0 up')
-    sw_node.cmd(f'ip link set {sw_intf_name} up')
-    sw_node.cmd(f'ovs-vsctl add-port {switch} {sw_intf_name}')
+    # Millora 1: agrupar les 5 cmds del host en una sola crida
+    new_host.cmd(
+        f'ifconfig {name}-eth0 {ip} ; '
+        f'ip route add default via {gw} ; '
+        f'ifconfig lo up ; '
+        f'ip link set lo up ; '
+        f'ip link set {name}-eth0 up'
+    )
+    # Millora 1: agrupar les 2 cmds del switch en una sola crida
+    sw_node.cmd(
+        f'ip link set {sw_intf_name} up ; '
+        f'ovs-vsctl add-port {switch} {sw_intf_name}'
+    )
     t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
@@ -311,16 +317,21 @@ def add_router():
 
     eth_idx = 0
     for connected_router in connected_routers:
-        p2p          = xarxa.find_next_p2p_subnet()
-        intf_new     = f'{router_name}-eth{eth_idx}'
+        p2p           = xarxa.find_next_p2p_subnet()
+        intf_new      = f'{router_name}-eth{eth_idx}'
         existing_node = xarxa.mininet_nodes[connected_router]
         intf_existing = f'{connected_router}-eth{len(existing_node.intfList())}'
 
         xarxa.net.addLink(new_router, existing_node, intfName1=intf_new, intfName2=intf_existing)
-        new_router.cmd(f'ifconfig {intf_new} {p2p["ip_a"]}/30')
-        existing_node.cmd(f'ifconfig {intf_existing} {p2p["ip_b"]}/30')
-        new_router.cmd(f'ip link set {intf_new} up')
-        existing_node.cmd(f'ip link set {intf_existing} up')
+        # Millora 1: agrupar totes les cmds de configuració d'aquesta interfície en una sola crida
+        new_router.cmd(
+            f'ifconfig {intf_new} {p2p["ip_a"]}/30 ; '
+            f'ip link set {intf_new} up'
+        )
+        existing_node.cmd(
+            f'ifconfig {intf_existing} {p2p["ip_b"]}/30 ; '
+            f'ip link set {intf_existing} up'
+        )
 
         xarxa.nodes[router_name]['ips'][f'eth{eth_idx}'] = f'{p2p["ip_a"]}/30'
         xarxa.nodes[router_name]['p2p_links'].append({
@@ -328,8 +339,8 @@ def add_router():
             'peer_ip': p2p['ip_b'], 'subnet': p2p['subnet'], 'local_intf': f'eth{eth_idx}'
         })
 
-        existing_props    = xarxa.nodes[connected_router]
-        existing_eth_idx  = len([k for k in existing_props['ips'] if k.startswith('eth')])
+        existing_props     = xarxa.nodes[connected_router]
+        existing_eth_idx   = len([k for k in existing_props['ips'] if k.startswith('eth')])
         existing_intf_name = f'eth{existing_eth_idx}'
         existing_props['ips'][existing_intf_name] = f'{p2p["ip_b"]}/30'
         if 'p2p_links' not in existing_props:
@@ -342,14 +353,20 @@ def add_router():
 
     intf_eth_lan = f'{router_name}-eth{eth_idx}'
     xarxa.net.addLink(new_router, new_switch, intfName1=intf_eth_lan)
-    new_router.cmd(f'ifconfig {intf_eth_lan} {ip_eth1}')
-    new_router.cmd(f'ip link set {intf_eth_lan} up')
+    # Millora 1: agrupar les 4 cmds finals del router nou en una sola crida
+    new_router.cmd(
+        f'ifconfig {intf_eth_lan} {ip_eth1} ; '
+        f'ip link set {intf_eth_lan} up ; '
+        f'sysctl -w net.ipv4.ip_forward=1 ; '
+        f'ifconfig lo up'
+    )
     xarxa.nodes[router_name]['ips'][f'eth{eth_idx}'] = ip_eth1
     sw_intf = f'{switch_name}-eth1'
-    new_switch.cmd(f'ip link set {sw_intf} up')
-    new_switch.cmd(f'ovs-vsctl add-port {switch_name} {sw_intf}')
-    new_router.cmd('sysctl -w net.ipv4.ip_forward=1')
-    new_router.cmd('ifconfig lo up')
+    # Millora 1: agrupar les 2 cmds del switch en una sola crida
+    new_switch.cmd(
+        f'ip link set {sw_intf} up ; '
+        f'ovs-vsctl add-port {switch_name} {sw_intf}'
+    )
 
     _update_all_routes()
     t_local_ms = round((time.time() - t_local_start) * 1000, 2)
@@ -421,17 +438,13 @@ def _update_all_routes():
                     next_hop_map[neighbor] = hop
                     queue.append((neighbor, hop))
 
-        routes_out = src_node.cmd('ip route show')
-        for line in routes_out.strip().split('\n'):
-            if line and 'proto kernel' not in line and 'scope link' not in line:
-                route_dst = line.strip().split()[0]
-                if '/' in route_dst:
-                    src_node.cmd(f'ip route del {route_dst} 2>/dev/null || true')
-
+        # Millora 2: usar 'ip route replace' en lloc de show+del+add.
+        # 'replace' crea la ruta si no existeix i l'actualitza si ja hi és,
+        # eliminant el 'ip route show' i tots els 'ip route del' individuals.
         new_routes = []
         for dst_router, next_hop in next_hop_map.items():
             subnet = all_host_subnets[dst_router]
-            src_node.cmd(f'ip route add {subnet} via {next_hop} 2>/dev/null || true')
+            src_node.cmd(f'ip route replace {subnet} via {next_hop} 2>/dev/null || true')
             new_routes.append(f'{subnet} via {next_hop}')
 
         local_p2p = {l['subnet'] for l in xarxa.nodes[src].get('p2p_links', [])}
@@ -439,7 +452,7 @@ def _update_all_routes():
             if p2p_subnet not in local_p2p:
                 for dst_router, next_hop in next_hop_map.items():
                     if p2p_subnet in {l['subnet'] for l in xarxa.nodes[dst_router].get('p2p_links', [])}:
-                        src_node.cmd(f'ip route add {p2p_subnet} via {next_hop} 2>/dev/null || true')
+                        src_node.cmd(f'ip route replace {p2p_subnet} via {next_hop} 2>/dev/null || true')
                         new_routes.append(f'{p2p_subnet} via {next_hop}')
                         break
         xarxa.nodes[src]['routes'] = new_routes
