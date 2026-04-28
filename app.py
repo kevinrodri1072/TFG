@@ -692,12 +692,16 @@ def metrics_global():
 @app.route('/sync_metrics', methods=['POST'])
 def update_sync_metrics():
     data = request.json
+    entry = {
+        'operation':    data.get('operation', 'External Update'),
+        'latency_ms':   data.get('latency_ms'),
+        't_local_ms':   data.get('t_local_ms'),
+        't_network_ms': data.get('t_network_ms'),
+        't_twin_ms':    data.get('t_twin_ms'),
+        'timestamp':    data.get('timestamp', time.time())
+    }
     with sync_history_lock:
-        sync_latency_history.append({
-            'operation': data.get('operation', 'External Update'),
-            'latency_ms': data.get('latency_ms'),
-            'timestamp': time.time()
-        })
+        sync_latency_history.append(entry)
     return jsonify({'ok': True})
 if __name__ == '__main__':
     t = threading.Thread(target=xarxa.start_network)
