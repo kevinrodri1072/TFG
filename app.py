@@ -586,6 +586,38 @@ def _update_all_routes():
 #  METRICS ROUTES
 # ─────────────────────────────────────────────
 
+@app.route('/metrics/ping')
+def metrics_ping():
+    """Fast ping-only measurement (no iperf). ~3s."""
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    src = request.args.get('src')
+    dst = request.args.get('dst')
+    if not src or not dst:
+        return jsonify({'ok': False, 'error': 'src and dst parameters required'})
+    if src not in xarxa.nodes or dst not in xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Node not found'})
+    if xarxa.nodes[src]['type'] != 'host' or xarxa.nodes[dst]['type'] != 'host':
+        return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
+
+    src_node = xarxa.mininet_nodes[src]
+    dst_ip   = xarxa.nodes[dst]['ip'].split('/')[0]
+
+    ping_result = src_node.cmd(f'ping -c 10 -i 0.2 {dst_ip}')
+    latency = {'min': None, 'avg': None, 'max': None}
+    jitter  = None
+    match = re.search(r'rtt min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)', ping_result)
+    if match:
+        latency['min'] = float(match.group(1))
+        latency['avg'] = float(match.group(2))
+        latency['max'] = float(match.group(3))
+        jitter         = float(match.group(4))
+
+    return jsonify({'ok': True, 'src': src, 'dst': dst,
+                    'latency_ms': latency, 'jitter_ms': jitter})
+
+
 @app.route('/metrics/internal')
 def metrics_internal():
     global metrics_running
