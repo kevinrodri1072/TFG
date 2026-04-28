@@ -165,21 +165,57 @@ def load_network():
 
 
 
+def synchronize_snapshot(operation, t_local_ms):
+    """
+    Sync the Twin by sending a full state snapshot (matrix + nodes).
+    This is the Opció B approach: instead of replicating each individual
+    Mininet operation, we send the current state and let the Twin rebuild.
+
+    Always runs in a background thread so the browser is never blocked.
+    Measures t_network_ms as the HTTP round-trip to /load_network.
+    t_twin_ms is not available here because the Twin rebuilds asynchronously,
+    so we record None — honest representation of snapshot-based sync.
+    """
+    serializable_matrix = [
+        [cell if isinstance(cell, str) else int(cell) for cell in row]
+        for row in xarxa.network_matrix
+    ]
+    try:
+        t_net_start = time.time()
+        requests.post(
+            f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/load_network',
+            json={'matrix': serializable_matrix, 'nodes': xarxa.nodes, 'sync': True},
+            timeout=10
+        )
+        t_network_ms = round((time.time() - t_net_start) * 1000, 2)
+        # t_twin_ms is None: Twin rebuilds async, we don't wait for it
+        record_sync_latency(operation, t_local_ms, t_network_ms, None)
+    except Exception as e:
+        print(f'Snapshot sync error: {e}')
+
+def sync_in_background(operation, t_local_ms):
+    """Launch synchronize_snapshot in a daemon thread."""
+    threading.Thread(
+        target=synchronize_snapshot,
+        args=(operation, t_local_ms),
+        daemon=True
+    ).start()
+
 def synchronize_full_network(new_matrix, new_nodes):
+    """Legacy: used by load_network route. Kept for backwards compat."""
     serializable_matrix = [
         [cell if isinstance(cell, str) else int(cell) for cell in row]
         for row in new_matrix
     ]
     try:
-        start_time = time.time()
+        t_net_start = time.time()
         requests.post(
             f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/load_network',
             json={'matrix': serializable_matrix, 'nodes': new_nodes, 'sync': True},
             timeout=10
         )
-        latency_ms = (time.time() - start_time) * 1000
-        # Ara record_sync_latency ja existeix i no donarà NameError
-        record_sync_latency('Load Network', latency_ms)
+        t_network_ms = round((time.time() - t_net_start) * 1000, 2)
+        record_sync_latency('load_network', 0, t_network_ms, None)
     except Exception as e:
         print(f'Full network synchronization error: {e}')
 
@@ -227,7 +263,7 @@ def add_host():
     t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
-        synchronize('/add_host', {'name': name, 'router': router}, t_local_ms)
+        sync_in_background('add_host', t_local_ms)
         return jsonify({'ok': True})
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
@@ -279,7 +315,7 @@ def remove_node():
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
-        synchronize('/remove_node', {'name': name}, t_local_ms)
+        sync_in_background('remove_node', t_local_ms)
         return jsonify({'ok': True})
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
@@ -372,7 +408,7 @@ def add_router():
     t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
-        synchronize('/add_router', {'name': router_name, 'connected_routers': connected_routers}, t_local_ms)
+        sync_in_background('add_router', t_local_ms)
         return jsonify({'ok': True})
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
@@ -406,7 +442,7 @@ def rename_node():
     t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
-        synchronize('/rename_node', {'old_name': old_name, 'new_name': new_name}, t_local_ms)
+        sync_in_background('rename_node', t_local_ms)
         return jsonify({'ok': True})
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
