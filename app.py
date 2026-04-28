@@ -586,6 +586,91 @@ def _update_all_routes():
 #  METRICS ROUTES
 # ─────────────────────────────────────────────
 
+@app.route('/router_routes')
+def get_router_routes():
+    router = request.args.get('router')
+    if not router or router not in xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Router not found'})
+    if xarxa.nodes[router]['type'] != 'router':
+        return jsonify({'ok': False, 'error': f'{router} is not a router'})
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    node = xarxa.mininet_nodes[router]
+    raw  = node.cmd('ip route show')
+    routes = []
+    for line in raw.strip().split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        dst = parts[0]
+        via = None
+        if 'via' in parts:
+            via = parts[parts.index('via') + 1]
+        routes.append({'dst': dst, 'via': via, 'raw': line})
+    return jsonify({'ok': True, 'router': router, 'routes': routes})
+
+
+@app.route('/router_routes', methods=['POST'])
+def modify_router_route():
+    data   = request.json
+    router = data.get('router')
+    action = data.get('action')  # 'add' or 'delete'
+
+    if not router or router not in xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Router not found'})
+    if xarxa.nodes[router]['type'] != 'router':
+        return jsonify({'ok': False, 'error': f'{router} is not a router'})
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    node = xarxa.mininet_nodes[router]
+
+    if action == 'add':
+        dst = data.get('dst', '').strip()
+        via = data.get('via', '').strip()
+        if not dst or not via:
+            return jsonify({'ok': False, 'error': 'dst and via are required'})
+        result = node.cmd(f'ip route replace {dst} via {via} 2>&1')
+        if 'error' in result.lower() or 'invalid' in result.lower():
+            return jsonify({'ok': False, 'error': result.strip()})
+        # Update nodes dict so it stays in sync
+        route_str = f'{dst} via {via}'
+        if route_str not in xarxa.nodes[router].get('routes', []):
+            xarxa.nodes[router].setdefault('routes', []).append(route_str)
+        return jsonify({'ok': True})
+
+    elif action == 'delete':
+        dst = data.get('dst', '').strip()
+        if not dst:
+            return jsonify({'ok': False, 'error': 'dst is required'})
+        result = node.cmd(f'ip route del {dst} 2>&1')
+        if 'error' in result.lower() or 'no such' in result.lower():
+            return jsonify({'ok': False, 'error': result.strip()})
+        # Remove from nodes dict
+        xarxa.nodes[router]['routes'] = [
+            r for r in xarxa.nodes[router].get('routes', [])
+            if not r.startswith(dst)
+        ]
+        return jsonify({'ok': True})
+
+    return jsonify({'ok': False, 'error': f'Unknown action: {action}'})
+
+
+@app.route('/metrics/system')
+def metrics_system():
+    cpu_percent = psutil.cpu_percent(interval=0.3)
+    ram         = psutil.virtual_memory()
+    return jsonify({
+        'ok': True,
+        'cpu_percent':  cpu_percent,
+        'ram_used_mb':  round(ram.used  / 1024 / 1024, 1),
+        'ram_total_mb': round(ram.total / 1024 / 1024, 1),
+        'ram_percent':  ram.percent
+    })
+
+
 @app.route('/metrics/ping')
 def metrics_ping():
     """Fast ping-only measurement (no iperf). ~3s."""

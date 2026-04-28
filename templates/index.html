@@ -300,6 +300,7 @@
         <div class="popup-info" id="popup-info"></div>
         <div id="popup-buttons">
             <button id="btn-add-host" style="display:none" onclick="showAddHostInput()">Add Host</button>
+            <button id="btn-view-routes" style="display:none" onclick="showRoutesModal()">View Routes</button>
             <button onclick="showRenameInput()">Rename</button>
             <button onclick="removeSelectedNode()">Remove</button>
         </div>
@@ -325,7 +326,40 @@
         <button onclick="closeRouterForm()">Cancel</button>
     </div>
 
-    <!-- Adjacency matrix modal -->
+    <!-- Routes modal -->
+    <div id="routes-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; overflow:auto;">
+        <div style="background:white; margin:5% auto; padding:20px; width:90%; max-width:600px; border-radius:8px; max-height:80vh; overflow-y:auto;">
+            <h2 id="routes-modal-title" style="margin-top:0; margin-bottom:4px;"></h2>
+            <div id="routes-modal-ips" style="font-size:12px; color:#666; margin-bottom:14px;"></div>
+
+            <!-- Current routes table -->
+            <div style="font-size:13px; font-weight:bold; margin-bottom:6px;">Routing table <span id="routes-source-label" style="font-weight:normal; color:#888; font-size:11px;"></span></div>
+            <table id="routes-table" style="width:100%; border-collapse:collapse; font-size:13px; margin-bottom:16px;">
+                <thead>
+                    <tr style="background:#f0f0f0;">
+                        <th style="padding:6px 10px; text-align:left; border:1px solid #ccc;">Destination</th>
+                        <th style="padding:6px 10px; text-align:left; border:1px solid #ccc;">Via (next-hop)</th>
+                        <th style="padding:6px 10px; text-align:center; border:1px solid #ccc;">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="routes-tbody"></tbody>
+            </table>
+
+            <!-- Add route form -->
+            <div style="font-size:13px; font-weight:bold; margin-bottom:8px;">Add route manually</div>
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <input type="text" id="new-route-dst" placeholder="Destination (e.g. 10.3.0.0/24)" style="flex:1; padding:6px; border:1px solid #ccc; border-radius:4px; font-size:13px; min-width:160px;">
+                <input type="text" id="new-route-via" placeholder="Via (e.g. 10.0.1.2)" style="flex:1; padding:6px; border:1px solid #ccc; border-radius:4px; font-size:13px; min-width:120px;">
+                <button onclick="addManualRoute()" style="padding:6px 14px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">Add</button>
+            </div>
+            <div id="routes-error" style="color:#e74c3c; font-size:12px; margin-top:6px; display:none;"></div>
+
+            <div style="margin-top:16px; text-align:right;">
+                <button onclick="refreshRoutes()" style="padding:6px 12px; margin-right:8px; cursor:pointer;">↻ Refresh</button>
+                <button onclick="closeRoutesModal()" style="padding:6px 14px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">Close</button>
+            </div>
+        </div>
+    </div>
     <div id="matrix-modal">
         <div class="content">
             <h2>Adjacency Matrix</h2>
@@ -501,6 +535,7 @@
                     popup.style.top  = (params.event.clientY - 10) + 'px';
                     document.getElementById('popup-title').textContent = selectedNode + ' (' + type + ')';
                     document.getElementById('btn-add-host').style.display = type === 'router' ? 'block' : 'none';
+                    document.getElementById('btn-view-routes').style.display = type === 'router' ? 'block' : 'none';
                     var infoDiv = document.getElementById('popup-info');
                     var nodeProps = topologyData.nodes[selectedNode];
                     if (type === 'host') {
@@ -949,6 +984,101 @@
                         sys.ram_used_mb.toFixed(0) + ' MB / ' + sys.ram_total_mb.toFixed(0) + ' MB';
                 })
                 .catch(() => {});
+        }
+
+        // ── Routes modal ──
+        var routesRouter = null;
+
+        function showRoutesModal() {
+            routesRouter = selectedNode;
+            document.getElementById('node-popup').style.display = 'none';
+            document.getElementById('routes-modal-title').textContent = routesRouter + ' — Routes';
+            var props = topologyData.nodes[routesRouter];
+            var ipsText = Object.entries(props.ips)
+                .filter(([k]) => k !== 'lan')
+                .map(([k, v]) => k + ': ' + v).join('  |  ');
+            document.getElementById('routes-modal-ips').textContent = ipsText;
+            document.getElementById('routes-modal').style.display = 'block';
+            refreshRoutes();
+        }
+
+        function closeRoutesModal() {
+            document.getElementById('routes-modal').style.display = 'none';
+            document.getElementById('routes-error').style.display = 'none';
+            routesRouter = null;
+        }
+
+        function refreshRoutes() {
+            if (!routesRouter) return;
+            fetch('/router_routes?router=' + routesRouter)
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.ok) { showRoutesError(data.error); return; }
+                    document.getElementById('routes-source-label').textContent =
+                        '(live from Mininet)';
+                    var tbody = document.getElementById('routes-tbody');
+                    tbody.innerHTML = '';
+                    if (data.routes.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="3" style="padding:8px; color:#aaa; text-align:center;">No routes</td></tr>';
+                        return;
+                    }
+                    data.routes.forEach(route => {
+                        var dst = route.dst || '—';
+                        var via = route.via || '(direct)';
+                        var canDelete = route.via ? true : false;
+                        tbody.innerHTML += `
+                            <tr>
+                                <td style="padding:6px 10px; border:1px solid #eee;">${dst}</td>
+                                <td style="padding:6px 10px; border:1px solid #eee;">${via}</td>
+                                <td style="padding:6px 10px; border:1px solid #eee; text-align:center;">
+                                    ${canDelete
+                                        ? `<button onclick="deleteRoute('${dst}')" style="padding:2px 8px; background:#e74c3c; color:white; border:none; border-radius:3px; cursor:pointer; font-size:12px;">Delete</button>`
+                                        : '<span style="color:#aaa; font-size:11px;">kernel</span>'}
+                                </td>
+                            </tr>`;
+                    });
+                })
+                .catch(() => showRoutesError('Connection error'));
+        }
+
+        function addManualRoute() {
+            var dst = document.getElementById('new-route-dst').value.trim();
+            var via = document.getElementById('new-route-via').value.trim();
+            if (!dst || !via) { showRoutesError('Both destination and via are required'); return; }
+            document.getElementById('routes-error').style.display = 'none';
+            fetch('/router_routes', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({router: routesRouter, action: 'add', dst: dst, via: via})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.ok) { showRoutesError(data.error); return; }
+                document.getElementById('new-route-dst').value = '';
+                document.getElementById('new-route-via').value = '';
+                refreshRoutes();
+            })
+            .catch(() => showRoutesError('Connection error'));
+        }
+
+        function deleteRoute(dst) {
+            fetch('/router_routes', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({router: routesRouter, action: 'delete', dst: dst})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.ok) { showRoutesError(data.error); return; }
+                refreshRoutes();
+            })
+            .catch(() => showRoutesError('Connection error'));
+        }
+
+        function showRoutesError(msg) {
+            var el = document.getElementById('routes-error');
+            el.textContent = msg;
+            el.style.display = 'block';
         }
 
         // Refresh sync metrics every 3 seconds
