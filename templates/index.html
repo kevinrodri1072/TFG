@@ -476,23 +476,33 @@
                     <span class="metric-label"><span class="status-dot grey" id="sync-dot"></span>Operations tracked</span>
                     <span class="metric-value" id="sync-count">0</span>
                 </div>
-                <div class="metric-sub" style="margin-top:6px;">
-                    <div class="metric-sub-item">
-                        <div class="sub-label">MIN</div>
-                        <div class="sub-value" id="sync-min">—</div>
-                    </div>
-                    <div class="metric-sub-item">
-                        <div class="sub-label">AVG</div>
-                        <div class="sub-value" id="sync-avg">—</div>
-                    </div>
-                    <div class="metric-sub-item">
-                        <div class="sub-label">MAX</div>
-                        <div class="sub-value" id="sync-max">—</div>
-                    </div>
+
+                <!-- t_local -->
+                <div style="margin-top:8px; font-size:11px; color:#7f8c8d; margin-bottom:3px;">🖥 Local (Original Mininet)</div>
+                <div class="metric-sub">
+                    <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="sync-local-min">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="sync-local-avg">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="sync-local-max">—</div></div>
                 </div>
-                <div class="metric-row" style="margin-top:8px;">
-                    <span class="metric-label">Sync Jitter</span>
+
+                <!-- t_network -->
+                <div style="margin-top:8px; font-size:11px; color:#7f8c8d; margin-bottom:3px;">🌐 Network (HTTP round-trip)</div>
+                <div class="metric-sub">
+                    <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="sync-net-min">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="sync-net-avg">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="sync-net-max">—</div></div>
+                </div>
+                <div class="metric-row" style="margin-top:4px;">
+                    <span class="metric-label">Network jitter</span>
                     <span class="metric-value" id="sync-jitter">—</span>
+                </div>
+
+                <!-- t_twin -->
+                <div style="margin-top:8px; font-size:11px; color:#7f8c8d; margin-bottom:3px;">👾 Twin (Twin Mininet)</div>
+                <div class="metric-sub">
+                    <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="sync-twin-min">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="sync-twin-avg">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="sync-twin-max">—</div></div>
                 </div>
 
                 <div style="margin-top:10px; font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recent operations:</div>
@@ -936,20 +946,29 @@
                 return;
             }
             dot.className = 'status-dot green';
-            document.getElementById('sync-count').textContent  = stats.count;
-            document.getElementById('sync-avg').textContent    = stats.avg_ms + ' ms';
-            document.getElementById('sync-min').textContent    = stats.min_ms + ' ms';
-            document.getElementById('sync-max').textContent    = stats.max_ms + ' ms';
-            document.getElementById('sync-jitter').textContent = stats.jitter_ms + ' ms';
+            document.getElementById('sync-count').textContent = stats.count;
+
+            function fill(prefix, obj) {
+                document.getElementById(prefix + '-min').textContent = obj && obj.min !== null ? obj.min + ' ms' : '—';
+                document.getElementById(prefix + '-avg').textContent = obj && obj.avg !== null ? obj.avg + ' ms' : '—';
+                document.getElementById(prefix + '-max').textContent = obj && obj.max !== null ? obj.max + ' ms' : '—';
+            }
+            fill('sync-local', stats.t_local);
+            fill('sync-net',   stats.t_network);
+            fill('sync-twin',  stats.t_twin);
+            document.getElementById('sync-jitter').textContent =
+                stats.jitter_ms !== null ? stats.jitter_ms + ' ms' : '—';
 
             var list   = document.getElementById('sync-history-list');
             list.innerHTML = '';
             var recent = data.history.slice(-8).reverse();
             recent.forEach(entry => {
-                var d     = new Date(entry.timestamp * 1000);
-                var time  = d.toLocaleTimeString('ca-ES', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-                var color = entry.latency_ms < 100 ? '#2ecc71' : entry.latency_ms < 300 ? '#f39c12' : '#e74c3c';
-                list.innerHTML += `<div class="sync-entry"><span class="sync-op">${time} · ${entry.operation}</span><span class="sync-ms" style="color:${color}">${entry.latency_ms} ms</span></div>`;
+                var d    = new Date(entry.timestamp * 1000);
+                var time = d.toLocaleTimeString('ca-ES', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                var net  = entry.t_network_ms !== null && entry.t_network_ms !== undefined ? entry.t_network_ms : '?';
+                var color = net < 100 ? '#2ecc71' : net < 300 ? '#f39c12' : '#e74c3c';
+                var detail = `local:${entry.t_local_ms ?? '?'}ms net:${net}ms twin:${entry.t_twin_ms ?? '?'}ms`;
+                list.innerHTML += `<div class="sync-entry"><span class="sync-op">${time} · ${entry.operation}</span><span class="sync-ms" style="color:${color}" title="${detail}">${net} ms</span></div>`;
             });
         }
 

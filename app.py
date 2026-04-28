@@ -19,41 +19,57 @@ TYPE_TO_NUM = {0: 0, 'host': 1, 'router': 2, 'switch': 3}
 NUM_TO_TYPE = {0: 0, 1: 'host', 2: 'router', 3: 'switch'}
 
 # Sync latency history — only the Original writes to this.
-# The Twin never records anything; latency is measured as RTT from the Original.
+# Each entry contains decomposed timing:
+#   t_local_ms   — time spent by Mininet on the Original
+#   t_network_ms — HTTP round-trip to the Twin (pure network)
+#   t_twin_ms    — time spent by Mininet on the Twin (reported by Twin in response)
 sync_latency_history = deque(maxlen=50)
 sync_history_lock    = threading.Lock()
 
 metrics_running = False
 
-def synchronize(route, data):
+def synchronize(route, data, t_local_ms):
+    """
+    Send a sync POST to the Twin and record decomposed latency.
+    t_local_ms: time already spent doing the operation on the Original (measured by caller).
+    """
     try:
         data['sync'] = True
-        start_time = time.time()
+        t_net_start = time.time()
         response = requests.post(
             f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}{route}',
-            json=data, timeout=10
+            json=data, timeout=15
         )
-        latency_ms = round((time.time() - start_time) * 1000, 2)
+        t_network_ms = round((time.time() - t_net_start) * 1000, 2)
+
         if response.status_code == 200:
-            record_sync_latency(route.strip('/'), latency_ms)
-        return response.json()
+            resp_json = response.json()
+            # Twin reports how long its own Mininet operation took
+            t_twin_ms = resp_json.get('t_local_ms', None)
+            record_sync_latency(route.strip('/'), t_local_ms, t_network_ms, t_twin_ms)
+            return resp_json
+        return None
     except Exception as e:
         print(f'Sync error: {e}')
         return None
 
-def record_sync_latency(operation, latency_ms):
+def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
     entry = {
-        'operation':  operation,
-        'latency_ms': round(latency_ms, 2),
-        'timestamp':  time.time()
+        'operation':   operation,
+        't_local_ms':  round(t_local_ms,   2) if t_local_ms  is not None else None,
+        't_network_ms': round(t_network_ms, 2) if t_network_ms is not None else None,
+        't_twin_ms':   round(t_twin_ms,    2) if t_twin_ms   is not None else None,
+        # Keep a single 'latency_ms' for backwards compat with dashboard history list
+        'latency_ms':  round(t_network_ms, 2) if t_network_ms is not None else None,
+        'timestamp':   time.time()
     }
     with sync_history_lock:
         sync_latency_history.append(entry)
-    # Push to Twin so its dashboard also shows the metrics
+    # Push decomposed metrics to Twin dashboard too
     try:
         requests.post(
             f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/sync_metrics',
-            json={'operation': operation, 'latency_ms': latency_ms},
+            json=entry,
             timeout=1
         )
     except:
@@ -187,6 +203,7 @@ def add_host():
     xarxa.nodes[name] = {'type': 'host', 'ip': ip, 'gw': gw}
     xarxa.update_matrix(name, switch)
 
+    t_local_start = time.time()
     new_host     = xarxa.net.addHost(name, ip=ip)
     xarxa.mininet_nodes[name] = new_host
     sw_node      = xarxa.mininet_nodes[switch]
@@ -201,10 +218,12 @@ def add_host():
     new_host.cmd(f'ip link set {name}-eth0 up')
     sw_node.cmd(f'ip link set {sw_intf_name} up')
     sw_node.cmd(f'ovs-vsctl add-port {switch} {sw_intf_name}')
+    t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
-        synchronize('/add_host', {'name': name, 'router': router})
-    return jsonify({'ok': True})
+        synchronize('/add_host', {'name': name, 'router': router}, t_local_ms)
+        return jsonify({'ok': True})
+    return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
 
 @app.route('/remove_node', methods=['POST'])
@@ -233,6 +252,7 @@ def remove_node():
                     ]
 
         # 2. Remove the router and its subnet
+        t_local_start = time.time()
         nodes_to_remove = xarxa.find_router_subnet(name)
         nodes_to_remove.append(name)
         for node in nodes_to_remove:
@@ -243,15 +263,19 @@ def remove_node():
 
         # 3. Recalculate routes for remaining routers
         _update_all_routes()
+        t_local_ms = round((time.time() - t_local_start) * 1000, 2)
     else:
+        t_local_start = time.time()
         xarxa.remove_from_matrix(name)
         xarxa.net.delNode(xarxa.mininet_nodes[name])
         del xarxa.mininet_nodes[name]
         del xarxa.nodes[name]
+        t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
-        synchronize('/remove_node', {'name': name})
-    return jsonify({'ok': True})
+        synchronize('/remove_node', {'name': name}, t_local_ms)
+        return jsonify({'ok': True})
+    return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
 
 @app.route('/add_router', methods=['POST'])
@@ -278,6 +302,7 @@ def add_router():
     xarxa.nodes[switch_name] = {'type': 'switch'}
     xarxa.update_matrix_multi(switch_name, [router_name])
 
+    t_local_start = time.time()
     new_router  = xarxa.net.addHost(router_name, ip='127.0.0.1')
     new_switch  = xarxa.net.addSwitch(switch_name, failMode='standalone')
     xarxa.mininet_nodes[router_name] = new_router
@@ -327,10 +352,12 @@ def add_router():
     new_router.cmd('ifconfig lo up')
 
     _update_all_routes()
+    t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
-        synchronize('/add_router', {'name': router_name, 'connected_routers': connected_routers})
-    return jsonify({'ok': True})
+        synchronize('/add_router', {'name': router_name, 'connected_routers': connected_routers}, t_local_ms)
+        return jsonify({'ok': True})
+    return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
 
 @app.route('/rename_node', methods=['POST'])
@@ -357,11 +384,14 @@ def rename_node():
                     link['peer'] = new_name
 
     matrix_copy = copy.deepcopy(xarxa.network_matrix)
+    t_local_start = time.time()
     threading.Thread(target=xarxa.restart_network, args=(matrix_copy, new_nodes)).start()
+    t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
-        synchronize('/rename_node', {'old_name': old_name, 'new_name': new_name})
-    return jsonify({'ok': True})
+        synchronize('/rename_node', {'old_name': old_name, 'new_name': new_name}, t_local_ms)
+        return jsonify({'ok': True})
+    return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
 
 def _update_all_routes():
@@ -498,18 +528,43 @@ def metrics_sync():
         history = list(sync_latency_history)
     if not history:
         return jsonify({'ok': True, 'history': [], 'stats': None})
-    latencies = [e['latency_ms'] for e in history]
-    avg = round(sum(latencies) / len(latencies), 2)
-    mn  = round(min(latencies), 2)
-    mx  = round(max(latencies), 2)
-    if len(latencies) > 1:
-        diffs  = [abs(latencies[i] - latencies[i-1]) for i in range(1, len(latencies))]
-        jitter = round(sum(diffs) / len(diffs), 2)
-    else:
-        jitter = 0.0
+
+    def safe_stats(values):
+        values = [v for v in values if v is not None]
+        if not values:
+            return {'min': None, 'avg': None, 'max': None}
+        return {
+            'min': round(min(values), 2),
+            'avg': round(sum(values) / len(values), 2),
+            'max': round(max(values), 2),
+        }
+
+    def jitter(values):
+        values = [v for v in values if v is not None]
+        if len(values) < 2:
+            return 0.0
+        diffs = [abs(values[i] - values[i-1]) for i in range(1, len(values))]
+        return round(sum(diffs) / len(diffs), 2)
+
+    t_local   = [e.get('t_local_ms')   for e in history]
+    t_network = [e.get('t_network_ms') for e in history]
+    t_twin    = [e.get('t_twin_ms')    for e in history]
+
     return jsonify({
-        'ok': True, 'history': history,
-        'stats': {'avg_ms': avg, 'min_ms': mn, 'max_ms': mx, 'jitter_ms': jitter, 'count': len(latencies)}
+        'ok': True,
+        'history': history,
+        'stats': {
+            'count':      len(history),
+            # Decomposed stats
+            't_local':    safe_stats(t_local),
+            't_network':  safe_stats(t_network),
+            't_twin':     safe_stats(t_twin),
+            # Legacy fields kept for backwards compat
+            'avg_ms':     safe_stats(t_network)['avg'],
+            'min_ms':     safe_stats(t_network)['min'],
+            'max_ms':     safe_stats(t_network)['max'],
+            'jitter_ms':  jitter(t_network),
+        }
     })
 
 
@@ -527,7 +582,12 @@ def metrics_global():
     if metrics_running:
         return jsonify({'ok': False, 'error': 'A measurement is already running'})
 
-    hosts = [n for n, p in xarxa.nodes.items() if p['type'] == 'host']
+    hosts = [
+        n for n, p in xarxa.nodes.items()
+        if p['type'] == 'host'
+        and n in xarxa.mininet_nodes
+        and xarxa.mininet_nodes[n].shell is not None
+    ]
     if len(hosts) < 2:
         return jsonify({'ok': False, 'error': 'Need at least 2 hosts'})
 
