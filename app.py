@@ -404,7 +404,7 @@ def add_router():
         f'ovs-vsctl add-port {switch_name} {sw_intf}'
     )
 
-    _update_routes_incremental(router_name)
+    _start_ospf_router(router_name)
     t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
@@ -447,139 +447,22 @@ def rename_node():
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
 
-def _update_routes_incremental(new_router):
-    """
-    Efficient route update when a single new router has just been added.
-
-    Instead of recalculating all routes for every router (O(R²) shell calls),
-    we do two targeted steps:
-
-    1. New router → compute all its routes from scratch via BFS (it knows nothing yet).
-    2. Existing routers → each one only needs ONE new 'ip route replace' for the
-       new router's LAN subnet. We find the correct next-hop by checking which
-       existing router has a direct p2p link to the new one, and propagating via BFS.
-    """
-    router_names = [n for n, p in xarxa.nodes.items() if p['type'] == 'router']
-
-    # Build adjacency and subnet maps (pure Python, no shell calls)
-    adjacency = {r: [] for r in router_names}
-    for r in router_names:
-        for link in xarxa.nodes[r].get('p2p_links', []):
-            adjacency[r].append({'neighbor': link['peer'], 'peer_ip': link['peer_ip']})
-
-    all_host_subnets = {}
-    all_p2p_subnets  = {}
-    for r in router_names:
-        lan_ip = next(ip for ip in xarxa.nodes[r]['ips'].values() if '/24' in ip)
-        all_host_subnets[r] = lan_ip.split('/')[0].rsplit('.', 1)[0] + '.0/24'
-        for link in xarxa.nodes[r].get('p2p_links', []):
-            all_p2p_subnets[link['subnet']] = True
-
-    new_subnet      = all_host_subnets[new_router]
-    new_p2p_subnets = {l['subnet'] for l in xarxa.nodes[new_router].get('p2p_links', [])}
-
-    # ── Step 1: configure routes FOR the new router (full BFS from new_router) ──
-    new_node = xarxa.mininet_nodes[new_router]
-    visited, next_hop_map, queue = {new_router}, {}, [(new_router, None)]
-    while queue:
-        current, first_hop = queue.pop(0)
-        for link in adjacency[current]:
-            neighbor = link['neighbor']
-            if neighbor not in visited:
-                visited.add(neighbor)
-                hop = first_hop if first_hop is not None else link['peer_ip']
-                next_hop_map[neighbor] = hop
-                queue.append((neighbor, hop))
-
-    new_routes = []
-    for dst_router, next_hop in next_hop_map.items():
-        subnet = all_host_subnets[dst_router]
-        new_node.cmd(f'ip route replace {subnet} via {next_hop} 2>/dev/null || true')
-        new_routes.append(f'{subnet} via {next_hop}')
-    # p2p subnets the new router doesn't own directly
-    local_p2p = new_p2p_subnets
-    for p2p_subnet in all_p2p_subnets:
-        if p2p_subnet not in local_p2p:
-            for dst_router, next_hop in next_hop_map.items():
-                if p2p_subnet in {l['subnet'] for l in xarxa.nodes[dst_router].get('p2p_links', [])}:
-                    new_node.cmd(f'ip route replace {p2p_subnet} via {next_hop} 2>/dev/null || true')
-                    new_routes.append(f'{p2p_subnet} via {next_hop}')
-                    break
-    xarxa.nodes[new_router]['routes'] = new_routes
-
-    # ── Step 2: for each EXISTING router, add only the route to the new subnet ──
-    # BFS from each existing router to find next-hop toward new_router.
-    # This is 1 shell call per existing router instead of N shell calls.
-    existing_routers = [r for r in router_names if r != new_router]
-    for src in existing_routers:
-        src_node = xarxa.mininet_nodes[src]
-        visited, next_hop_map_src, queue = {src}, {}, [(src, None)]
-        while queue:
-            current, first_hop = queue.pop(0)
-            for link in adjacency[current]:
-                neighbor = link['neighbor']
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    hop = first_hop if first_hop is not None else link['peer_ip']
-                    next_hop_map_src[neighbor] = hop
-                    queue.append((neighbor, hop))
-
-        if new_router in next_hop_map_src:
-            next_hop = next_hop_map_src[new_router]
-            # Add route to new router's LAN
-            src_node.cmd(f'ip route replace {new_subnet} via {next_hop} 2>/dev/null || true')
-            xarxa.nodes[src]['routes'].append(f'{new_subnet} via {next_hop}')
-            # Add routes to new p2p subnets reachable via new_router
-            for p2p_subnet in new_p2p_subnets:
-                src_node.cmd(f'ip route replace {p2p_subnet} via {next_hop} 2>/dev/null || true')
-                xarxa.nodes[src]['routes'].append(f'{p2p_subnet} via {next_hop}')
+def _start_ospf_router(router_name):
+    """Start OSPF on a single router — delegates to xarxa._start_ospf."""
+    props = xarxa.nodes[router_name]
+    node  = xarxa.mininet_nodes[router_name]
+    xarxa._start_ospf(node, router_name, props)
 
 
 def _update_all_routes():
-    router_names = [n for n, p in xarxa.nodes.items() if p['type'] == 'router']
-    adjacency = {r: [] for r in router_names}
-    for r in router_names:
-        for link in xarxa.nodes[r].get('p2p_links', []):
-            adjacency[r].append({'neighbor': link['peer'], 'peer_ip': link['peer_ip']})
-
-    all_host_subnets, all_p2p_subnets = {}, {}
-    for r in router_names:
-        lan_ip = next(ip for ip in xarxa.nodes[r]['ips'].values() if '/24' in ip)
-        all_host_subnets[r] = lan_ip.split('/')[0].rsplit('.', 1)[0] + '.0/24'
-        for link in xarxa.nodes[r].get('p2p_links', []):
-            all_p2p_subnets[link['subnet']] = True
-
-    for src in router_names:
-        src_node = xarxa.mininet_nodes[src]
-        visited, next_hop_map, queue = {src}, {}, [(src, None)]
-        while queue:
-            current, first_hop = queue.pop(0)
-            for link in adjacency[current]:
-                neighbor = link['neighbor']
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    hop = first_hop if first_hop is not None else link['peer_ip']
-                    next_hop_map[neighbor] = hop
-                    queue.append((neighbor, hop))
-
-        # Millora 2: usar 'ip route replace' en lloc de show+del+add.
-        # 'replace' crea la ruta si no existeix i l'actualitza si ja hi és,
-        # eliminant el 'ip route show' i tots els 'ip route del' individuals.
-        new_routes = []
-        for dst_router, next_hop in next_hop_map.items():
-            subnet = all_host_subnets[dst_router]
-            src_node.cmd(f'ip route replace {subnet} via {next_hop} 2>/dev/null || true')
-            new_routes.append(f'{subnet} via {next_hop}')
-
-        local_p2p = {l['subnet'] for l in xarxa.nodes[src].get('p2p_links', [])}
-        for p2p_subnet in all_p2p_subnets:
-            if p2p_subnet not in local_p2p:
-                for dst_router, next_hop in next_hop_map.items():
-                    if p2p_subnet in {l['subnet'] for l in xarxa.nodes[dst_router].get('p2p_links', [])}:
-                        src_node.cmd(f'ip route replace {p2p_subnet} via {next_hop} 2>/dev/null || true')
-                        new_routes.append(f'{p2p_subnet} via {next_hop}')
-                        break
-        xarxa.nodes[src]['routes'] = new_routes
+    """
+    Legacy stub kept for remove_node compatibility.
+    With OSPF, routes converge automatically after topology changes.
+    We just restart OSPF on all remaining routers so they re-advertise.
+    """
+    for name, props in xarxa.nodes.items():
+        if props['type'] == 'router' and name in xarxa.mininet_nodes:
+            xarxa._start_ospf(xarxa.mininet_nodes[name], name, props)
 
 
 # ─────────────────────────────────────────────

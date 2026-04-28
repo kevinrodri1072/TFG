@@ -573,7 +573,10 @@
                     if (type === 'host') {
                         infoDiv.innerHTML = 'IP: ' + nodeProps.ip + '<br>GW: ' + nodeProps.gw;
                     } else if (type === 'router') {
-                        infoDiv.innerHTML = 'eth0: ' + nodeProps.ips.eth0 + '<br>eth1: ' + nodeProps.ips.eth1;
+                        infoDiv.innerHTML = Object.entries(nodeProps.ips)
+                            .filter(([k]) => k !== 'lan')
+                            .map(([k, v]) => `${k}: ${v}`)
+                            .join('<br>');
                     }
                     document.getElementById('popup-buttons').style.display = 'block';
                     document.getElementById('popup-add-host').style.display = 'none';

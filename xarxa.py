@@ -46,6 +46,54 @@ net = None
 mininet_nodes = {}
 network_ready = False
 
+def _start_ospf(node, name, props):
+    """
+    Start ospfd inside the router's network namespace.
+    We write a minimal FRR config and launch ospfd directly,
+    advertising all 10.x.x.x networks in area 0.
+    """
+    # Build the list of networks to advertise (all interfaces except loopback)
+    networks = []
+    for intf, ip in props['ips'].items():
+        if intf == 'lan':
+            continue
+        networks.append(ip.split('/')[0].rsplit('.', 1)[0] + '.0/' + ip.split('/')[1])
+
+    network_stmts = '\n  '.join([f'network {n} area 0' for n in networks])
+
+    frr_conf = f"""
+frr version 8.4
+frr defaults traditional
+hostname {name}
+log syslog informational
+!
+router ospf
+  ospf router-id {props['ips'].get('eth0', '1.1.1.1').split('/')[0]}
+  {network_stmts}
+  passive-interface default
+  no passive-interface {name}-eth0
+!
+line vty
+!
+"""
+    # Write config inside the namespace using the node's shell
+    node.cmd(f'mkdir -p /tmp/frr_{name}')
+    node.cmd(f'cat > /tmp/frr_{name}/ospfd.conf << \'OSPFEOF\'\n{frr_conf}\nOSPFEOF')
+
+    # Kill any existing ospfd for this namespace
+    node.cmd('pkill -f ospfd 2>/dev/null; sleep 0.2')
+
+    # Start ospfd inside the namespace
+    node.cmd(
+        f'ospfd -d '
+        f'--config_file /tmp/frr_{name}/ospfd.conf '
+        f'--pid_file /tmp/frr_{name}/ospfd.pid '
+        f'--socket /tmp/frr_{name}/ospfd.sock '
+        f'--vty_socket /tmp/frr_{name}/ '
+        f'2>/tmp/frr_{name}/ospfd.log'
+    )
+
+
 def start_network():
     global net, mininet_nodes, network_ready
     net = Mininet()
@@ -65,25 +113,28 @@ def start_network():
 
     net.start()
 
+    # Configure router interfaces
     for name, props in nodes.items():
         if props['type'] == 'router':
             for eth, ip in props['ips'].items():
                 if eth == 'lan':
-                    continue  
+                    continue
                 mininet_nodes[name].cmd(f'ifconfig {name}-{eth} {ip}')
 
+    # Enable IP forwarding on routers
     for name, props in nodes.items():
         if props['type'] == 'router':
             mininet_nodes[name].cmd('sysctl -w net.ipv4.ip_forward=1')
 
+    # Configure default gateway on hosts
     for name, props in nodes.items():
         if props['type'] == 'host':
             mininet_nodes[name].cmd(f'ip route add default via {props["gw"]}')
 
+    # Start OSPF on all routers — replaces all static routes
     for name, props in nodes.items():
         if props['type'] == 'router':
-            for route in props['routes']:
-                mininet_nodes[name].cmd(f'ip route add {route}')
+            _start_ospf(mininet_nodes[name], name, props)
 
     network_ready = True
 
