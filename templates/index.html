@@ -934,9 +934,30 @@
             });
         }
 
+        function refreshSystemResources() {
+            fetch('/metrics/system')
+                .then(r => r.json())
+                .then(sys => {
+                    if (!sys.ok) return;
+                    document.getElementById('cpu-val').textContent = sys.cpu_percent + '%';
+                    document.getElementById('cpu-bar').style.width = sys.cpu_percent + '%';
+                    document.getElementById('cpu-bar').style.background =
+                        sys.cpu_percent < 60 ? '#3498db' : sys.cpu_percent < 85 ? '#f39c12' : '#e74c3c';
+                    document.getElementById('ram-val').textContent = sys.ram_percent + '%';
+                    document.getElementById('ram-bar').style.width = sys.ram_percent + '%';
+                    document.getElementById('ram-detail').textContent =
+                        sys.ram_used_mb.toFixed(0) + ' MB / ' + sys.ram_total_mb.toFixed(0) + ' MB';
+                })
+                .catch(() => {});
+        }
+
         // Refresh sync metrics every 3 seconds
         refreshSyncMetrics();
         setInterval(refreshSyncMetrics, 3000);
+
+        // Refresh system resources every 5 seconds
+        refreshSystemResources();
+        setInterval(refreshSystemResources, 5000);
 
     </script>
 </body>
