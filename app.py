@@ -448,18 +448,20 @@ def rename_node():
 
 
 def _start_ospf_router(router_name):
-    """Start OSPF on a single router — delegates to xarxa._start_ospf."""
+    """Start OSPF on a single new router and restart it on all existing ones."""
+    # Start OSPF on the new router
     props = xarxa.nodes[router_name]
     node  = xarxa.mininet_nodes[router_name]
     xarxa._start_ospf(node, router_name, props)
 
+    # Restart OSPF on all existing routers so they re-discover the new neighbour
+    for name, p in xarxa.nodes.items():
+        if p['type'] == 'router' and name != router_name and name in xarxa.mininet_nodes:
+            xarxa._start_ospf(xarxa.mininet_nodes[name], name, p)
+
 
 def _update_all_routes():
-    """
-    Legacy stub kept for remove_node compatibility.
-    With OSPF, routes converge automatically after topology changes.
-    We just restart OSPF on all remaining routers so they re-advertise.
-    """
+    """Restart OSPF on all routers (called after remove_node)."""
     for name, props in xarxa.nodes.items():
         if props['type'] == 'router' and name in xarxa.mininet_nodes:
             xarxa._start_ospf(xarxa.mininet_nodes[name], name, props)

@@ -46,51 +46,83 @@ net = None
 mininet_nodes = {}
 network_ready = False
 
+OSPFD  = '/usr/lib/frr/ospfd'
+ZEBRA  = '/usr/lib/frr/zebra'
+
 def _start_ospf(node, name, props):
     """
-    Start ospfd inside the router's network namespace.
-    We write a minimal FRR config and launch ospfd directly,
-    advertising all 10.x.x.x networks in area 0.
+    Start zebra + ospfd inside the router's network namespace.
+    zebra manages the kernel routing table; ospfd runs OSPF on top.
     """
-    # Build the list of networks to advertise (all interfaces except loopback)
-    networks = []
+    conf_path = f'/tmp/frr_{name}'
+    node.cmd(f'mkdir -p {conf_path} && chmod 777 {conf_path}')
+
+    # ── zebra config ──
+    node.cmd(f'rm -f {conf_path}/zebra.conf')
+    for line in [f'hostname {name}', 'log syslog informational', '!']:
+        node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/zebra.conf')
+    node.cmd(f'chmod 644 {conf_path}/zebra.conf')
+
+    # ── ospfd config ──
+    router_id = props['ips'].get('eth0', '1.1.1.1/30').split('/')[0]
+    networks  = []
     for intf, ip in props['ips'].items():
         if intf == 'lan':
             continue
-        networks.append(ip.split('/')[0].rsplit('.', 1)[0] + '.0/' + ip.split('/')[1])
+        base = ip.split('/')[0].rsplit('.', 1)[0]
+        mask = ip.split('/')[1]
+        networks.append(f'{base}.0/{mask}')
 
-    network_stmts = '\n  '.join([f'network {n} area 0' for n in networks])
+    node.cmd(f'rm -f {conf_path}/ospfd.conf')
+    ospf_lines = [
+        f'hostname {name}',
+        'log syslog informational',
+        '!',
+        'router ospf',
+        f'  ospf router-id {router_id}',
+        '  timers throttle spf 0 50 200',   # SPF: start 0ms, hold 50ms, max 200ms
+    ] + [f'  network {n} area 0' for n in networks] + ['!']
 
-    frr_conf = f"""
-frr version 8.4
-frr defaults traditional
-hostname {name}
-log syslog informational
-!
-router ospf
-  ospf router-id {props['ips'].get('eth0', '1.1.1.1').split('/')[0]}
-  {network_stmts}
-  passive-interface default
-  no passive-interface {name}-eth0
-!
-line vty
-!
-"""
-    # Write config inside the namespace using the node's shell
-    node.cmd(f'mkdir -p /tmp/frr_{name}')
-    node.cmd(f'cat > /tmp/frr_{name}/ospfd.conf << \'OSPFEOF\'\n{frr_conf}\nOSPFEOF')
+    # Add fast hello timers per interface
+    for intf, ip in props['ips'].items():
+        if intf == 'lan':
+            continue
+        intf_name = f'{name}-{intf}'
+        ospf_lines += [
+            f'interface {intf_name}',
+            '  ip ospf hello-interval 1',   # Hello cada 1s (default 10s)
+            '  ip ospf dead-interval 4',    # Dead després de 4s (default 40s)
+            '!',
+        ]
 
-    # Kill any existing ospfd for this namespace
-    node.cmd('pkill -f ospfd 2>/dev/null; sleep 0.2')
+    ospf_lines += ['line vty', '!']
 
-    # Start ospfd inside the namespace
+    for line in ospf_lines:
+        node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/ospfd.conf')
+    node.cmd(f'chmod 644 {conf_path}/ospfd.conf')
+
+    # Kill any previous instances
+    node.cmd(f'pkill -f "zebra.*{name}" 2>/dev/null')
+    node.cmd(f'pkill -f "ospfd.*{name}" 2>/dev/null')
+    node.cmd('sleep 0.2')
+
+    # Start zebra first (manages kernel routes)
     node.cmd(
-        f'ospfd -d '
-        f'--config_file /tmp/frr_{name}/ospfd.conf '
-        f'--pid_file /tmp/frr_{name}/ospfd.pid '
-        f'--socket /tmp/frr_{name}/ospfd.sock '
-        f'--vty_socket /tmp/frr_{name}/ '
-        f'2>/tmp/frr_{name}/ospfd.log'
+        f'{ZEBRA} -d '
+        f'--config_file {conf_path}/zebra.conf '
+        f'--pid_file {conf_path}/zebra.pid '
+        f'--vty_socket {conf_path}/ '
+        f'> {conf_path}/zebra.log 2>&1'
+    )
+    node.cmd('sleep 0.3')
+
+    # Start ospfd
+    node.cmd(
+        f'{OSPFD} -d '
+        f'--config_file {conf_path}/ospfd.conf '
+        f'--pid_file {conf_path}/ospfd.pid '
+        f'--vty_socket {conf_path}/ '
+        f'> {conf_path}/ospfd.log 2>&1'
     )
 
 
