@@ -45,6 +45,8 @@ nodes = {
 net = None
 mininet_nodes = {}
 network_ready = False
+_restart_lock = __import__('threading').Lock()
+_restart_pending = [None]  # Stores the latest pending snapshot
 
 OSPFD  = '/usr/lib/frr/ospfd'
 ZEBRA  = '/usr/lib/frr/zebra'
@@ -171,17 +173,54 @@ def start_network():
     network_ready = True
 
 def restart_network(new_matrix, new_nodes):
+    """
+    Restart the network with a new state snapshot.
+    Uses a lock so only one restart runs at a time.
+    If multiple snapshots arrive while one is running, only the LATEST is applied.
+    """
     global net, mininet_nodes, network_ready, network_matrix, nodes
-    network_ready = False
-    if net is not None:
-        net.stop()
-    mininet_nodes = {}
-    network_matrix.clear()
-    for row in new_matrix:
-        network_matrix.append(row)
-    nodes.clear()
-    nodes.update(new_nodes)
-    start_network()
+
+    # Store this as the latest pending snapshot
+    _restart_pending[0] = (new_matrix, new_nodes)
+
+    # If another restart is already running, let it pick up our snapshot
+    if not _restart_lock.acquire(blocking=False):
+        return
+
+    try:
+        while True:
+            # Pick up the latest pending snapshot
+            snapshot = _restart_pending[0]
+            _restart_pending[0] = None
+            if snapshot is None:
+                break
+
+            new_matrix, new_nodes = snapshot
+            network_ready = False
+
+            # Clean up previous network
+            if net is not None:
+                try:
+                    net.stop()
+                except Exception:
+                    pass
+                finally:
+                    # Force cleanup of any leftover interfaces
+                    __import__('os').system('mn -c > /dev/null 2>&1')
+
+            mininet_nodes = {}
+            network_matrix.clear()
+            for row in new_matrix:
+                network_matrix.append(row)
+            nodes.clear()
+            nodes.update(new_nodes)
+            start_network()
+
+            # If a newer snapshot arrived while we were restarting, loop again
+            if _restart_pending[0] is None:
+                break
+    finally:
+        _restart_lock.release()
 
 def find_router_of_switch(switch):
     names = list(nodes.keys())
