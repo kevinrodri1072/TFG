@@ -53,15 +53,15 @@ def synchronize(route, data, t_local_ms):
         print(f'Sync error: {e}')
         return None
 
-def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
+def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms, snapshot_bytes=None):
     entry = {
-        'operation':   operation,
-        't_local_ms':  round(t_local_ms,   2) if t_local_ms  is not None else None,
-        't_network_ms': round(t_network_ms, 2) if t_network_ms is not None else None,
-        't_twin_ms':   round(t_twin_ms,    2) if t_twin_ms   is not None else None,
-        # Keep a single 'latency_ms' for backwards compat with dashboard history list
-        'latency_ms':  round(t_network_ms, 2) if t_network_ms is not None else None,
-        'timestamp':   time.time()
+        'operation':      operation,
+        't_local_ms':     round(t_local_ms,   2) if t_local_ms  is not None else None,
+        't_network_ms':   round(t_network_ms, 2) if t_network_ms is not None else None,
+        't_twin_ms':      round(t_twin_ms,    2) if t_twin_ms   is not None else None,
+        'latency_ms':     round(t_network_ms, 2) if t_network_ms is not None else None,
+        'snapshot_bytes': snapshot_bytes,
+        'timestamp':      time.time()
     }
     with sync_history_lock:
         sync_latency_history.append(entry)
@@ -180,16 +180,17 @@ def synchronize_snapshot(operation, t_local_ms):
         [cell if isinstance(cell, str) else int(cell) for cell in row]
         for row in xarxa.network_matrix
     ]
+    payload = {'matrix': serializable_matrix, 'nodes': xarxa.nodes, 'sync': True}
+    snapshot_bytes = len(json.dumps(payload).encode('utf-8'))
     try:
         t_net_start = time.time()
         requests.post(
             f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/load_network',
-            json={'matrix': serializable_matrix, 'nodes': xarxa.nodes, 'sync': True},
+            json=payload,
             timeout=10
         )
         t_network_ms = round((time.time() - t_net_start) * 1000, 2)
-        # t_twin_ms is None: Twin rebuilds async, we don't wait for it
-        record_sync_latency(operation, t_local_ms, t_network_ms, None)
+        record_sync_latency(operation, t_local_ms, t_network_ms, None, snapshot_bytes)
     except Exception as e:
         print(f'Snapshot sync error: {e}')
 
@@ -597,7 +598,7 @@ def metrics_system():
 
 @app.route('/metrics/ping')
 def metrics_ping():
-    """Fast ping-only measurement (no iperf). ~3s."""
+    """Ping (5 packets) + iperf bandwidth. ~3s total."""
     if not xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
 
@@ -611,9 +612,11 @@ def metrics_ping():
         return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
 
     src_node = xarxa.mininet_nodes[src]
+    dst_node = xarxa.mininet_nodes[dst]
     dst_ip   = xarxa.nodes[dst]['ip'].split('/')[0]
 
-    ping_result = src_node.cmd(f'ping -c 10 -i 0.2 {dst_ip}')
+    # ── Ping (5 packets, 0.2s interval → ~1s) ──
+    ping_result = src_node.cmd(f'ping -c 5 -i 0.2 {dst_ip}')
     latency = {'min': None, 'avg': None, 'max': None}
     jitter  = None
     match = re.search(r'rtt min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)', ping_result)
@@ -623,8 +626,23 @@ def metrics_ping():
         latency['max'] = float(match.group(3))
         jitter         = float(match.group(4))
 
+    # ── iperf bandwidth (~2s) ──
+    bandwidth_mbps = None
+    try:
+        dst_node.cmd('pkill -f iperf 2>/dev/null; sleep 0.1')
+        dst_node.sendCmd(f'iperf -s -p 5201')
+        bw_out = src_node.cmd(f'iperf -c {dst_ip} -p 5201 -t 2 -f m')
+        dst_node.sendInt()
+        dst_node.waitOutput()
+        bw_match = re.search(r'([\d.]+)\s+Mbits/sec', bw_out)
+        if bw_match:
+            bandwidth_mbps = float(bw_match.group(1))
+    except Exception as e:
+        print(f'iperf error: {e}')
+
     return jsonify({'ok': True, 'src': src, 'dst': dst,
-                    'latency_ms': latency, 'jitter_ms': jitter})
+                    'latency_ms': latency, 'jitter_ms': jitter,
+                    'bandwidth_mbps': bandwidth_mbps})
 
 
 @app.route('/metrics/internal')
@@ -727,21 +745,21 @@ def metrics_sync():
     t_local   = [e.get('t_local_ms')   for e in history]
     t_network = [e.get('t_network_ms') for e in history]
     t_twin    = [e.get('t_twin_ms')    for e in history]
+    snap_bytes = [e.get('snapshot_bytes') for e in history if e.get('snapshot_bytes')]
 
     return jsonify({
         'ok': True,
         'history': history,
         'stats': {
-            'count':      len(history),
-            # Decomposed stats
-            't_local':    safe_stats(t_local),
-            't_network':  safe_stats(t_network),
-            't_twin':     safe_stats(t_twin),
-            # Legacy fields kept for backwards compat
-            'avg_ms':     safe_stats(t_network)['avg'],
-            'min_ms':     safe_stats(t_network)['min'],
-            'max_ms':     safe_stats(t_network)['max'],
-            'jitter_ms':  jitter(t_network),
+            'count':          len(history),
+            't_local':        safe_stats(t_local),
+            't_network':      safe_stats(t_network),
+            't_twin':         safe_stats(t_twin),
+            'snapshot_bytes': safe_stats(snap_bytes),
+            # Legacy fields
+            'avg_ms':         safe_stats(t_network)['avg'],
+            'min_ms':         safe_stats(t_network)['min'],
+            'max_ms':         safe_stats(t_network)['max'],
         }
     })
 

@@ -427,7 +427,7 @@
                     <select id="ping-dst"><option value="">Destination</option></select>
                 </div>
                 <button class="btn-measure" id="btn-ping" onclick="measurePing()">Ping</button>
-                <div class="measuring-spinner" id="ping-spinner">⏳ Pinging... (~3s)</div>
+                <div class="measuring-spinner" id="ping-spinner">⏳ Measuring... (~3s)</div>
 
                 <div style="margin-top:10px;">
                     <div class="metric-row">
@@ -443,6 +443,10 @@
                 <div class="metric-row" style="margin-top:8px;">
                     <span class="metric-label">Jitter (mdev)</span>
                     <span class="metric-value" id="ping-jitter">—</span>
+                </div>
+                <div class="metric-row" style="margin-top:4px;">
+                    <span class="metric-label">Bandwidth</span>
+                    <span class="metric-value" id="ping-bw">—</span>
                 </div>
                 <div style="margin-top:10px; font-size:11px; color:#7f8c8d; margin-bottom:4px;">Latency history (last 10 pings)</div>
                 <canvas id="ping-chart" height="60" style="width:100%; display:block;"></canvas>
@@ -519,9 +523,9 @@
                     <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="sync-net-avg">—</div></div>
                     <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="sync-net-max">—</div></div>
                 </div>
-                <div class="metric-row" style="margin-top:4px;">
-                    <span class="metric-label">Network jitter</span>
-                    <span class="metric-value" id="sync-jitter">—</span>
+                <div style="margin-top:4px;">
+                    <span class="metric-label">Snapshot size</span>
+                    <span class="metric-value" id="sync-snapshot-bytes">—</span>
                 </div>
                 <div style="margin-top:10px; font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recent operations:</div>
                 <div id="sync-history-list"></div>
@@ -892,6 +896,10 @@
                     document.getElementById('ping-jitter').textContent =
                         data.jitter_ms !== null ? data.jitter_ms.toFixed(2) + ' ms' : '—';
 
+                    document.getElementById('ping-bw').textContent =
+                        data.bandwidth_mbps !== null && data.bandwidth_mbps !== undefined
+                        ? data.bandwidth_mbps.toFixed(1) + ' Mbps' : '—';
+
                     // Add to history and redraw chart
                     if (lat.avg !== null) {
                         pingHistory.push({ label: src + '→' + dst, avg: lat.avg });
@@ -988,8 +996,16 @@
             fill('sync-local', stats.t_local);
             fill('sync-net',   stats.t_network);
             fill('sync-twin',  stats.t_twin);
-            document.getElementById('sync-jitter').textContent =
-                stats.jitter_ms !== null ? stats.jitter_ms + ' ms' : '—';
+
+            // Snapshot size
+            var snapBytes = stats.snapshot_bytes;
+            var snapEl = document.getElementById('sync-snapshot-bytes');
+            if (snapBytes && snapBytes.avg !== null) {
+                var kb = (snapBytes.avg / 1024).toFixed(1);
+                snapEl.textContent = kb + ' KB (avg)';
+            } else {
+                snapEl.textContent = '—';
+            }
 
             var list   = document.getElementById('sync-history-list');
             list.innerHTML = '';
