@@ -48,8 +48,11 @@ network_ready = False
 _restart_lock = __import__('threading').Lock()
 _restart_pending = [None]  # Stores the latest pending snapshot
 
+ROUTING_MODE = 'ospf'  # 'ospf', 'mpls' or 'manual'
+
 OSPFD  = '/usr/lib/frr/ospfd'
 ZEBRA  = '/usr/lib/frr/zebra'
+LDPD   = '/usr/lib/frr/ldpd'
 
 def _start_ospf(node, name, props):
     """
@@ -128,7 +131,93 @@ def _start_ospf(node, name, props):
     )
 
 
-def start_network():
+def _start_mpls(node, name, props):
+    """
+    Start zebra + ldpd inside the router's network namespace.
+    zebra manages the kernel routing table; ldpd runs LDP on top for MPLS.
+    LDP (Label Distribution Protocol) is the MPLS equivalent of OSPF.
+    """
+    conf_path = f'/tmp/frr_{name}'
+    node.cmd(f'mkdir -p {conf_path} && chmod 777 {conf_path}')
+
+    # Enable MPLS on all interfaces
+    node.cmd('sysctl -w net.mpls.platform_labels=100 2>/dev/null')
+    for intf, ip in props['ips'].items():
+        if intf == 'lan':
+            continue
+        intf_name = f'{name}-{intf}'
+        node.cmd(f'sysctl -w net.mpls.conf.{intf_name}.input=1 2>/dev/null')
+
+    # ── zebra config ──
+    node.cmd(f'rm -f {conf_path}/zebra.conf')
+    for line in [f'hostname {name}', 'log syslog informational', '!']:
+        node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/zebra.conf')
+    node.cmd(f'chmod 644 {conf_path}/zebra.conf')
+
+    # ── ldpd config ──
+    router_id = props['ips'].get('eth0', '1.1.1.1/30').split('/')[0]
+    node.cmd(f'rm -f {conf_path}/ldpd.conf')
+    ldp_lines = [
+        f'hostname {name}',
+        'log syslog informational',
+        '!',
+        'mpls ldp',
+        f'  router-id {router_id}',
+        '  !',
+        '  address-family ipv4',
+        '    discovery transport-address ' + router_id,
+    ]
+    for intf, ip in props['ips'].items():
+        if intf == 'lan':
+            continue
+        intf_name = f'{name}-{intf}'
+        ldp_lines.append(f'    interface {intf_name}')
+    ldp_lines += ['  exit-address-family', '!', 'line vty', '!']
+
+    for line in ldp_lines:
+        node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/ldpd.conf')
+    node.cmd(f'chmod 644 {conf_path}/ldpd.conf')
+
+    # Kill any previous instances
+    node.cmd(f'pkill -f "zebra.*{name}" 2>/dev/null')
+    node.cmd(f'pkill -f "ldpd.*{name}" 2>/dev/null')
+    node.cmd('sleep 0.2')
+
+    # Start zebra first
+    node.cmd(
+        f'{ZEBRA} -d '
+        f'--config_file {conf_path}/zebra.conf '
+        f'--pid_file {conf_path}/zebra.pid '
+        f'--vty_socket {conf_path}/ '
+        f'> {conf_path}/zebra.log 2>&1'
+    )
+    node.cmd('sleep 0.3')
+
+    # Start ldpd
+    node.cmd(
+        f'{LDPD} -d '
+        f'--config_file {conf_path}/ldpd.conf '
+        f'--pid_file {conf_path}/ldpd.pid '
+        f'--vty_socket {conf_path}/ '
+        f'> {conf_path}/ldpd.log 2>&1'
+    )
+
+
+def _stop_routing(node, name):
+    """Stop all routing daemons for a router."""
+    node.cmd(f'pkill -f "ospfd.*{name}" 2>/dev/null')
+    node.cmd(f'pkill -f "ldpd.*{name}" 2>/dev/null')
+    node.cmd(f'pkill -f "zebra.*{name}" 2>/dev/null')
+    node.cmd('sleep 0.2')
+
+
+def _apply_routing(node, name, props):
+    """Start the appropriate routing protocol based on ROUTING_MODE."""
+    if ROUTING_MODE == 'ospf':
+        _start_ospf(node, name, props)
+    elif ROUTING_MODE == 'mpls':
+        _start_mpls(node, name, props)
+    # manual → do nothing, user configures routes manually
     global net, mininet_nodes, network_ready
     net = Mininet()
     for name, props in nodes.items():
@@ -165,62 +254,25 @@ def start_network():
         if props['type'] == 'host':
             mininet_nodes[name].cmd(f'ip route add default via {props["gw"]}')
 
-    # Start OSPF on all routers — replaces all static routes
+    # Start routing protocol on all routers
     for name, props in nodes.items():
         if props['type'] == 'router':
-            _start_ospf(mininet_nodes[name], name, props)
+            _apply_routing(mininet_nodes[name], name, props)
 
     network_ready = True
 
 def restart_network(new_matrix, new_nodes):
-    """
-    Restart the network with a new state snapshot.
-    Uses a lock so only one restart runs at a time.
-    If multiple snapshots arrive while one is running, only the LATEST is applied.
-    """
     global net, mininet_nodes, network_ready, network_matrix, nodes
-
-    # Store this as the latest pending snapshot
-    _restart_pending[0] = (new_matrix, new_nodes)
-
-    # If another restart is already running, let it pick up our snapshot
-    if not _restart_lock.acquire(blocking=False):
-        return
-
-    try:
-        while True:
-            # Pick up the latest pending snapshot
-            snapshot = _restart_pending[0]
-            _restart_pending[0] = None
-            if snapshot is None:
-                break
-
-            new_matrix, new_nodes = snapshot
-            network_ready = False
-
-            # Clean up previous network
-            if net is not None:
-                try:
-                    net.stop()
-                except Exception:
-                    pass
-                finally:
-                    # Force cleanup of any leftover interfaces
-                    __import__('os').system('mn -c > /dev/null 2>&1')
-
-            mininet_nodes = {}
-            network_matrix.clear()
-            for row in new_matrix:
-                network_matrix.append(row)
-            nodes.clear()
-            nodes.update(new_nodes)
-            start_network()
-
-            # If a newer snapshot arrived while we were restarting, loop again
-            if _restart_pending[0] is None:
-                break
-    finally:
-        _restart_lock.release()
+    network_ready = False
+    if net is not None:
+        net.stop()
+    mininet_nodes = {}
+    network_matrix.clear()
+    for row in new_matrix:
+        network_matrix.append(row)
+    nodes.clear()
+    nodes.update(new_nodes)
+    start_network()
 
 def find_router_of_switch(switch):
     names = list(nodes.keys())
