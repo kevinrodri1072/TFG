@@ -218,6 +218,9 @@ def _apply_routing(node, name, props):
     elif ROUTING_MODE == 'mpls':
         _start_mpls(node, name, props)
     # manual → do nothing, user configures routes manually
+
+
+def start_network():
     global net, mininet_nodes, network_ready
     net = Mininet()
     for name, props in nodes.items():
