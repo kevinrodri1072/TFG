@@ -594,21 +594,29 @@ def open_wireshark():
     if not xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
 
-    # Full interface name as seen by the kernel (e.g. r1-eth0)
     intf_full = f'{node}-{intf}'
-
-    # Get the sudo user to open wireshark with the correct display
     sudo_user = os.environ.get('SUDO_USER', 'root')
     display   = os.environ.get('DISPLAY', ':0')
 
+    # Get the PID of the Mininet process for this node
+    pid_out = subprocess.check_output(
+        ['pgrep', '-f', f'mininet:{node}'], text=True
+    ).strip().split('\n')[0]
+
+    if not pid_out:
+        return jsonify({'ok': False, 'error': f'Cannot find process for {node}'})
+
     try:
-        subprocess.Popen(
-            ['sudo', '-u', sudo_user,
-             'bash', '-c',
-             f'DISPLAY={display} wireshark -i {intf_full} -k &'],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+        # Use mnexec to capture inside the namespace and pipe to Wireshark
+        cmd = (
+            f'DISPLAY={display} '
+            f'mnexec -a {pid_out} '
+            f'tcpdump -i {intf_full} -U -w - 2>/dev/null | '
+            f'sudo -u {sudo_user} DISPLAY={display} wireshark -k -i - &'
         )
+        subprocess.Popen(['bash', '-c', cmd],
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
         return jsonify({'ok': True, 'intf': intf_full})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
