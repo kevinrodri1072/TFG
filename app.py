@@ -589,10 +589,9 @@ def get_routing_mode():
 @app.route('/set_routing_mode', methods=['POST'])
 def set_routing_mode():
     mode = request.json.get('mode')
-    if mode not in ('ospf', 'mpls', 'manual'):
+    if mode not in ('ospf', 'ospf_bfd', 'mpls', 'mpls_bfd', 'manual'):
         return jsonify({'ok': False, 'error': f'Unknown mode: {mode}'})
     xarxa.ROUTING_MODE = mode
-    # Restart routing on all routers with the new mode
     for name, props in xarxa.nodes.items():
         if props['type'] == 'router' and name in xarxa.mininet_nodes:
             xarxa._stop_routing(xarxa.mininet_nodes[name], name)

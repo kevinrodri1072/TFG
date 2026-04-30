@@ -48,11 +48,12 @@ network_ready = False
 _restart_lock = __import__('threading').Lock()
 _restart_pending = [None]  # Stores the latest pending snapshot
 
-ROUTING_MODE = 'ospf'  # 'ospf', 'mpls' or 'manual'
+ROUTING_MODE = 'ospf'  # 'ospf', 'ospf_bfd', 'mpls', 'mpls_bfd', 'manual'
 
 OSPFD  = '/usr/lib/frr/ospfd'
 ZEBRA  = '/usr/lib/frr/zebra'
 LDPD   = '/usr/lib/frr/ldpd'
+BFDD   = '/usr/lib/frr/bfdd'
 
 def _start_ospf(node, name, props):
     """
@@ -250,17 +251,66 @@ def _stop_routing(node, name):
     """Stop all routing daemons for a router."""
     node.cmd(f'pkill -f "ospfd.*{name}" 2>/dev/null')
     node.cmd(f'pkill -f "ldpd.*{name}" 2>/dev/null')
+    node.cmd(f'pkill -f "bfdd.*{name}" 2>/dev/null')
     node.cmd(f'pkill -f "zebra.*{name}" 2>/dev/null')
     node.cmd('sleep 0.2')
+
+
+def _start_bfd(node, name, props):
+    """
+    Start bfdd inside the router's namespace and enable BFD on OSPF interfaces.
+    BFD detects link failures in milliseconds, triggering faster OSPF convergence.
+    Requires zebra + ospfd already running.
+    """
+    conf_path = f'/tmp/frr_{name}'
+
+    # ── bfdd config ──
+    node.cmd(f'rm -f {conf_path}/bfdd.conf')
+    bfd_lines = [f'hostname {name}', 'log syslog informational', '!', 'line vty', '!']
+    for line in bfd_lines:
+        node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/bfdd.conf')
+    node.cmd(f'chmod 644 {conf_path}/bfdd.conf')
+
+    # Kill previous bfdd
+    node.cmd(f'pkill -f "bfdd.*{name}" 2>/dev/null')
+    node.cmd('sleep 0.1')
+
+    # Start bfdd
+    node.cmd(
+        f'{BFDD} -d '
+        f'--config_file {conf_path}/bfdd.conf '
+        f'--pid_file {conf_path}/bfdd.pid '
+        f'--vty_socket {conf_path}/ '
+        f'> {conf_path}/bfdd.log 2>&1'
+    )
+    node.cmd('sleep 0.2')
+
+    # Enable BFD on all OSPF interfaces via vtysh
+    for intf, ip in props['ips'].items():
+        if intf == 'lan':
+            continue
+        intf_name = f'{name}-{intf}'
+        node.cmd(
+            f'vtysh -c "configure terminal" '
+            f'-c "interface {intf_name}" '
+            f'-c "ip ospf bfd" '
+            f'-c "end" 2>/dev/null'
+        )
 
 
 def _apply_routing(node, name, props):
     """Start the appropriate routing protocol based on ROUTING_MODE."""
     if ROUTING_MODE == 'ospf':
         _start_ospf(node, name, props)
+    elif ROUTING_MODE == 'ospf_bfd':
+        _start_ospf(node, name, props)
+        _start_bfd(node, name, props)
     elif ROUTING_MODE == 'mpls':
         _start_mpls(node, name, props)
-    # manual → do nothing, user configures routes manually
+    elif ROUTING_MODE == 'mpls_bfd':
+        _start_mpls(node, name, props)
+        _start_bfd(node, name, props)
+    # manual → do nothing
 
 
 def start_network():
