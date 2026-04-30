@@ -133,9 +133,9 @@ def _start_ospf(node, name, props):
 
 def _start_mpls(node, name, props):
     """
-    Start zebra + ldpd inside the router's network namespace.
-    zebra manages the kernel routing table; ldpd runs LDP on top for MPLS.
-    LDP (Label Distribution Protocol) is the MPLS equivalent of OSPF.
+    Start zebra + ospfd + ldpd inside the router's network namespace.
+    OSPF provides IP routing, LDP distributes MPLS labels on top.
+    This is how MPLS works in production: routing protocol + label distribution.
     """
     conf_path = f'/tmp/frr_{name}'
     node.cmd(f'mkdir -p {conf_path} && chmod 777 {conf_path}')
@@ -154,8 +154,41 @@ def _start_mpls(node, name, props):
         node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/zebra.conf')
     node.cmd(f'chmod 644 {conf_path}/zebra.conf')
 
-    # ── ldpd config ──
+    # ── ospfd config (same as pure OSPF mode) ──
     router_id = props['ips'].get('eth0', '1.1.1.1/30').split('/')[0]
+    networks  = []
+    for intf, ip in props['ips'].items():
+        if intf == 'lan':
+            continue
+        base = ip.split('/')[0].rsplit('.', 1)[0]
+        mask = ip.split('/')[1]
+        networks.append(f'{base}.0/{mask}')
+
+    node.cmd(f'rm -f {conf_path}/ospfd.conf')
+    ospf_lines = [
+        f'hostname {name}',
+        'log syslog informational',
+        '!',
+        'router ospf',
+        f'  ospf router-id {router_id}',
+        '  timers throttle spf 0 50 200',
+    ] + [f'  network {n} area 0' for n in networks] + ['!']
+    for intf, ip in props['ips'].items():
+        if intf == 'lan':
+            continue
+        intf_name = f'{name}-{intf}'
+        ospf_lines += [
+            f'interface {intf_name}',
+            '  ip ospf hello-interval 1',
+            '  ip ospf dead-interval 4',
+            '!',
+        ]
+    ospf_lines += ['line vty', '!']
+    for line in ospf_lines:
+        node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/ospfd.conf')
+    node.cmd(f'chmod 644 {conf_path}/ospfd.conf')
+
+    # ── ldpd config ──
     node.cmd(f'rm -f {conf_path}/ldpd.conf')
     ldp_lines = [
         f'hostname {name}',
@@ -165,7 +198,7 @@ def _start_mpls(node, name, props):
         f'  router-id {router_id}',
         '  !',
         '  address-family ipv4',
-        '    discovery transport-address ' + router_id,
+        f'    discovery transport-address {router_id}',
     ]
     for intf, ip in props['ips'].items():
         if intf == 'lan':
@@ -173,13 +206,13 @@ def _start_mpls(node, name, props):
         intf_name = f'{name}-{intf}'
         ldp_lines.append(f'    interface {intf_name}')
     ldp_lines += ['  exit-address-family', '!', 'line vty', '!']
-
     for line in ldp_lines:
         node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/ldpd.conf')
     node.cmd(f'chmod 644 {conf_path}/ldpd.conf')
 
     # Kill any previous instances
     node.cmd(f'pkill -f "zebra.*{name}" 2>/dev/null')
+    node.cmd(f'pkill -f "ospfd.*{name}" 2>/dev/null')
     node.cmd(f'pkill -f "ldpd.*{name}" 2>/dev/null')
     node.cmd('sleep 0.2')
 
@@ -193,7 +226,17 @@ def _start_mpls(node, name, props):
     )
     node.cmd('sleep 0.3')
 
-    # Start ldpd
+    # Start ospfd (provides IP routes)
+    node.cmd(
+        f'{OSPFD} -d '
+        f'--config_file {conf_path}/ospfd.conf '
+        f'--pid_file {conf_path}/ospfd.pid '
+        f'--vty_socket {conf_path}/ '
+        f'> {conf_path}/ospfd.log 2>&1'
+    )
+    node.cmd('sleep 0.3')
+
+    # Start ldpd (distributes MPLS labels on top of OSPF routes)
     node.cmd(
         f'{LDPD} -d '
         f'--config_file {conf_path}/ldpd.conf '
