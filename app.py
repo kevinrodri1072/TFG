@@ -455,17 +455,24 @@ def _start_ospf_router(router_name):
     node  = xarxa.mininet_nodes[router_name]
     xarxa._apply_routing(node, router_name, props)
 
-    # Restart routing on existing routers so they discover the new neighbour
-    for name, p in xarxa.nodes.items():
-        if p['type'] == 'router' and name != router_name and name in xarxa.mininet_nodes:
+    # Snapshot nodes to avoid "dictionary changed size during iteration"
+    existing = {n: p for n, p in xarxa.nodes.items()
+                if p['type'] == 'router' and n != router_name and n in xarxa.mininet_nodes}
+
+    def restart_existing():
+        for name, p in existing.items():
             xarxa._apply_routing(xarxa.mininet_nodes[name], name, p)
+
+    threading.Thread(target=restart_existing, daemon=True).start()
 
 
 def _update_all_routes():
     """Restart routing on all routers (called after remove_node)."""
-    for name, props in xarxa.nodes.items():
-        if props['type'] == 'router' and name in xarxa.mininet_nodes:
-            xarxa._apply_routing(xarxa.mininet_nodes[name], name, props)
+    # Snapshot to avoid iteration issues
+    routers = {n: p for n, p in xarxa.nodes.items()
+               if p['type'] == 'router' and n in xarxa.mininet_nodes}
+    for name, props in routers.items():
+        xarxa._apply_routing(xarxa.mininet_nodes[name], name, props)
 
 
 # ─────────────────────────────────────────────
