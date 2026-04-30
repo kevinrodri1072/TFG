@@ -6,6 +6,8 @@ import requests
 import json
 import io
 import re
+import os
+import subprocess
 import psutil
 import copy
 import numpy as np
@@ -579,6 +581,37 @@ def modify_router_route():
         return jsonify({'ok': True})
 
     return jsonify({'ok': False, 'error': f'Unknown action: {action}'})
+
+
+@app.route('/open_wireshark', methods=['POST'])
+def open_wireshark():
+    data  = request.json
+    node  = data.get('node')
+    intf  = data.get('intf')
+
+    if not node or node not in xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Node not found'})
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    # Full interface name as seen by the kernel (e.g. r1-eth0)
+    intf_full = f'{node}-{intf}'
+
+    # Get the sudo user to open wireshark with the correct display
+    sudo_user = os.environ.get('SUDO_USER', 'root')
+    display   = os.environ.get('DISPLAY', ':0')
+
+    try:
+        subprocess.Popen(
+            ['sudo', '-u', sudo_user,
+             'bash', '-c',
+             f'DISPLAY={display} wireshark -i {intf_full} -k &'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        return jsonify({'ok': True, 'intf': intf_full})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
 
 
 @app.route('/get_routing_mode')

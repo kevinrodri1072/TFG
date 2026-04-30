@@ -310,8 +310,13 @@
         <div id="popup-buttons">
             <button id="btn-add-host" style="display:none" onclick="showAddHostInput()">Add Host</button>
             <button id="btn-view-routes" style="display:none" onclick="showRoutesModal()">View Routes</button>
+            <button id="btn-wireshark" style="display:none" onclick="showWiresharkSelector()">📡 Wireshark</button>
             <button onclick="showRenameInput()">Rename</button>
             <button onclick="removeSelectedNode()">Remove</button>
+        </div>
+        <div id="wireshark-selector" style="display:none; margin-top:8px;">
+            <select id="wireshark-intf-select" style="padding:4px; border-radius:4px; font-size:12px; width:100%; margin-bottom:6px;"></select>
+            <button onclick="openWireshark()" style="width:100%; padding:4px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px;">Open Wireshark</button>
         </div>
         <div id="popup-add-host" style="display:none">
             <input type="text" id="host-name" placeholder="Name (e.g. h6)" style="width:100%; margin: 4px 0;">
@@ -576,6 +581,8 @@
                     document.getElementById('popup-title').textContent = selectedNode + ' (' + type + ')';
                     document.getElementById('btn-add-host').style.display = type === 'router' ? 'block' : 'none';
                     document.getElementById('btn-view-routes').style.display = type === 'router' ? 'block' : 'none';
+                    document.getElementById('btn-wireshark').style.display = type !== 'switch' ? 'block' : 'none';
+                    document.getElementById('wireshark-selector').style.display = 'none';
                     var infoDiv = document.getElementById('popup-info');
                     var nodeProps = topologyData.nodes[selectedNode];
                     if (type === 'host') {
@@ -1206,6 +1213,45 @@
             var el = document.getElementById('routes-error');
             el.textContent = msg;
             el.style.display = 'block';
+        }
+
+        // ── Wireshark ──
+        function showWiresharkSelector() {
+            var node  = selectedNode;
+            var props = topologyData.nodes[node];
+            var type  = props.type;
+            var sel   = document.getElementById('wireshark-intf-select');
+            sel.innerHTML = '';
+
+            if (type === 'host') {
+                sel.innerHTML = '<option value="eth0">eth0</option>';
+            } else if (type === 'router') {
+                Object.keys(props.ips)
+                    .filter(k => k !== 'lan')
+                    .forEach(intf => {
+                        sel.innerHTML += `<option value="${intf}">${intf} (${props.ips[intf]})</option>`;
+                    });
+            }
+            document.getElementById('wireshark-selector').style.display = 'block';
+        }
+
+        function openWireshark() {
+            var node = selectedNode;
+            var intf = document.getElementById('wireshark-intf-select').value;
+            fetch('/open_wireshark', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({node: node, intf: intf})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.ok) {
+                    alert('Error: ' + data.error);
+                } else {
+                    document.getElementById('wireshark-selector').style.display = 'none';
+                    document.getElementById('node-popup').style.display = 'none';
+                }
+            });
         }
 
         // ── Routing mode ──
