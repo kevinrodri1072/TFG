@@ -290,6 +290,7 @@
         <button onclick="showRouterForm()">Add Router</button>
         <button onclick="showMatrix()">View Matrix</button>
         <button onclick="showIPDashboard()">IP Dashboard</button>
+        <button id="btn-xrfs" onclick="showXRFModal()" style="display:none;">XRFs</button>
         <button onclick="saveNetwork()">Save Network</button>
         <button onclick="document.getElementById('load-input').click()">Load Network</button>
         <input type="file" id="load-input" accept=".mat" style="display:none" onchange="loadNetwork(this)">
@@ -341,6 +342,45 @@
     </div>
 
     <!-- Routes modal -->
+    <!-- XRF Modal -->
+    <div id="xrf-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; overflow:auto;">
+        <div style="background:white; margin:4% auto; padding:24px; width:92%; max-width:700px; border-radius:8px; max-height:85vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h2 style="margin:0;">🧩 Extended Reality Functions</h2>
+                <button onclick="closeXRFModal()" style="padding:5px 14px; background:#e74c3c; color:white; border:none; border-radius:4px; cursor:pointer;">✕</button>
+            </div>
+
+            <!-- XRF list -->
+            <div id="xrf-modal-list"></div>
+
+            <!-- Query result area -->
+            <div id="xrf-modal-result" style="display:none; margin-top:16px; border-top:1px solid #eee; padding-top:14px;">
+                <div style="font-weight:bold; font-size:14px; margin-bottom:10px;" id="xrf-modal-result-title"></div>
+
+                <!-- Hops params -->
+                <div id="xrf-hops-params" style="display:none; margin-bottom:10px;">
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                        <select id="hops-src" style="flex:1; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;"></select>
+                        <select id="hops-dst" style="flex:1; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;"><option value="">— or max hops —</option></select>
+                        <input type="number" id="hops-max" placeholder="Max hops" min="1" max="10"
+                            style="width:90px; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;">
+                        <button onclick="queryXRF('hops')" style="padding:6px 14px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">Run</button>
+                    </div>
+                </div>
+
+                <!-- Traffic params -->
+                <div id="xrf-traffic-params" style="display:none; margin-bottom:10px;">
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <select id="traffic-node" style="flex:1; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;"><option value="">All nodes</option></select>
+                        <button onclick="queryXRF('traffic')" style="padding:6px 14px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">Run</button>
+                    </div>
+                </div>
+
+                <pre id="xrf-modal-result-content" style="background:#f8f9fa; padding:12px; border-radius:4px; font-size:12px; max-height:300px; overflow-y:auto; white-space:pre-wrap; word-break:break-all;"></pre>
+            </div>
+        </div>
+    </div>
+
     <div id="routes-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; overflow:auto;">
         <div style="background:white; margin:5% auto; padding:20px; width:90%; max-width:600px; border-radius:8px; max-height:80vh; overflow-y:auto;">
             <h2 id="routes-modal-title" style="margin-top:0; margin-bottom:4px;"></h2>
@@ -511,32 +551,6 @@
                     <div class="progress-fill" id="ram-bar" style="width:0%; background:#9b59b6;"></div>
                 </div>
                 <div style="font-size:11px; color:#7f8c8d; margin-top:3px;" id="ram-detail">—</div>
-            </div>
-
-            <!-- XRFs — only visible on Twin -->
-            <div class="metrics-section" id="xrf-panel" style="display:none;">
-                <h3><i class="fa fa-cube"></i> Extended Reality Functions</h3>
-                <div id="xrf-list"></div>
-                <div id="xrf-result" style="display:none; margin-top:10px; background:#f8f9fa; border-radius:4px; padding:10px; font-size:12px;">
-                    <div style="font-weight:bold; margin-bottom:6px;" id="xrf-result-title"></div>
-                    <!-- Hops params -->
-                    <div id="xrf-hops-params" style="display:none; margin-bottom:8px;">
-                        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-                            <select id="hops-src" style="flex:1; padding:4px; font-size:12px; border-radius:4px; border:1px solid #ccc;"></select>
-                            <select id="hops-dst" style="flex:1; padding:4px; font-size:12px; border-radius:4px; border:1px solid #ccc;"><option value="">— or max hops —</option></select>
-                            <input type="number" id="hops-max" placeholder="Max hops" min="1" max="10" style="width:80px; padding:4px; font-size:12px; border-radius:4px; border:1px solid #ccc;">
-                            <button onclick="queryXRF('hops')" style="padding:4px 10px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px;">Run</button>
-                        </div>
-                    </div>
-                    <!-- Traffic params -->
-                    <div id="xrf-traffic-params" style="display:none; margin-bottom:8px;">
-                        <div style="display:flex; gap:6px; align-items:center;">
-                            <select id="traffic-node" style="flex:1; padding:4px; font-size:12px; border-radius:4px; border:1px solid #ccc;"><option value="">All nodes</option></select>
-                            <button onclick="queryXRF('traffic')" style="padding:4px 10px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px;">Run</button>
-                        </div>
-                    </div>
-                    <pre id="xrf-result-content" style="margin:0; white-space:pre-wrap; word-break:break-all; font-size:11px; max-height:200px; overflow-y:auto;"></pre>
-                </div>
             </div>
 
             <!-- Digital Twin sync metrics -->
@@ -1324,11 +1338,21 @@
                 .then(r => r.json())
                 .then(data => {
                     if (data.is_twin) {
-                        document.getElementById('xrf-panel').style.display = 'block';
+                        document.getElementById('btn-xrfs').style.display = 'inline-block';
                         loadXRFStatus();
                         setInterval(loadXRFStatus, 10000);
                     }
                 });
+        }
+
+        function showXRFModal() {
+            document.getElementById('xrf-modal').style.display = 'block';
+            loadXRFStatus();
+        }
+
+        function closeXRFModal() {
+            document.getElementById('xrf-modal').style.display = 'none';
+            document.getElementById('xrf-modal-result').style.display = 'none';
         }
 
         function loadXRFStatus() {
@@ -1342,25 +1366,24 @@
         }
 
         function renderXRFList() {
-            var list = document.getElementById('xrf-list');
+            var list = document.getElementById('xrf-modal-list');
+            if (!list) return;
             list.innerHTML = '';
             for (var id in xrfData) {
                 var xrf     = xrfData[id];
                 var running = xrf.status === 'running';
                 var dot     = running ? '🟢' : '🔴';
-                var btn     = running
-                    ? `<button onclick="undeployXRF('${id}')" style="padding:3px 8px; background:#e74c3c; color:white; border:none; border-radius:3px; cursor:pointer; font-size:11px;">Undeploy</button>
-                       <button onclick="showXRFResult('${id}')" style="padding:3px 8px; background:#2c3e50; color:white; border:none; border-radius:3px; cursor:pointer; font-size:11px;">Query</button>`
-                    : `<button onclick="deployXRF('${id}')" style="padding:3px 8px; background:#27ae60; color:white; border:none; border-radius:3px; cursor:pointer; font-size:11px;">Deploy</button>`;
+                var btns    = running
+                    ? `<button onclick="undeployXRF('${id}')" style="padding:5px 12px; background:#e74c3c; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px;">Undeploy</button>
+                       <button onclick="showXRFResult('${id}')" style="padding:5px 12px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px;">Query</button>`
+                    : `<button onclick="deployXRF('${id}')" style="padding:5px 12px; background:#27ae60; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px;">Deploy</button>`;
                 list.innerHTML += `
-                    <div style="margin-bottom:8px; padding:8px; background:#f8f9fa; border-radius:4px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <div>
-                                <span style="font-size:12px; font-weight:bold;">${dot} ${xrf.name}</span>
-                                <div style="font-size:10px; color:#7f8c8d;">${xrf.description}</div>
-                            </div>
-                            <div style="display:flex; gap:4px;">${btn}</div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; background:#f8f9fa; border-radius:6px; margin-bottom:10px;">
+                        <div>
+                            <div style="font-weight:bold; font-size:14px;">${dot} ${xrf.name}</div>
+                            <div style="font-size:12px; color:#7f8c8d; margin-top:2px;">${xrf.description}</div>
                         </div>
+                        <div style="display:flex; gap:6px;">${btns}</div>
                     </div>`;
             }
         }
@@ -1388,17 +1411,17 @@
             .then(r => r.json())
             .then(data => {
                 if (!data.ok) { alert('Error: ' + data.error); return; }
-                document.getElementById('xrf-result').style.display = 'none';
+                document.getElementById('xrf-modal-result').style.display = 'none';
                 setTimeout(loadXRFStatus, 2000);
             });
         }
 
         function showXRFResult(id) {
-            document.getElementById('xrf-result').style.display = 'block';
-            document.getElementById('xrf-result-title').textContent = xrfData[id].name;
+            document.getElementById('xrf-modal-result').style.display = 'block';
+            document.getElementById('xrf-modal-result-title').textContent = xrfData[id].name + ' — Results';
             document.getElementById('xrf-hops-params').style.display    = id === 'hops'    ? 'block' : 'none';
             document.getElementById('xrf-traffic-params').style.display = id === 'traffic' ? 'block' : 'none';
-            document.getElementById('xrf-result-content').textContent = '';
+            document.getElementById('xrf-modal-result-content').textContent = '';
 
             if (topologyData) {
                 var all = Object.keys(topologyData.nodes).filter(n => topologyData.nodes[n].type !== 'switch');
@@ -1434,7 +1457,7 @@
             })
             .then(r => r.json())
             .then(data => {
-                document.getElementById('xrf-result-content').textContent =
+                document.getElementById('xrf-modal-result-content').textContent =
                     data.ok ? JSON.stringify(data.result, null, 2) : 'Error: ' + data.error;
             });
         }
