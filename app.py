@@ -21,7 +21,7 @@ parser.add_argument('--twin', action='store_true', help='Run as Digital Twin')
 args, _ = parser.parse_known_args()
 IS_TWIN = args.twin
 
-DIGITAL_TWIN_IP = '10.4.39.103'  # IP of the Twin
+DIGITAL_TWIN_IP = '10.4.39.153'  # IP of the Twin
 DIGITAL_TWIN_PORT = 5000
 
 TYPE_TO_NUM = {0: 0, 'host': 1, 'router': 2, 'switch': 3}

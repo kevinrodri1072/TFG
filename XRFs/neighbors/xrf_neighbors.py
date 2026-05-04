@@ -11,18 +11,20 @@ def health():
 
 @app.route('/run')
 def run():
-    topo = requests.get(f'{TWIN_API}/topology').json()
+    node = request.args.get('node')
+    topo  = requests.get(f'{TWIN_API}/topology').json()
     nodes = topo['nodes']
     links = topo['links']
-    
-    result = {}
-    for node in nodes:
-        result[node] = [
-            l['to'] if l['from'] == node else l['from']
+
+    if node and node not in nodes:
+        return jsonify({'ok': False, 'error': f'Node {node} not found'})
+
+    targets = [node] if node else list(nodes.keys())
+    result  = {}
+    for n in targets:
+        result[n] = [
+            l['to'] if l['from'] == n else l['from']
             for l in links
-            if l['from'] == node or l['to'] == node
+            if l['from'] == n or l['to'] == n
         ]
     return jsonify({'ok': True, 'neighbors': result})
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)

@@ -357,14 +357,37 @@
             <div id="xrf-modal-result" style="display:none; margin-top:16px; border-top:1px solid #eee; padding-top:14px;">
                 <div style="font-weight:bold; font-size:14px; margin-bottom:10px;" id="xrf-modal-result-title"></div>
 
+                <!-- Neighbors params -->
+                <div id="xrf-neighbors-params" style="display:none; margin-bottom:10px;">
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <select id="neighbors-node" style="flex:1; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;">
+                            <option value="">All nodes</option>
+                        </select>
+                        <button onclick="queryXRF('neighbors')" style="padding:6px 14px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">Run</button>
+                    </div>
+                </div>
+
                 <!-- Hops params -->
                 <div id="xrf-hops-params" style="display:none; margin-bottom:10px;">
                     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-                        <select id="hops-src" style="flex:1; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;"></select>
-                        <select id="hops-dst" style="flex:1; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;"><option value="">— or max hops —</option></select>
-                        <input type="number" id="hops-max" placeholder="Max hops" min="1" max="10"
-                            style="width:90px; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;">
-                        <button onclick="queryXRF('hops')" style="padding:6px 14px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">Run</button>
+                        <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
+                            <label style="font-size:11px; color:#7f8c8d;">Source</label>
+                            <select id="hops-src" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;"></select>
+                        </div>
+                        <div style="display:flex; flex-direction:column; gap:4px; flex:1;" id="hops-dst-group">
+                            <label style="font-size:11px; color:#7f8c8d;">Destination</label>
+                            <select id="hops-dst" onchange="toggleMaxHops()" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;">
+                                <option value="">— Any (use max hops) —</option>
+                            </select>
+                        </div>
+                        <div style="display:flex; flex-direction:column; gap:4px;" id="hops-max-group">
+                            <label style="font-size:11px; color:#7f8c8d;">Max hops</label>
+                            <input type="number" id="hops-max" value="2" min="1" max="10"
+                                style="width:80px; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;">
+                        </div>
+                        <div style="display:flex; flex-direction:column; justify-content:flex-end;">
+                            <button onclick="queryXRF('hops')" style="padding:6px 14px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer; margin-top:18px;">Run</button>
+                        </div>
                     </div>
                 </div>
 
@@ -376,7 +399,8 @@
                     </div>
                 </div>
 
-                <pre id="xrf-modal-result-content" style="background:#f8f9fa; padding:12px; border-radius:4px; font-size:12px; max-height:300px; overflow-y:auto; white-space:pre-wrap; word-break:break-all;"></pre>
+                <!-- Formatted result -->
+                <div id="xrf-modal-result-content" style="margin-top:10px;"></div>
             </div>
         </div>
     </div>
@@ -1389,45 +1413,39 @@
         }
 
         function deployXRF(id) {
-            fetch('/xrf/deploy', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({xrf: id})
-            })
+            fetch('/xrf/deploy', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({xrf: id})})
             .then(r => r.json())
-            .then(data => {
-                if (!data.ok) { alert('Error: ' + data.error); return; }
-                setTimeout(loadXRFStatus, 3000);
-            });
+            .then(data => { if (!data.ok) { alert('Error: ' + data.error); return; } setTimeout(loadXRFStatus, 3000); });
         }
 
         function undeployXRF(id) {
             if (!confirm('Undeploy ' + xrfData[id].name + '?')) return;
-            fetch('/xrf/undeploy', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({xrf: id})
-            })
+            fetch('/xrf/undeploy', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({xrf: id})})
             .then(r => r.json())
-            .then(data => {
-                if (!data.ok) { alert('Error: ' + data.error); return; }
-                document.getElementById('xrf-modal-result').style.display = 'none';
-                setTimeout(loadXRFStatus, 2000);
-            });
+            .then(data => { if (!data.ok) { alert('Error: ' + data.error); return; } document.getElementById('xrf-modal-result').style.display = 'none'; setTimeout(loadXRFStatus, 2000); });
+        }
+
+        function toggleMaxHops() {
+            var dst = document.getElementById('hops-dst').value;
+            document.getElementById('hops-max-group').style.display = dst ? 'none' : 'flex';
         }
 
         function showXRFResult(id) {
             document.getElementById('xrf-modal-result').style.display = 'block';
             document.getElementById('xrf-modal-result-title').textContent = xrfData[id].name + ' — Results';
-            document.getElementById('xrf-hops-params').style.display    = id === 'hops'    ? 'block' : 'none';
-            document.getElementById('xrf-traffic-params').style.display = id === 'traffic' ? 'block' : 'none';
-            document.getElementById('xrf-modal-result-content').textContent = '';
+            document.getElementById('xrf-neighbors-params').style.display = id === 'neighbors' ? 'block' : 'none';
+            document.getElementById('xrf-hops-params').style.display      = id === 'hops'      ? 'block' : 'none';
+            document.getElementById('xrf-traffic-params').style.display   = id === 'traffic'   ? 'block' : 'none';
+            document.getElementById('xrf-modal-result-content').innerHTML = '';
 
             if (topologyData) {
                 var all = Object.keys(topologyData.nodes).filter(n => topologyData.nodes[n].type !== 'switch');
-                ['hops-src', 'hops-dst'].forEach((selId, i) => {
-                    var sel  = document.getElementById(selId);
-                    var opts = i === 1 ? '<option value="">— or max hops —</option>' : '';
+                var nsel = document.getElementById('neighbors-node');
+                nsel.innerHTML = '<option value="">All nodes</option>';
+                all.forEach(n => { nsel.innerHTML += `<option value="${n}">${n}</option>`; });
+                ['hops-src','hops-dst'].forEach((selId,i) => {
+                    var sel = document.getElementById(selId);
+                    var opts = i===1 ? '<option value="">— Any (use max hops) —</option>' : '';
                     all.forEach(n => { opts += `<option value="${n}">${n}</option>`; });
                     sel.innerHTML = opts;
                 });
@@ -1435,30 +1453,88 @@
                 tsel.innerHTML = '<option value="">All nodes</option>';
                 all.forEach(n => { tsel.innerHTML += `<option value="${n}">${n}</option>`; });
             }
-            if (id === 'neighbors') queryXRF('neighbors');
+            queryXRF(id);
+        }
+
+        function renderNeighbors(data) {
+            var neighbors = data.result ? data.result.neighbors : data.neighbors;
+            if (!neighbors) return '<p style="color:#e74c3c;">No data</p>';
+            var html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">';
+            html += '<tr style="background:#2c3e50; color:white;"><th style="padding:8px 12px; text-align:left;">Node</th><th style="padding:8px 12px; text-align:left;">Connected to</th></tr>';
+            var i = 0;
+            for (var node in neighbors) {
+                var bg = i%2===0 ? '#f8f9fa' : 'white';
+                var conns = neighbors[node].length > 0
+                    ? neighbors[node].map(n => `<span style="background:#e8f4fd; color:#2980b9; padding:2px 8px; border-radius:12px; margin-right:4px; font-size:12px;">${n}</span>`).join('')
+                    : '<span style="color:#aaa; font-size:12px;">none</span>';
+                html += `<tr style="background:${bg};"><td style="padding:8px 12px; font-weight:bold;">${node}</td><td style="padding:8px 12px;">${conns}</td></tr>`;
+                i++;
+            }
+            return html + '</table>';
+        }
+
+        function renderHops(data) {
+            var result = data.result ? data.result.result : null;
+            var src    = data.result ? data.result.src : '?';
+            if (!result) return '<p style="color:#e74c3c;">No data</p>';
+            if (result.path) {
+                var path = result.path;
+                var pathHtml = path.map((n,i) => {
+                    var arrow = i < path.length-1 ? ' <span style="color:#aaa;">→</span> ' : '';
+                    var color = (i===0||i===path.length-1) ? '#2c3e50' : '#2980b9';
+                    return `<span style="background:#e8f4fd; color:${color}; padding:4px 10px; border-radius:12px; font-weight:bold;">${n}</span>${arrow}`;
+                }).join('');
+                return `<div style="background:#f8f9fa; padding:14px; border-radius:6px;"><div style="font-size:13px; color:#7f8c8d; margin-bottom:8px;">Path (${result.hops} hops):</div><div style="display:flex; flex-wrap:wrap; align-items:center; gap:4px;">${pathHtml}</div></div>`;
+            }
+            var html = `<div style="font-size:13px; color:#7f8c8d; margin-bottom:8px;">Nodes reachable from <strong>${src}</strong>:</div>`;
+            html += '<table style="width:100%; border-collapse:collapse; font-size:13px;"><tr style="background:#2c3e50; color:white;"><th style="padding:8px 12px; text-align:left;">Node</th><th style="padding:8px 12px; text-align:center;">Hops</th></tr>';
+            Object.entries(result).sort((a,b)=>a[1]-b[1]).forEach(([node,hops],i) => {
+                var bg = i%2===0 ? '#f8f9fa' : 'white';
+                html += `<tr style="background:${bg};"><td style="padding:8px 12px; font-weight:bold;">${node}</td><td style="padding:8px 12px; text-align:center; color:#2980b9;">${hops}</td></tr>`;
+            });
+            return html + '</table>';
+        }
+
+        function renderTraffic(data) {
+            var traffic = data.result ? data.result.traffic : data.traffic;
+            if (!traffic) return '<p style="color:#e74c3c;">No data</p>';
+            var html = '';
+            for (var node in traffic) {
+                html += `<div style="margin-bottom:14px;"><div style="font-weight:bold; font-size:13px; margin-bottom:6px; color:#2c3e50;">📡 ${node}</div><table style="width:100%; border-collapse:collapse; font-size:12px;"><tr style="background:#f0f0f0;"><th style="padding:6px 10px; text-align:left;">Interface</th><th style="padding:6px 10px; text-align:right;">RX bytes</th><th style="padding:6px 10px; text-align:right;">RX pkts</th><th style="padding:6px 10px; text-align:right;">TX bytes</th><th style="padding:6px 10px; text-align:right;">TX pkts</th></tr>`;
+                for (var intf in traffic[node]) {
+                    var d = traffic[node][intf];
+                    html += `<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 10px; font-family:monospace;">${intf}</td><td style="padding:6px 10px; text-align:right;">${d.rx_bytes.toLocaleString()}</td><td style="padding:6px 10px; text-align:right;">${d.rx_packets.toLocaleString()}</td><td style="padding:6px 10px; text-align:right;">${d.tx_bytes.toLocaleString()}</td><td style="padding:6px 10px; text-align:right;">${d.tx_packets.toLocaleString()}</td></tr>`;
+                }
+                html += '</table></div>';
+            }
+            return html;
         }
 
         function queryXRF(id) {
             var params = {};
-            if (id === 'hops') {
-                params.src   = document.getElementById('hops-src').value;
-                var dst      = document.getElementById('hops-dst').value;
+            if (id === 'neighbors') {
+                var node = document.getElementById('neighbors-node').value;
+                if (node) params.node = node;
+            } else if (id === 'hops') {
+                params.src = document.getElementById('hops-src').value;
+                var dst = document.getElementById('hops-dst').value;
                 var max_hops = document.getElementById('hops-max').value;
-                if (dst)      params.dst      = dst;
-                if (max_hops) params.max_hops = parseInt(max_hops);
+                if (dst) params.dst = dst;
+                else if (max_hops) params.max_hops = parseInt(max_hops);
             } else if (id === 'traffic') {
                 var node = document.getElementById('traffic-node').value;
                 if (node) params.node = node;
             }
-            fetch('/xrf/query', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({xrf: id, params: params})
-            })
+            document.getElementById('xrf-modal-result-content').innerHTML = '<div style="color:#7f8c8d; font-size:13px;">⏳ Loading...</div>';
+            fetch('/xrf/query', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({xrf: id, params: params})})
             .then(r => r.json())
             .then(data => {
-                document.getElementById('xrf-modal-result-content').textContent =
-                    data.ok ? JSON.stringify(data.result, null, 2) : 'Error: ' + data.error;
+                var html = '';
+                if (!data.ok) html = `<p style="color:#e74c3c;">Error: ${data.error}</p>`;
+                else if (id === 'neighbors') html = renderNeighbors(data);
+                else if (id === 'hops')      html = renderHops(data);
+                else if (id === 'traffic')   html = renderTraffic(data);
+                document.getElementById('xrf-modal-result-content').innerHTML = html;
             });
         }
 
