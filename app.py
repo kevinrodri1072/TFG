@@ -993,25 +993,27 @@ def is_twin():
     return jsonify({'is_twin': IS_TWIN})
 
 
+XRF_BASE = os.path.dirname(os.path.abspath(__file__))
+
 XRF_REGISTRY = {
     'neighbors': {
         'name':        'Neighbors',
         'description': 'Lists directly connected nodes for each node',
-        'yaml':        'XRFs/neighbors/neighbors.yaml',
+        'yaml':        os.path.join(XRF_BASE, 'XRFs/neighbors/neighbors.yaml'),
         'service':     'xrf-neighbors-svc',
         'deployment':  'xrf-neighbors',
     },
     'traffic': {
         'name':        'Traffic Monitor',
         'description': 'Counts bytes/packets per interface',
-        'yaml':        'XRFs/traffic/traffic.yaml',
+        'yaml':        os.path.join(XRF_BASE, 'XRFs/traffic/traffic.yaml'),
         'service':     'xrf-traffic-svc',
         'deployment':  'xrf-traffic',
     },
     'hops': {
         'name':        'Hop Counter',
         'description': 'Calculates hop distance between nodes',
-        'yaml':        'XRFs/hops/hops.yaml',
+        'yaml':        os.path.join(XRF_BASE, 'XRFs/hops/hops.yaml'),
         'service':     'xrf-hops-svc',
         'deployment':  'xrf-hops',
     },
