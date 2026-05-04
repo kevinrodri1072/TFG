@@ -1025,14 +1025,19 @@ def kubectl(args):
     """Run kubectl with the correct kubeconfig."""
     return ['kubectl', f'--kubeconfig={KUBECONFIG}'] + args
 
+MINIKUBE_IP = '192.168.49.2'
+
 def get_xrf_url(service_name):
+    """Get XRF URL using kubectl to read the NodePort directly."""
     try:
-        result = subprocess.check_output(
-            ['minikube', f'--kubeconfig={KUBECONFIG}',
-             'service', service_name, '--url'],
+        port = subprocess.check_output(
+            kubectl(['get', 'svc', service_name,
+                     '-o', 'jsonpath={.spec.ports[0].nodePort}']),
             text=True, stderr=subprocess.DEVNULL
         ).strip()
-        return result if result.startswith('http') else None
+        if port:
+            return f'http://{MINIKUBE_IP}:{port}'
+        return None
     except Exception:
         return None
 
