@@ -21,7 +21,7 @@ parser.add_argument('--twin', action='store_true', help='Run as Digital Twin')
 args, _ = parser.parse_known_args()
 IS_TWIN = args.twin
 
-DIGITAL_TWIN_IP = '10.4.39.153'  # IP of the Twin
+DIGITAL_TWIN_IP = '10.4.39.103'  # IP of the Twin
 DIGITAL_TWIN_PORT = 5000
 
 TYPE_TO_NUM = {0: 0, 'host': 1, 'router': 2, 'switch': 3}
@@ -1019,10 +1019,17 @@ XRF_REGISTRY = {
     },
 }
 
+KUBECONFIG = f'/home/{os.environ.get("SUDO_USER", os.environ.get("USER", "kevf20"))}/.kube/config'
+
+def kubectl(args):
+    """Run kubectl with the correct kubeconfig."""
+    return ['kubectl', f'--kubeconfig={KUBECONFIG}'] + args
+
 def get_xrf_url(service_name):
     try:
         result = subprocess.check_output(
-            ['minikube', 'service', service_name, '--url'],
+            ['minikube', f'--kubeconfig={KUBECONFIG}',
+             'service', service_name, '--url'],
             text=True, stderr=subprocess.DEVNULL
         ).strip()
         return result if result.startswith('http') else None
@@ -1032,8 +1039,8 @@ def get_xrf_url(service_name):
 def get_xrf_status(deployment_name):
     try:
         result = subprocess.check_output(
-            ['kubectl', 'get', 'deployment', deployment_name,
-             '-o', 'jsonpath={.status.readyReplicas}'],
+            kubectl(['get', 'deployment', deployment_name,
+                     '-o', 'jsonpath={.status.readyReplicas}']),
             text=True, stderr=subprocess.DEVNULL
         ).strip()
         return 'running' if result == '1' else 'stopped'
@@ -1065,7 +1072,7 @@ def xrf_deploy():
         return jsonify({'ok': False, 'error': f'Unknown XRF: {xrf_id}'})
     try:
         subprocess.check_call(
-            ['kubectl', 'apply', '-f', XRF_REGISTRY[xrf_id]['yaml']],
+            kubectl(['apply', '-f', XRF_REGISTRY[xrf_id]['yaml']]),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return jsonify({'ok': True, 'xrf': xrf_id})
     except Exception as e:
@@ -1080,7 +1087,7 @@ def xrf_undeploy():
         return jsonify({'ok': False, 'error': f'Unknown XRF: {xrf_id}'})
     try:
         subprocess.check_call(
-            ['kubectl', 'delete', '-f', XRF_REGISTRY[xrf_id]['yaml']],
+            kubectl(['delete', '-f', XRF_REGISTRY[xrf_id]['yaml']]),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return jsonify({'ok': True, 'xrf': xrf_id})
     except Exception as e:
