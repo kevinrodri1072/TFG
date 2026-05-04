@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xrf-hops
+  labels:
+    app: xrf-hops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xrf-hops
+  template:
+    metadata:
+      labels:
+        app: xrf-hops
+    spec:
+      containers:
+      - name: xrf-hops
+        image: xrf-hops:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        env:
+        - name: TWIN_API
+          value: "http://host.minikube.internal:5000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xrf-hops-svc
+spec:
+  selector:
+    app: xrf-hops
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: NodePort

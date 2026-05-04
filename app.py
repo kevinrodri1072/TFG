@@ -8,11 +8,18 @@ import io
 import re
 import os
 import subprocess
+import argparse
 import psutil
 import copy
 import numpy as np
 from scipy.io import savemat, loadmat
 from collections import deque
+
+# ── Parse arguments ──
+parser = argparse.ArgumentParser()
+parser.add_argument('--twin', action='store_true', help='Run as Digital Twin')
+args, _ = parser.parse_known_args()
+IS_TWIN = args.twin
 
 DIGITAL_TWIN_IP = '10.4.39.153'  # IP of the Twin
 DIGITAL_TWIN_PORT = 5000
@@ -932,6 +939,8 @@ def metrics_global():
         }
     })
 
+
+
 @app.route('/sync_metrics', methods=['POST'])
 def update_sync_metrics():
     data = request.json
@@ -946,9 +955,156 @@ def update_sync_metrics():
     with sync_history_lock:
         sync_latency_history.append(entry)
     return jsonify({'ok': True})
+
+@app.route('/metrics/traffic')
+def metrics_traffic():
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+    
+    node = request.args.get('node')
+    if not node or node not in xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Node not found'})
+    if xarxa.nodes[node]['type'] == 'switch':
+        return jsonify({'ok': False, 'error': 'Switches not supported'})
+
+    mn_node = xarxa.mininet_nodes[node]
+    raw = mn_node.cmd('cat /proc/net/dev')
+    
+    interfaces = {}
+    for line in raw.strip().split('\n')[2:]:  # skip 2 header lines
+        parts = line.split(':')
+        if len(parts) < 2:
+            continue
+        intf = parts[0].strip()
+        if intf == 'lo':
+            continue
+        values = parts[1].split()
+        interfaces[intf] = {
+            'rx_bytes':   int(values[0]),
+            'rx_packets': int(values[1]),
+            'tx_bytes':   int(values[8]),
+            'tx_packets': int(values[9]),
+        }
+    
+    return jsonify({'ok': True, 'node': node, 'interfaces': interfaces})
+
+@app.route('/is_twin')
+def is_twin():
+    return jsonify({'is_twin': IS_TWIN})
+
+
+XRF_REGISTRY = {
+    'neighbors': {
+        'name':        'Neighbors',
+        'description': 'Lists directly connected nodes for each node',
+        'yaml':        'XRFs/neighbors/neighbors.yaml',
+        'service':     'xrf-neighbors-svc',
+        'deployment':  'xrf-neighbors',
+    },
+    'traffic': {
+        'name':        'Traffic Monitor',
+        'description': 'Counts bytes/packets per interface',
+        'yaml':        'XRFs/traffic/traffic.yaml',
+        'service':     'xrf-traffic-svc',
+        'deployment':  'xrf-traffic',
+    },
+    'hops': {
+        'name':        'Hop Counter',
+        'description': 'Calculates hop distance between nodes',
+        'yaml':        'XRFs/hops/hops.yaml',
+        'service':     'xrf-hops-svc',
+        'deployment':  'xrf-hops',
+    },
+}
+
+def get_xrf_url(service_name):
+    try:
+        result = subprocess.check_output(
+            ['minikube', 'service', service_name, '--url'],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        return result if result.startswith('http') else None
+    except Exception:
+        return None
+
+def get_xrf_status(deployment_name):
+    try:
+        result = subprocess.check_output(
+            ['kubectl', 'get', 'deployment', deployment_name,
+             '-o', 'jsonpath={.status.readyReplicas}'],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        return 'running' if result == '1' else 'stopped'
+    except Exception:
+        return 'stopped'
+
+@app.route('/xrf/status')
+def xrf_status():
+    if not IS_TWIN:
+        return jsonify({'ok': False, 'error': 'Only available on Twin'})
+    status = {}
+    for xrf_id, xrf in XRF_REGISTRY.items():
+        s   = get_xrf_status(xrf['deployment'])
+        url = get_xrf_url(xrf['service']) if s == 'running' else None
+        status[xrf_id] = {
+            'name':        xrf['name'],
+            'description': xrf['description'],
+            'status':      s,
+            'url':         url,
+        }
+    return jsonify({'ok': True, 'xrfs': status})
+
+@app.route('/xrf/deploy', methods=['POST'])
+def xrf_deploy():
+    if not IS_TWIN:
+        return jsonify({'ok': False, 'error': 'Only available on Twin'})
+    xrf_id = request.json.get('xrf')
+    if xrf_id not in XRF_REGISTRY:
+        return jsonify({'ok': False, 'error': f'Unknown XRF: {xrf_id}'})
+    try:
+        subprocess.check_call(
+            ['kubectl', 'apply', '-f', XRF_REGISTRY[xrf_id]['yaml']],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return jsonify({'ok': True, 'xrf': xrf_id})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+@app.route('/xrf/undeploy', methods=['POST'])
+def xrf_undeploy():
+    if not IS_TWIN:
+        return jsonify({'ok': False, 'error': 'Only available on Twin'})
+    xrf_id = request.json.get('xrf')
+    if xrf_id not in XRF_REGISTRY:
+        return jsonify({'ok': False, 'error': f'Unknown XRF: {xrf_id}'})
+    try:
+        subprocess.check_call(
+            ['kubectl', 'delete', '-f', XRF_REGISTRY[xrf_id]['yaml']],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return jsonify({'ok': True, 'xrf': xrf_id})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+@app.route('/xrf/query', methods=['POST'])
+def xrf_query():
+    if not IS_TWIN:
+        return jsonify({'ok': False, 'error': 'Only available on Twin'})
+    xrf_id = request.json.get('xrf')
+    params = request.json.get('params', {})
+    if xrf_id not in XRF_REGISTRY:
+        return jsonify({'ok': False, 'error': f'Unknown XRF: {xrf_id}'})
+    url = get_xrf_url(XRF_REGISTRY[xrf_id]['service'])
+    if not url:
+        return jsonify({'ok': False, 'error': 'XRF not running'})
+    try:
+        resp = requests.get(f'{url}/run', params=params, timeout=10)
+        return jsonify({'ok': True, 'result': resp.json()})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+
 if __name__ == '__main__':
     t = threading.Thread(target=xarxa.start_network)
     t.daemon = True
     t.start()
     time.sleep(3)
-    app.run(debug=False)
+    app.run(host='0.0.0.0',debug=False)

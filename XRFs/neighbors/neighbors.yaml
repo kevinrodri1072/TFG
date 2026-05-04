@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xrf-neighbors
+  labels:
+    app: xrf-neighbors
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xrf-neighbors
+  template:
+    metadata:
+      labels:
+        app: xrf-neighbors
+    spec:
+      containers:
+      - name: xrf-neighbors
+        image: xrf-neighbors:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        env:
+        - name: TWIN_API
+          value: "http://host.minikube.internal:5000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xrf-neighbors-svc
+spec:
+  selector:
+    app: xrf-neighbors
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: NodePort

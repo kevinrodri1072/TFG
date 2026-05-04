@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xrf-traffic
+  labels:
+    app: xrf-traffic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xrf-traffic
+  template:
+    metadata:
+      labels:
+        app: xrf-traffic
+    spec:
+      containers:
+      - name: xrf-traffic
+        image: xrf-traffic:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        env:
+        - name: TWIN_API
+          value: "http://host.minikube.internal:5000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xrf-traffic-svc
+spec:
+  selector:
+    app: xrf-traffic
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: NodePort
