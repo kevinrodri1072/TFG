@@ -21,8 +21,10 @@ parser.add_argument('--twin', action='store_true', help='Run as Digital Twin')
 args, _ = parser.parse_known_args()
 IS_TWIN = args.twin
 
-DIGITAL_TWIN_IP = '10.4.39.153'  # IP of the Twin
+DIGITAL_TWIN_IP = '10.4.39.103'  # IP of the Twin
 DIGITAL_TWIN_PORT = 5000
+
+_ping_lock = threading.Lock()
 
 TYPE_TO_NUM = {0: 0, 'host': 1, 'router': 2, 'switch': 3}
 NUM_TO_TYPE = {0: 0, 1: 'host', 2: 'router', 3: 'switch'}
@@ -669,34 +671,35 @@ def metrics_system():
 
 @app.route('/metrics/ping')
 def metrics_ping():
-    """Fast ping-only measurement (no iperf). ~3s."""
-    if not xarxa.network_ready:
-        return jsonify({'ok': False, 'error': 'Network not ready'})
+    with _ping_lock:
+        """Fast ping-only measurement (no iperf). ~3s."""
+        if not xarxa.network_ready:
+            return jsonify({'ok': False, 'error': 'Network not ready'})
 
-    src = request.args.get('src')
-    dst = request.args.get('dst')
-    if not src or not dst:
-        return jsonify({'ok': False, 'error': 'src and dst parameters required'})
-    if src not in xarxa.nodes or dst not in xarxa.nodes:
-        return jsonify({'ok': False, 'error': 'Node not found'})
-    if xarxa.nodes[src]['type'] != 'host' or xarxa.nodes[dst]['type'] != 'host':
-        return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
+        src = request.args.get('src')
+        dst = request.args.get('dst')
+        if not src or not dst:
+            return jsonify({'ok': False, 'error': 'src and dst parameters required'})
+        if src not in xarxa.nodes or dst not in xarxa.nodes:
+            return jsonify({'ok': False, 'error': 'Node not found'})
+        if xarxa.nodes[src]['type'] != 'host' or xarxa.nodes[dst]['type'] != 'host':
+            return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
 
-    src_node = xarxa.mininet_nodes[src]
-    dst_ip   = xarxa.nodes[dst]['ip'].split('/')[0]
+        src_node = xarxa.mininet_nodes[src]
+        dst_ip   = xarxa.nodes[dst]['ip'].split('/')[0]
 
-    ping_result = src_node.cmd(f'ping -c 10 -i 0.2 {dst_ip}')
-    latency = {'min': None, 'avg': None, 'max': None}
-    jitter  = None
-    match = re.search(r'rtt min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)', ping_result)
-    if match:
-        latency['min'] = float(match.group(1))
-        latency['avg'] = float(match.group(2))
-        latency['max'] = float(match.group(3))
-        jitter         = float(match.group(4))
+        ping_result = src_node.cmd(f'ping -c 10 -i 0.2 {dst_ip}')
+        latency = {'min': None, 'avg': None, 'max': None}
+        jitter  = None
+        match = re.search(r'rtt min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)', ping_result)
+        if match:
+            latency['min'] = float(match.group(1))
+            latency['avg'] = float(match.group(2))
+            latency['max'] = float(match.group(3))
+            jitter         = float(match.group(4))
 
-    return jsonify({'ok': True, 'src': src, 'dst': dst,
-                    'latency_ms': latency, 'jitter_ms': jitter})
+        return jsonify({'ok': True, 'src': src, 'dst': dst,
+                        'latency_ms': latency, 'jitter_ms': jitter})
 
 
 @app.route('/metrics/internal')
@@ -1017,6 +1020,13 @@ XRF_REGISTRY = {
         'service':     'xrf-hops-svc',
         'deployment':  'xrf-hops',
     },
+    'chaos': {
+        'name':        'Chaos — Node Failure',
+        'description': 'Simulates router failure and measures recovery time',
+        'yaml':        os.path.join(XRF_BASE, 'XRFs/chaos/chaos.yaml'),
+        'service':     'xrf-chaos-svc',
+        'deployment':  'xrf-chaos',
+    },
 }
 
 KUBECONFIG = f'/home/{os.environ.get("SUDO_USER", os.environ.get("USER", "kevf20"))}/.kube/config'
@@ -1110,11 +1120,68 @@ def xrf_query():
     if not url:
         return jsonify({'ok': False, 'error': 'XRF not running'})
     try:
-        resp = requests.get(f'{url}/run', params=params, timeout=10)
+        # Chaos XRF uses POST with JSON body
+        if xrf_id == 'chaos':
+            resp = requests.post(f'{url}/run', json=params, timeout=120)
+        else:
+            resp = requests.get(f'{url}/run', params=params, timeout=10)
         return jsonify({'ok': True, 'result': resp.json()})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
 
+@app.route('/chaos/node_down', methods=['POST'])
+def chaos_node_down():
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+    node = request.json.get('node')
+    if not node or node not in xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Node not found'})
+    if xarxa.nodes[node]['type'] != 'router':
+        return jsonify({'ok': False, 'error': 'Only routers supported'})
+    
+    mn_node = xarxa.mininet_nodes[node]
+    props   = xarxa.nodes[node]
+    for intf in props['ips']:
+        if intf == 'lan':
+            continue
+        mn_node.cmd(f'ip link set {node}-{intf} down')
+    return jsonify({'ok': True, 'node': node, 'action': 'down'})
+
+
+@app.route('/chaos/node_up', methods=['POST'])
+def chaos_node_up():
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+    node = request.json.get('node')
+    if not node or node not in xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Node not found'})
+    if xarxa.nodes[node]['type'] != 'router':
+        return jsonify({'ok': False, 'error': 'Only routers supported'})
+
+    mn_node = xarxa.mininet_nodes[node]
+    props   = xarxa.nodes[node]
+    for intf in props['ips']:
+        if intf == 'lan':
+            continue
+        mn_node.cmd(f'ip link set {node}-{intf} up')
+    return jsonify({'ok': True, 'node': node, 'action': 'up'})
+
+@app.route('/metrics/ping_fast')
+def metrics_ping_fast():
+    with _ping_lock:
+        if not xarxa.network_ready:
+            return jsonify({'ok': False, 'avg': None})
+        src = request.args.get('src')
+        dst = request.args.get('dst')
+        if not src or not dst or src not in xarxa.nodes or dst not in xarxa.nodes:
+            return jsonify({'ok': False, 'avg': None})
+        src_node = xarxa.mininet_nodes[src]
+        dst_ip   = xarxa.nodes[dst]['ip'].split('/')[0]
+        result   = src_node.cmd(f'ping -c 1 -W 1 {dst_ip}')
+        match    = re.search(r'rtt min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)', result)
+        if match:
+            return jsonify({'ok': True, 'avg': float(match.group(2))})
+        return jsonify({'ok': True, 'avg': None})
 
 if __name__ == '__main__':
     t = threading.Thread(target=xarxa.start_network)

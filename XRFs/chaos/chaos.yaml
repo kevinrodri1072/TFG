@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xrf-chaos
+  labels:
+    app: xrf-chaos
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xrf-chaos
+  template:
+    metadata:
+      labels:
+        app: xrf-chaos
+    spec:
+      containers:
+      - name: xrf-chaos
+        image: xrf-chaos:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        env:
+        - name: TWIN_API
+          value: "http://host.minikube.internal:5000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xrf-chaos-svc
+spec:
+  selector:
+    app: xrf-chaos
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: NodePort
