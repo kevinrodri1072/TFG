@@ -294,14 +294,25 @@
         <button onclick="saveNetwork()">Save Network</button>
         <button onclick="document.getElementById('load-input').click()">Load Network</button>
         <input type="file" id="load-input" accept=".mat" style="display:none" onchange="loadNetwork(this)">
-        <select id="routing-mode-select" onchange="setRoutingMode(this.value)"
-            style="padding:6px 10px; border-radius:4px; border:1px solid #555; background:#2c3e50; color:white; cursor:pointer; font-size:13px;">
-            <option value="ospf">OSPF</option>
-            <option value="ospf_bfd">OSPF + BFD</option>
-            <option value="mpls">MPLS (OSPF + LDP)</option>
-            <option value="mpls_bfd">MPLS + BFD (OSPF + LDP + BFD)</option>
-            <option value="manual">Manual</option>
-        </select>
+        <div id="routing-dd" style="position:relative; display:inline-block;">
+            <div id="routing-dd-selected" onclick="toggleRoutingDD()" style="background:#2c3e50; color:white; border:1px solid #555; padding:6px 28px 6px 10px; border-radius:4px; font-size:13px; cursor:pointer; min-width:150px; user-select:none; position:relative;">
+                OSPF <span style="position:absolute; right:8px; top:50%; transform:translateY(-50%); font-size:10px;">&#9660;</span>
+            </div>
+            <div id="routing-dd-menu" style="display:none; position:absolute; top:calc(100% + 2px); left:0; background:#1a252f; border:1px solid #555; border-radius:6px; min-width:200px; z-index:9999; overflow:hidden;">
+                <div class="routing-dd-item" data-value="ospf" data-tip="Standard IP routing using OSPF. Hello 1s / Dead 4s timers.">OSPF</div>
+                <div class="routing-dd-item" data-value="ospf_bfd" data-tip="OSPF with BFD for fast failure detection (~900ms vs 4s dead-interval).">OSPF + BFD</div>
+                <div class="routing-dd-item" data-value="mpls" data-tip="OSPF for IP routing + MPLS label switching with LDP.">OSPF + MPLS</div>
+                <div class="routing-dd-item" data-value="mpls_bfd" data-tip="OSPF + MPLS + BFD for fastest convergence and label switching.">OSPF + MPLS + BFD</div>
+                <div class="routing-dd-item" data-value="manual" data-tip="No routing protocol. Configure static routes manually.">Manual</div>
+            </div>
+            <div id="routing-dd-tooltip" style="display:none; position:fixed; background:#34495e; color:white; padding:8px 12px; border-radius:6px; font-size:12px; max-width:220px; line-height:1.5; z-index:99999; pointer-events:none; border:1px solid #555;"></div>
+        </div>
+        <style>
+        .routing-dd-item { padding:8px 12px; font-size:13px; cursor:pointer; color:white; border-bottom:1px solid #2c3e50; }
+        .routing-dd-item:last-child { border-bottom:none; }
+        .routing-dd-item:hover { background:#2c3e50; }
+        .routing-dd-item.active { background:#2980b9; }
+        </style>
     </div>
 
     <!-- Floating popup when hovering a node -->
@@ -650,16 +661,65 @@
                             return { id: name, label: name, shape: 'image', image: image, size: 30 };
                         })
                 );
-                var edges = new vis.DataSet(
-                    data.links.filter(link =>
-                        data.nodes[link.from].type !== 'switch' &&
-                        data.nodes[link.to].type !== 'switch'
-                    ).map(link => ({ from: link.from, to: link.to }))
-                );
+                var edgesData = data.links.filter(link =>
+                    data.nodes[link.from].type !== 'switch' &&
+                    data.nodes[link.to].type !== 'switch'
+                ).map(link => ({
+                    id: link.from + '___' + link.to,
+                    from: link.from,
+                    to: link.to,
+                    color: { color: '#848484', highlight: '#848484', hover: '#848484' },
+                    width: 2
+                }));
+                var edges = new vis.DataSet(edgesData);
                 var container = document.getElementById('network');
                 var network = new vis.Network(container, {nodes: nodes, edges: edges}, {
                     interaction: { navigationButtons: false, keyboard: false, hover: true }
                 });
+
+                // ── Link traffic coloring ──
+                var _prevLinkBytes = {};
+                function updateLinkColors() {
+                    fetch('/metrics/link_traffic')
+                    .then(r => r.json())
+                    .then(d => {
+                        if (!d.ok) return;
+                        var routers = Object.keys(topologyData.nodes).filter(n => topologyData.nodes[n].type === 'router');
+                        routers.forEach(function(rname) {
+                            var props = topologyData.nodes[rname];
+                            if (!props.p2p_links) return;
+                            props.p2p_links.forEach(function(link) {
+                                var key = rname + '-' + rname + '-' + link.local_intf;
+                                var trafficKey = rname + '-' + rname + '-' + link.local_intf;
+                                var entry = d.links[rname + '-' + rname + '-' + link.local_intf];
+                                if (!entry) {
+                                    entry = d.links[rname + '-' + link.local_intf];
+                                }
+                                if (!entry) return;
+                                var fullKey = rname + '_' + link.local_intf;
+                                var prev = _prevLinkBytes[fullKey];
+                                var curr = entry.rx_bytes + entry.tx_bytes;
+                                _prevLinkBytes[fullKey] = curr;
+                                if (prev === undefined) return;
+                                var bps = (curr - prev) / 3;
+                                var color;
+                                if (bps < 1000) color = '#27ae60';
+                                else if (bps < 50000) color = '#f39c12';
+                                else color = '#e74c3c';
+                                var edgeId1 = rname + '___' + link.peer;
+                                var edgeId2 = link.peer + '___' + rname;
+                                if (edges.get(edgeId1)) {
+                                    edges.update([{id: edgeId1, color: {color: color, highlight: color, hover: color}, width: bps < 1000 ? 2 : bps < 50000 ? 3 : 5}]);
+                                } else if (edges.get(edgeId2)) {
+                                    edges.update([{id: edgeId2, color: {color: color, highlight: color, hover: color}, width: bps < 1000 ? 2 : bps < 50000 ? 3 : 5}]);
+                                }
+                            });
+                        });
+                    })
+                    .catch(() => {});
+                }
+                setInterval(updateLinkColors, 3000);
+                updateLinkColors();
 
                 network.on('hoverNode', function(params) {
                     var popup = document.getElementById('node-popup');
@@ -1344,13 +1404,28 @@
         }
 
         // ── Routing mode ──
+        var _currentRoutingMode = 'ospf';
+
+        function toggleRoutingDD() {
+            var menu = document.getElementById('routing-dd-menu');
+            menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function setRoutingDDLabel(mode) {
+            var labels = {ospf:'OSPF', ospf_bfd:'OSPF + BFD', mpls:'OSPF + MPLS', mpls_bfd:'OSPF + MPLS + BFD', manual:'Manual'};
+            var sel = document.getElementById('routing-dd-selected');
+            sel.innerHTML = (labels[mode] || mode) + ' <span style="position:absolute; right:8px; top:50%; transform:translateY(-50%); font-size:10px;">&#9660;</span>';
+            document.querySelectorAll('.routing-dd-item').forEach(function(i) {
+                i.classList.toggle('active', i.dataset.value === mode);
+            });
+            _currentRoutingMode = mode;
+        }
+
         function setRoutingMode(mode) {
-            var label = mode === 'ospf' ? 'OSPF' : mode === 'mpls' ? 'MPLS' : 'Manual';
-            if (!confirm(`Switch routing mode to ${label}? This will restart routing on all routers.`)) {
-                // Revert select to current mode
-                fetch('/get_routing_mode').then(r => r.json()).then(d => {
-                    document.getElementById('routing-mode-select').value = d.mode;
-                });
+            var labels = {ospf:'OSPF', ospf_bfd:'OSPF + BFD', mpls:'OSPF + MPLS', mpls_bfd:'OSPF + MPLS + BFD', manual:'Manual'};
+            var label = labels[mode] || mode;
+            if (!confirm('Switch routing mode to ' + label + '? This will restart routing on all routers.')) {
+                setRoutingDDLabel(_currentRoutingMode);
                 return;
             }
             fetch('/set_routing_mode', {
@@ -1361,14 +1436,39 @@
             .then(r => r.json())
             .then(data => {
                 if (!data.ok) { alert('Error: ' + data.error); return; }
-                console.log('Routing mode set to', data.mode);
+                setRoutingDDLabel(mode);
             });
         }
+
+        document.querySelectorAll('.routing-dd-item').forEach(function(item) {
+            item.addEventListener('click', function() {
+                document.getElementById('routing-dd-menu').style.display = 'none';
+                document.getElementById('routing-dd-tooltip').style.display = 'none';
+                setRoutingMode(this.dataset.value);
+            });
+            item.addEventListener('mouseenter', function(e) {
+                var tip = document.getElementById('routing-dd-tooltip');
+                tip.textContent = this.dataset.tip;
+                tip.style.display = 'block';
+                var rect = this.getBoundingClientRect();
+                tip.style.top = rect.top + 'px';
+                tip.style.left = (rect.right + 10) + 'px';
+            });
+            item.addEventListener('mouseleave', function() {
+                document.getElementById('routing-dd-tooltip').style.display = 'none';
+            });
+        });
+
+        document.addEventListener('click', function(e) {
+            if (!document.getElementById('routing-dd').contains(e.target)) {
+                document.getElementById('routing-dd-menu').style.display = 'none';
+            }
+        });
 
         // Load current routing mode on startup
         fetch('/get_routing_mode')
             .then(r => r.json())
-            .then(d => { document.getElementById('routing-mode-select').value = d.mode; })
+            .then(d => { setRoutingDDLabel(d.mode); })
             .catch(() => {});
 
         // Refresh sync metrics every 3 seconds
@@ -1497,42 +1597,49 @@
                 cdst.innerHTML = '';
                 hosts.forEach((n, i) => { cdst.innerHTML += `<option value="${n}" ${i===1?'selected':''}>${n}</option>`; });
             }
-            queryXRF(id);
+            if (id !== 'chaos') queryXRF(id);
         }
 
         function renderChaos(data) {
             var r = data.result ? data.result : data;
             if (!r.ok) return `<p style="color:#e74c3c;">Error: ${r.error}</p>`;
             var recoveryColor = r.t_recovery_s < 10 ? '#27ae60' : r.t_recovery_s < 20 ? '#f39c12' : '#e74c3c';
+            var tooltipStyle = 'position:relative; display:inline-block; cursor:help; margin-left:4px; color:#95a5a6; font-size:11px;';
+            var tipStyle = 'visibility:hidden; opacity:0; background:#2c3e50; color:white; text-align:left; border-radius:6px; padding:8px 10px; position:absolute; z-index:9999; bottom:130%; left:50%; transform:translateX(-50%); width:200px; font-size:11px; line-height:1.5; transition:opacity 0.2s; pointer-events:none;';
             return `
+                <style>.chaos-tip:hover .chaos-tiptext { visibility:visible !important; opacity:1 !important; }</style>
                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
                     <div style="background:#f8f9fa; padding:12px; border-radius:6px; text-align:center;">
-                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Baseline latency</div>
+                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Baseline latency<span class="chaos-tip" style="${tooltipStyle}">ℹ️<span class="chaos-tiptext" style="${tipStyle}">Normal network latency before any failure. It is the benchmark.</span></span></div>
                         <div style="font-size:22px; font-weight:bold; color:#2c3e50;">${r.baseline_avg_ms} ms</div>
                     </div>
                     <div style="background:#f8f9fa; padding:12px; border-radius:6px; text-align:center;">
-                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recovery latency</div>
+                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recovery latency<span class="chaos-tip" style="${tooltipStyle}">ℹ️<span class="chaos-tiptext" style="${tipStyle}">Latency of first successful ping after recovery. May be slightly higher than baseline while OSPF stabilizes.</span></span></div>
                         <div style="font-size:22px; font-weight:bold; color:#2c3e50;">${r.recovery_avg_ms ?? '—'} ms</div>
                     </div>
                     <div style="background:#fdf2f2; padding:12px; border-radius:6px; text-align:center;">
-                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Packet loss</div>
+                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Packet loss<span class="chaos-tip" style="${tooltipStyle}">ℹ️<span class="chaos-tiptext" style="${tipStyle}">Percentage of packets lost while the router was down. 100% indicates total loss of connectivity.</span></span></div>
                         <div style="font-size:22px; font-weight:bold; color:#e74c3c;">${r.loss_pct}%</div>
                         <div style="font-size:11px; color:#aaa;">${r.lost_packets} / ${r.total_packets} packets</div>
                     </div>
                     <div style="background:#f0fdf4; padding:12px; border-radius:6px; text-align:center;">
-                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recovery time</div>
+                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recovery time<span class="chaos-tip" style="${tooltipStyle}">ℹ️<span class="chaos-tiptext" style="${tipStyle}">Time from when the router is back up until the first ping works. Includes OSPF reconvergence (dead-interval + renegotiation + SPF).</span></span></div>
                         <div style="font-size:22px; font-weight:bold; color:${recoveryColor};">${r.t_recovery_s ?? '—'} s</div>
                         <div style="font-size:11px; color:#aaa;">Router: ${r.node} | ${r.duration_s}s down</div>
                     </div>
                 </div>
-                <div style="font-size:12px; color:#7f8c8d; text-align:center;">
-                    Ping: ${r.src} → ${r.dst}
-                </div>`;
+                <div style="font-size:12px; color:#7f8c8d; text-align:center;">Ping: ${r.src} → ${r.dst}</div>`;
         }
 
         function renderNeighbors(data) {
             var neighbors = data.result ? data.result.neighbors : data.neighbors;
             if (!neighbors) return '<p style="color:#e74c3c;">No data</p>';
+            var selectedNode = document.getElementById('neighbors-node').value;
+            if (selectedNode) {
+                var filtered = {};
+                filtered[selectedNode] = neighbors[selectedNode] || [];
+                neighbors = filtered;
+            }
             var html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">';
             html += '<tr style="background:#2c3e50; color:white;"><th style="padding:8px 12px; text-align:left;">Node</th><th style="padding:8px 12px; text-align:left;">Connected to</th></tr>';
             var i = 0;

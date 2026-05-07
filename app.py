@@ -987,6 +987,33 @@ def metrics_traffic():
     
     return jsonify({'ok': True, 'node': node, 'interfaces': interfaces})
 
+@app.route('/metrics/link_traffic')
+def metrics_link_traffic():
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+    
+    links = {}
+    for name, props in xarxa.nodes.items():
+        if props['type'] != 'router':
+            continue
+        mn_node = xarxa.mininet_nodes[name]
+        raw = mn_node.cmd('cat /proc/net/dev')
+        for line in raw.strip().split('\n')[2:]:
+            parts = line.split(':')
+            if len(parts) < 2:
+                continue
+            intf = parts[0].strip()
+            if intf == 'lo':
+                continue
+            values = parts[1].split()
+            links[f'{name}-{intf}'] = {
+                'node': name,
+                'intf': intf,
+                'rx_bytes': int(values[0]),
+                'tx_bytes': int(values[8]),
+            }
+    return jsonify({'ok': True, 'links': links})
+
 @app.route('/is_twin')
 def is_twin():
     return jsonify({'is_twin': IS_TWIN})
@@ -1164,20 +1191,25 @@ def chaos_node_up():
 
 @app.route('/metrics/ping_fast')
 def metrics_ping_fast():
-    with _ping_lock:
-        if not xarxa.network_ready:
-            return jsonify({'ok': False, 'avg': None})
-        src = request.args.get('src')
-        dst = request.args.get('dst')
-        if not src or not dst or src not in xarxa.nodes or dst not in xarxa.nodes:
-            return jsonify({'ok': False, 'avg': None})
+    if not xarxa.network_ready:
+        return jsonify({'ok': False, 'avg': None})
+    src = request.args.get('src')
+    dst = request.args.get('dst')
+    if not src or not dst or src not in xarxa.nodes or dst not in xarxa.nodes:
+        return jsonify({'ok': False, 'avg': None})
+    
+    if not _ping_lock.acquire(blocking=False):
+        return jsonify({'ok': False, 'avg': None, 'busy': True})
+    try:
         src_node = xarxa.mininet_nodes[src]
         dst_ip   = xarxa.nodes[dst]['ip'].split('/')[0]
-        result   = src_node.cmd(f'ping -c 1 -W 1 {dst_ip}')
+        result   = src_node.cmd(f'ping -c 1 -W 2 {dst_ip}')
         match    = re.search(r'rtt min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)', result)
         if match:
             return jsonify({'ok': True, 'avg': float(match.group(2))})
         return jsonify({'ok': True, 'avg': None})
+    finally:
+        _ping_lock.release()
 
 @app.route('/debug/cmd', methods=['POST'])
 def debug_cmd():
