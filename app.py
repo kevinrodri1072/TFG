@@ -39,30 +39,26 @@ sync_history_lock    = threading.Lock()
 
 metrics_running = False
 
-def synchronize(route, data, t_local_ms):
-    """
-    Send a sync POST to the Twin and record decomposed latency.
-    t_local_ms: time already spent doing the operation on the Original (measured by caller).
-    """
-    try:
-        data['sync'] = True
-        t_net_start = time.time()
-        response = requests.post(
-            f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}{route}',
-            json=data, timeout=15
-        )
-        t_network_ms = round((time.time() - t_net_start) * 1000, 2)
-
-        if response.status_code == 200:
-            resp_json = response.json()
-            # Twin reports how long its own Mininet operation took
-            t_twin_ms = resp_json.get('t_local_ms', None)
-            record_sync_latency(route.strip('/'), t_local_ms, t_network_ms, t_twin_ms)
-            return resp_json
-        return None
-    except Exception as e:
-        print(f'Sync error: {e}')
-        return None
+def synchronize(route, data, t_local_ms, retries=3, delay=0.5):
+    for attempt in range(retries):
+        try:
+            data['sync'] = True
+            t_net_start = time.time()
+            response = requests.post(
+                f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}{route}',
+                json=data, timeout=15
+            )
+            t_network_ms = round((time.time() - t_net_start) * 1000, 2)
+            if response.status_code == 200:
+                resp_json = response.json()
+                t_twin_ms = resp_json.get('t_local_ms', None)
+                record_sync_latency(route.strip('/'), t_local_ms, t_network_ms, t_twin_ms)
+                return resp_json
+        except Exception as e:
+            print(f'Sync error (intent {attempt+1}/{retries}): {e}')
+            if attempt < retries - 1:
+                time.sleep(delay)
+    return None
 
 def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
     entry = {
@@ -1182,6 +1178,15 @@ def metrics_ping_fast():
         if match:
             return jsonify({'ok': True, 'avg': float(match.group(2))})
         return jsonify({'ok': True, 'avg': None})
+
+@app.route('/debug/cmd', methods=['POST'])
+def debug_cmd():
+    node = request.json.get('node')
+    cmd  = request.json.get('cmd')
+    if node not in xarxa.mininet_nodes:
+        return jsonify({'ok': False, 'error': 'Node not found'})
+    result = xarxa.mininet_nodes[node].cmd(cmd)
+    return jsonify({'ok': True, 'output': result})
 
 if __name__ == '__main__':
     t = threading.Thread(target=xarxa.start_network)

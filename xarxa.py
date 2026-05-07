@@ -291,7 +291,8 @@ def _start_bfd(node, name, props):
             continue
         intf_name = f'{name}-{intf}'
         node.cmd(
-            f'vtysh -c "configure terminal" '
+            f'vtysh --vty_socket /tmp/frr_{name} '
+            f'-c "configure terminal" '
             f'-c "interface {intf_name}" '
             f'-c "ip ospf bfd" '
             f'-c "end" 2>/dev/null'
@@ -526,6 +527,7 @@ def get_all_host_subnets():
             base = ip_eth1.rsplit('.', 1)[0]
             subnets.append({'subnet': f'{base}.0/24', 'router': name})
     return subnets
+
 
 if __name__ == '__main__':
     setLogLevel('info')
