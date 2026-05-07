@@ -1,0 +1,15 @@
+Guía para usar la interfaz Digital Twin Network
+
+Comando para iniciar el programa: sudo python3 app.py
+Comando para hacer un test de escalabilidad: sudo python3 scalability_test.py
+
+Levantar XRFs:
+
+Iniciamos minikube: minikube start
+Comprobamos estado: minikube status
+Construimos imagen Docker: docker build -t xrf-....:latest
+Cargamos la imagen a minikube: minikube image load xrf-....:latest
+Desplegamos en Kubernetes: kubectl apply -f .....yaml
+Verificamos que el pod está corriendo: kubectl get pods
+Obtenemos la url del XRF: minikube service xrf-....-svc --url
+Probamos: curl ....
