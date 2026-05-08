@@ -1050,6 +1050,13 @@ XRF_REGISTRY = {
         'service':     'xrf-chaos-svc',
         'deployment':  'xrf-chaos',
     },
+    'latency_matrix': {
+        'name':        'Latency Matrix',
+        'description': 'Measures latency and bandwidth between all host pairs',
+        'yaml':        os.path.join(XRF_BASE, 'XRFs/latency_matrix/latency_matrix.yaml'),
+        'service':     'xrf-latency-matrix-svc',
+        'deployment':  'xrf-latency-matrix',
+    },
 }
 
 KUBECONFIG = f'/home/{os.environ.get("SUDO_USER", os.environ.get("USER", "kevf20"))}/.kube/config'
@@ -1143,8 +1150,7 @@ def xrf_query():
     if not url:
         return jsonify({'ok': False, 'error': 'XRF not running'})
     try:
-        # Chaos XRF uses POST with JSON body
-        if xrf_id == 'chaos':
+        if xrf_id in ('chaos', 'latency_matrix'):
             resp = requests.post(f'{url}/run', json=params, timeout=120)
         else:
             resp = requests.get(f'{url}/run', params=params, timeout=10)
@@ -1221,6 +1227,7 @@ def debug_cmd():
     return jsonify({'ok': True, 'output': result})
 
 if __name__ == '__main__':
+    subprocess.run(['mn', '-c'], capture_output=True) 
     t = threading.Thread(target=xarxa.start_network)
     t.daemon = True
     t.start()

@@ -560,38 +560,6 @@
                 <div style="margin-top:10px; font-size:11px; color:#7f8c8d; margin-bottom:4px;">Latency history (last 10 pings)</div>
                 <canvas id="ping-chart" height="60" style="width:100%; display:block;"></canvas>
 
-                <!-- Global Scan -->
-                <div style="font-size:11px; color:#3498db; text-transform:uppercase; letter-spacing:0.5px; margin-top:14px; margin-bottom:8px;"><i class="fa fa-globe"></i> Global scan</div>
-                <button class="btn-measure" onclick="measureGlobal()" id="btn-global">Global Scan</button>
-                <div class="measuring-spinner" id="global-spinner">⏳ Scanning all pairs...</div>
-                <div id="global-pairs" style="font-size:11px; color:#7f8c8d; margin-top:6px;"></div>
-                <div style="margin-top:10px;">
-                    <div class="metric-row">
-                        <span class="metric-label">Latency avg</span>
-                        <span class="metric-value" id="g-lat-avg">—</span>
-                    </div>
-                    <div class="metric-sub">
-                        <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="g-lat-min">—</div></div>
-                        <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="g-lat-avg2">—</div></div>
-                        <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="g-lat-max">—</div></div>
-                    </div>
-                </div>
-                <div class="metric-row" style="margin-top:8px;">
-                    <span class="metric-label">Jitter avg</span>
-                    <span class="metric-value" id="g-jitter">—</span>
-                </div>
-                <div style="margin-top:8px;">
-                    <div class="metric-row">
-                        <span class="metric-label">Bandwidth avg</span>
-                        <span class="metric-value" id="g-bw-avg">—</span>
-                    </div>
-                    <div class="metric-sub">
-                        <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="g-bw-min">—</div></div>
-                        <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="g-bw-avg2">—</div></div>
-                        <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="g-bw-max">—</div></div>
-                    </div>
-                </div>
-            </div>
 
             <!-- System resources -->
             <div class="metrics-section">
@@ -1070,61 +1038,6 @@
                 });
         }
 
-        function measureGlobal() {
-            var btn = document.getElementById('btn-global');
-            btn.disabled = true;
-            document.getElementById('global-spinner').style.display = 'block';
-            document.getElementById('global-pairs').textContent = '';
-
-            fetch('/metrics/global')
-                .then(r => r.json())
-                .then(data => {
-                    btn.disabled = false;
-                    document.getElementById('global-spinner').style.display = 'none';
-                    if (!data.ok) { alert('Error: ' + data.error); return; }
-
-                    document.getElementById('global-pairs').textContent =
-                        data.pairs_tested + ' pairs tested';
-
-                    // Latency
-                    var lat = data.latency_ms;
-                    document.getElementById('g-lat-avg').textContent  = lat.avg !== null ? lat.avg + ' ms' : '—';
-                    document.getElementById('g-lat-avg2').textContent = lat.avg !== null ? lat.avg : '—';
-                    document.getElementById('g-lat-min').textContent  = data.latency_min_ms !== null ? data.latency_min_ms : '—';
-                    document.getElementById('g-lat-max').textContent  = data.latency_max_ms !== null ? data.latency_max_ms : '—';
-
-                    var latEl = document.getElementById('g-lat-avg');
-                    if (lat.avg !== null)
-                        latEl.className = 'metric-value ' + (lat.avg < 5 ? 'good' : lat.avg < 20 ? 'warn' : 'bad');
-
-                    // Jitter
-                    var j = data.jitter_ms;
-                    document.getElementById('g-jitter').textContent = j.avg !== null ? j.avg + ' ms' : '—';
-
-                    // Bandwidth
-                    var bw = data.bandwidth_mbps;
-                    document.getElementById('g-bw-avg').textContent  = bw.avg !== null ? bw.avg + ' Mbps' : '—';
-                    document.getElementById('g-bw-avg2').textContent = bw.avg !== null ? bw.avg : '—';
-                    document.getElementById('g-bw-min').textContent  = data.bandwidth_min_mbps !== null ? data.bandwidth_min_mbps : '—';
-                    document.getElementById('g-bw-max').textContent  = data.bandwidth_max_mbps !== null ? data.bandwidth_max_mbps : '—';
-                    
-                    // System
-                    var sys = data.system;
-                    document.getElementById('cpu-val').textContent = sys.cpu_percent + '%';
-                    document.getElementById('cpu-bar').style.width = sys.cpu_percent + '%';
-                    document.getElementById('cpu-bar').style.background =
-                        sys.cpu_percent < 60 ? '#3498db' : sys.cpu_percent < 85 ? '#f39c12' : '#e74c3c';
-                    document.getElementById('ram-val').textContent = sys.ram_percent + '%';
-                    document.getElementById('ram-bar').style.width = sys.ram_percent + '%';
-                    document.getElementById('ram-detail').textContent =
-                        sys.ram_used_mb.toFixed(0) + ' MB / ' + sys.ram_total_mb.toFixed(0) + ' MB';
-                })
-                .catch(() => {
-                    btn.disabled = false;
-                    document.getElementById('global-spinner').style.display = 'none';
-                    alert('Connection error');
-                });
-        }
         
         function refreshSyncMetrics() {
             fetch('/metrics/sync')
@@ -1691,6 +1604,55 @@
             return html;
         }
 
+        function renderLatencyMatrix(data) {
+            var r = data.result ? data.result : data;
+            if (!r.ok) return `<p style="color:#e74c3c;">Error: ${r.error}</p>`;
+            var ping = r.ping || {};
+            var bw   = r.bandwidth || {};
+            var hosts = r.hosts || [];
+
+            // Build matrix
+            var html = '<div style="font-size:12px; color:#7f8c8d; margin-bottom:10px;">Latency (avg ms) between all host pairs</div>';
+            html += '<div style="overflow-x:auto;"><table style="border-collapse:collapse; font-size:12px; width:100%;">';
+            html += '<tr><th style="padding:6px 10px; background:#2c3e50; color:white;"></th>';
+            hosts.forEach(h => {
+                html += `<th style="padding:6px 10px; background:#2c3e50; color:white; text-align:center;">${h}</th>`;
+            });
+            html += '</tr>';
+            hosts.forEach(src => {
+                html += `<tr><td style="padding:6px 10px; font-weight:bold; background:#f8f9fa;">${src}</td>`;
+                hosts.forEach(dst => {
+                    if (src === dst) {
+                        html += `<td style="padding:6px 10px; text-align:center; color:#ccc; background:#f8f9fa;">—</td>`;
+                    } else {
+                        var key1 = src + '->' + dst;
+                        var key2 = dst + '->' + src;
+                        var val = ping[key1] ? ping[key1].avg : (ping[key2] ? ping[key2].avg : null);
+                        var color = val === null ? '#aaa' : val < 0.5 ? '#27ae60' : val < 2 ? '#f39c12' : '#e74c3c';
+                        var bg = val === null ? '#f8f9fa' : val < 0.5 ? '#f0fdf4' : val < 2 ? '#fffbeb' : '#fdf2f2';
+                        html += `<td style="padding:6px 10px; text-align:center; color:${color}; background:${bg}; font-weight:bold;">${val !== null ? val + ' ms' : '—'}</td>`;
+                    }
+                });
+                html += '</tr>';
+            });
+            html += '</table></div>';
+
+            // Bandwidth table
+            if (Object.keys(bw).length > 0) {
+                html += '<div style="font-size:12px; color:#7f8c8d; margin:14px 0 8px;">Bandwidth (Mbits/sec)</div>';
+                html += '<table style="border-collapse:collapse; font-size:12px; width:100%;">';
+                html += '<tr style="background:#2c3e50; color:white;"><th style="padding:6px 10px; text-align:left;">Pair</th><th style="padding:6px 10px; text-align:right;">Min</th><th style="padding:6px 10px; text-align:right;">Avg</th><th style="padding:6px 10px; text-align:right;">Max</th></tr>';
+                var i = 0;
+                for (var pair in bw) {
+                    var bg = i%2===0 ? '#f8f9fa' : 'white';
+                    html += `<tr style="background:${bg};"><td style="padding:6px 10px;">${pair}</td><td style="padding:6px 10px; text-align:right;">${bw[pair].min}</td><td style="padding:6px 10px; text-align:right; font-weight:bold;">${bw[pair].avg}</td><td style="padding:6px 10px; text-align:right;">${bw[pair].max}</td></tr>`;
+                    i++;
+                }
+                html += '</table>';
+            }
+            return html;
+        }
+
         function queryXRF(id) {
             var params = {};
             if (id === 'neighbors') {
@@ -1721,6 +1683,7 @@
                 else if (id === 'hops')      html = renderHops(data);
                 else if (id === 'traffic')   html = renderTraffic(data);
                 else if (id === 'chaos')     html = renderChaos(data);
+                else if (id === 'latency_matrix') html = renderLatencyMatrix(data);
                 document.getElementById('xrf-modal-result-content').innerHTML = html;
             });
         }

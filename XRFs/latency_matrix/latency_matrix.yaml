@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xrf-latency-matrix
+  labels:
+    app: xrf-latency-matrix
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xrf-latency-matrix
+  template:
+    metadata:
+      labels:
+        app: xrf-latency-matrix
+    spec:
+      containers:
+      - name: xrf-latency-matrix
+        image: xrf-latency-matrix:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        env:
+        - name: TWIN_API
+          value: "http://10.4.39.103:5000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xrf-latency-matrix-svc
+spec:
+  selector:
+    app: xrf-latency-matrix
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: NodePort
