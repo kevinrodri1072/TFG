@@ -24,7 +24,14 @@ IS_TWIN = args.twin
 DIGITAL_TWIN_IP = '10.4.39.103'  # IP of the Twin
 DIGITAL_TWIN_PORT = 5000
 
-_ping_lock = threading.Lock()
+_ping_locks = {}
+_ping_locks_lock = threading.Lock()
+
+def get_ping_lock(node):
+    with _ping_locks_lock:
+        if node not in _ping_locks:
+            _ping_locks[node] = threading.Lock()
+        return _ping_locks[node]
 
 TYPE_TO_NUM = {0: 0, 'host': 1, 'router': 2, 'switch': 3}
 NUM_TO_TYPE = {0: 0, 1: 'host', 2: 'router', 3: 'switch'}
@@ -79,8 +86,8 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
             json=entry,
             timeout=1
         )
-    except:
-        pass
+    except Exception as e:
+        print(f'[sync_metrics] push error: {e}')
 
 app = Flask(__name__)
 
@@ -667,7 +674,9 @@ def metrics_system():
 
 @app.route('/metrics/ping')
 def metrics_ping():
-    with _ping_lock:
+    src = request.args.get('src', 'h1')
+    lock = get_ping_lock(src)
+    with lock:
         """Fast ping-only measurement (no iperf). ~3s."""
         if not xarxa.network_ready:
             return jsonify({'ok': False, 'error': 'Network not ready'})
@@ -831,6 +840,8 @@ def metrics_global():
     if metrics_running:
         return jsonify({'ok': False, 'error': 'A measurement is already running'})
 
+    mode = request.args.get('mode', 'full')  # 'full' = ping+iperf, 'fast' = ping only
+
     hosts = [
         n for n, p in xarxa.nodes.items()
         if p['type'] == 'host'
@@ -874,34 +885,35 @@ def metrics_global():
         for t in threads: t.join()
 
     bw_results = {}
-    for src, dst in pairs:
-        src_node = xarxa.mininet_nodes[src]
-        dst_node = xarxa.mininet_nodes[dst]
-        dst_ip   = xarxa.nodes[dst]['ip'].split('/')[0]
-        try:
-            dst_node.cmd('pkill -f iperf 2>/dev/null; sleep 0.1')
-            dst_node.sendCmd('iperf -s')
-            time.sleep(0.3)
-            bw_values = []
-            for _ in range(3):
-                out     = src_node.cmd(f'iperf -c {dst_ip} -t 1 -f m')
-                bw_match = re.search(r'([\d.]+)\s+Mbits/sec', out)
-                if bw_match:
-                    bw_values.append(float(bw_match.group(1)))
-            dst_node.sendInt()
-            dst_node.waitOutput()
-            if bw_values:
-                bw_results[f'{src}->{dst}'] = {
-                    'min': round(min(bw_values), 2),
-                    'avg': round(sum(bw_values)/len(bw_values), 2),
-                    'max': round(max(bw_values), 2),
-                }
-        except Exception as e:
-            print(f'iperf error {src}->{dst}: {e}')
+    if mode == 'full':
+        for src, dst in pairs:
+            src_node = xarxa.mininet_nodes[src]
+            dst_node = xarxa.mininet_nodes[dst]
+            dst_ip   = xarxa.nodes[dst]['ip'].split('/')[0]
             try:
-                dst_node.sendInt(); dst_node.waitOutput()
-            except:
-                pass
+                dst_node.cmd('pkill -f iperf 2>/dev/null; sleep 0.1')
+                dst_node.sendCmd('iperf -s')
+                time.sleep(0.3)
+                bw_values = []
+                for _ in range(3):
+                    out     = src_node.cmd(f'iperf -c {dst_ip} -t 1 -f m')
+                    bw_match = re.search(r'([\d.]+)\s+Mbits/sec', out)
+                    if bw_match:
+                        bw_values.append(float(bw_match.group(1)))
+                dst_node.sendInt()
+                dst_node.waitOutput()
+                if bw_values:
+                    bw_results[f'{src}->{dst}'] = {
+                        'min': round(min(bw_values), 2),
+                        'avg': round(sum(bw_values)/len(bw_values), 2),
+                        'max': round(max(bw_values), 2),
+                    }
+            except Exception as e:
+                print(f'iperf error {src}->{dst}: {e}')
+                try:
+                    dst_node.sendInt(); dst_node.waitOutput()
+                except:
+                    pass
 
     def safe_stats(values):
         if not values: return {'min': None, 'avg': None, 'max': None}
@@ -937,7 +949,6 @@ def metrics_global():
             'ram_percent':  ram.percent
         }
     })
-
 
 
 @app.route('/sync_metrics', methods=['POST'])
@@ -1204,7 +1215,8 @@ def metrics_ping_fast():
     if not src or not dst or src not in xarxa.nodes or dst not in xarxa.nodes:
         return jsonify({'ok': False, 'avg': None})
     
-    if not _ping_lock.acquire(blocking=False):
+    lock = get_ping_lock(src)
+    if not lock.acquire(blocking=False):
         return jsonify({'ok': False, 'avg': None, 'busy': True})
     try:
         src_node = xarxa.mininet_nodes[src]
@@ -1215,16 +1227,7 @@ def metrics_ping_fast():
             return jsonify({'ok': True, 'avg': float(match.group(2))})
         return jsonify({'ok': True, 'avg': None})
     finally:
-        _ping_lock.release()
-
-@app.route('/debug/cmd', methods=['POST'])
-def debug_cmd():
-    node = request.json.get('node')
-    cmd  = request.json.get('cmd')
-    if node not in xarxa.mininet_nodes:
-        return jsonify({'ok': False, 'error': 'Node not found'})
-    result = xarxa.mininet_nodes[node].cmd(cmd)
-    return jsonify({'ok': True, 'output': result})
+        lock.release()
 
 if __name__ == '__main__':
     subprocess.run(['mn', '-c'], capture_output=True) 

@@ -657,12 +657,7 @@
                             var props = topologyData.nodes[rname];
                             if (!props.p2p_links) return;
                             props.p2p_links.forEach(function(link) {
-                                var key = rname + '-' + rname + '-' + link.local_intf;
-                                var trafficKey = rname + '-' + rname + '-' + link.local_intf;
-                                var entry = d.links[rname + '-' + rname + '-' + link.local_intf];
-                                if (!entry) {
-                                    entry = d.links[rname + '-' + link.local_intf];
-                                }
+                                var entry = d.links[rname + '-' + link.local_intf];
                                 if (!entry) return;
                                 var fullKey = rname + '_' + link.local_intf;
                                 var prev = _prevLinkBytes[fullKey];
@@ -674,13 +669,12 @@
                                 if (bps < 1000) color = '#27ae60';
                                 else if (bps < 50000) color = '#f39c12';
                                 else color = '#e74c3c';
+                                var width = bps < 1000 ? 2 : bps < 50000 ? 3 : 5;
                                 var edgeId1 = rname + '___' + link.peer;
                                 var edgeId2 = link.peer + '___' + rname;
-                                if (edges.get(edgeId1)) {
-                                    edges.update([{id: edgeId1, color: {color: color, highlight: color, hover: color}, width: bps < 1000 ? 2 : bps < 50000 ? 3 : 5}]);
-                                } else if (edges.get(edgeId2)) {
-                                    edges.update([{id: edgeId2, color: {color: color, highlight: color, hover: color}, width: bps < 1000 ? 2 : bps < 50000 ? 3 : 5}]);
-                                }
+                                var update = {color: {color: color, highlight: color, hover: color}, width: width};
+                                if (edges.get(edgeId1)) edges.update([Object.assign({id: edgeId1}, update)]);
+                                else if (edges.get(edgeId2)) edges.update([Object.assign({id: edgeId2}, update)]);
                             });
                         });
                     })
@@ -1672,6 +1666,15 @@
                 params.src      = document.getElementById('chaos-src').value;
                 params.dst      = document.getElementById('chaos-dst').value;
                 params.duration = parseInt(document.getElementById('chaos-duration').value);
+                
+                // Validate src and dst are on different subnets
+                var srcProps = topologyData.nodes[params.src];
+                var dstProps = topologyData.nodes[params.dst];
+                if (srcProps && dstProps && srcProps.gw === dstProps.gw) {
+                    document.getElementById('xrf-modal-result-content').innerHTML = 
+                        '<p style="color:#e74c3c;">Source and destination are on the same subnet. Traffic does not pass through the router, so the experiment would not be meaningful. Choose hosts from different subnets (e.g. h1 → h3).</p>';
+                    return;
+                }
             }
             document.getElementById('xrf-modal-result-content').innerHTML = '<div style="color:#7f8c8d; font-size:13px;">⏳ Loading...</div>';
             fetch('/xrf/query', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({xrf: id, params: params})})

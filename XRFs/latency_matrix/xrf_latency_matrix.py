@@ -16,7 +16,7 @@ def run():
         return jsonify({'ok': False, 'error': resp.get('error', 'Unknown error')})
     
     per_pair = resp.get('per_pair', {})
-    ping = per_pair.get('ping', {})
+    ping = per_pair.get('latency', {})
     bandwidth = per_pair.get('bandwidth', {})
     
     hosts = set()

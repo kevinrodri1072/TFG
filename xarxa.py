@@ -311,7 +311,10 @@ def _apply_routing(node, name, props):
     elif ROUTING_MODE == 'mpls_bfd':
         _start_mpls(node, name, props)
         _start_bfd(node, name, props)
-    # manual → do nothing
+    elif ROUTING_MODE == 'manual':
+        # Apply static routes from node config
+        for route in props.get('routes', []):
+            node.cmd(f'ip route add {route}')
 
 
 def start_network():

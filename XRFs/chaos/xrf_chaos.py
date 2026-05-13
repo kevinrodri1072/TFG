@@ -56,8 +56,8 @@ def run():
                 t_recovered  = round(time.time() - t_up, 2)
                 recovery_avg = resp['avg']
                 break
-        except:
-            pass
+        except Exception as e:
+            print(f'[chaos] recovery ping error: {e}')
         time.sleep(2)
 
     return jsonify({
