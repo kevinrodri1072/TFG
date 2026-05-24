@@ -12,23 +12,29 @@ def health():
 @app.route('/run')
 def run():
     node = request.args.get('node')
-    topo = requests.get(f'{TWIN_API}/topology').json()
-    nodes = topo['nodes']
-
-    if node and node not in nodes:
-        return jsonify({'ok': False, 'error': f'Node {node} not found'})
-
-    # Si no s'especifica node, agafem tots excepte switches
-    targets = [node] if node else [
-        n for n, p in nodes.items() if p['type'] != 'switch'
-    ]
-
-    result = {}
-    for n in targets:
-        traffic = requests.get(f'{TWIN_API}/metrics/traffic?node={n}').json()
+    
+    if node:
+        traffic = requests.get(f'{TWIN_API}/metrics/traffic?node={node}', timeout=10).json()
         if traffic.get('ok'):
-            result[n] = traffic['interfaces']
-
+            return jsonify({'ok': True, 'traffic': {node: traffic['interfaces']}})
+        return jsonify({'ok': False, 'error': traffic.get('error', 'Unknown error')})
+    
+    # All nodes in one call
+    data = requests.get(f'{TWIN_API}/metrics/link_traffic', timeout=10).json()
+    if not data.get('ok'):
+        return jsonify({'ok': False, 'error': 'Failed to fetch traffic'})
+    
+    # Group by node
+    result = {}
+    for key, info in data.get('links', {}).items():
+        node_name = info['node']
+        if node_name not in result:
+            result[node_name] = {}
+        result[node_name][info['intf']] = {
+            'rx_bytes': info['rx_bytes'],
+            'tx_bytes': info['tx_bytes'],
+        }
+    
     return jsonify({'ok': True, 'traffic': result})
 
 if __name__ == '__main__':

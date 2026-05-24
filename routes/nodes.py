@@ -1,0 +1,282 @@
+"""
+routes/nodes.py — Live topology modification endpoints.
+
+Endpoints:
+  POST /add_host      → add a host to an existing router's subnet
+  POST /remove_node   → remove a host or an entire router subnet
+  POST /add_router    → add a new router with its switch and p2p links
+  POST /rename_node   → rename any node (triggers a full network restart)
+"""
+
+import copy
+import threading
+import time
+
+from flask import Blueprint, jsonify, request
+
+from sync import sync_in_background
+
+_xarxa = None
+
+bp = Blueprint('nodes', __name__)
+
+
+def init_blueprint(xarxa_instance):
+    global _xarxa
+    _xarxa = xarxa_instance
+
+
+# ── Internal helpers ──
+
+def _start_routing_on_new_router(router_name):
+    """Start routing on a new router, then restart it on all existing routers."""
+    props = _xarxa.nodes[router_name]
+    node  = _xarxa.mininet_nodes[router_name]
+    _xarxa._apply_routing(node, router_name, props)
+
+    existing = {
+        n: p for n, p in _xarxa.nodes.items()
+        if p['type'] == 'router' and n != router_name and n in _xarxa.mininet_nodes
+    }
+
+    def restart_existing():
+        for name, p in existing.items():
+            _xarxa._stop_routing(_xarxa.mininet_nodes[name], name)
+            _xarxa._apply_routing(_xarxa.mininet_nodes[name], name, p)
+
+    threading.Thread(target=restart_existing, daemon=True).start()
+
+
+def _update_all_routes():
+    """Restart routing on every router (called after a router is removed)."""
+    routers = {
+        n: p for n, p in _xarxa.nodes.items()
+        if p['type'] == 'router' and n in _xarxa.mininet_nodes
+    }
+    for name, props in routers.items():
+        _xarxa._apply_routing(_xarxa.mininet_nodes[name], name, props)
+
+
+# ── Routes ──
+
+@bp.route('/add_host', methods=['POST'])
+def add_host():
+    if not _xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    data    = request.json
+    name    = data['name']
+    router  = data['router']
+    is_sync = data.get('sync', False)
+
+    if name in _xarxa.nodes:
+        return jsonify({'ok': False, 'error': f'A node named {name} already exists'})
+
+    switch = _xarxa.find_switch_of_router(router)
+    ip     = _xarxa.find_next_ip(router)
+    lan_ip = next(i for i in _xarxa.nodes[router]['ips'].values() if '/24' in i)
+    gw     = lan_ip.split('/')[0]
+
+    _xarxa.nodes[name] = {'type': 'host', 'ip': ip, 'gw': gw}
+    _xarxa.update_matrix(name, switch)
+
+    t_local_start = time.time()
+    new_host      = _xarxa.net.addHost(name, ip=ip)
+    _xarxa.mininet_nodes[name] = new_host
+    sw_node       = _xarxa.mininet_nodes[switch]
+    sw_intf_name  = f'{switch}-eth{len(sw_node.intfList())}'
+
+    _xarxa.net.addLink(new_host, sw_node, intfName1=f'{name}-eth0', intfName2=sw_intf_name)
+    new_host.cmd(
+        f'ifconfig {name}-eth0 {ip} ; '
+        f'ip route add default via {gw} ; '
+        f'ifconfig lo up ; '
+        f'ip link set lo up ; '
+        f'ip link set {name}-eth0 up'
+    )
+    sw_node.cmd(
+        f'ip link set {sw_intf_name} up ; '
+        f'ovs-vsctl add-port {switch} {sw_intf_name}'
+    )
+    t_local_ms = round((time.time() - t_local_start) * 1000, 2)
+
+    if not is_sync:
+        sync_in_background('add_host', t_local_ms)
+        return jsonify({'ok': True})
+    return jsonify({'ok': True, 't_local_ms': t_local_ms})
+
+
+@bp.route('/remove_node', methods=['POST'])
+def remove_node():
+    if not _xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    data    = request.json
+    name    = data['name']
+    is_sync = data.get('sync', False)
+
+    if _xarxa.nodes[name]['type'] == 'router':
+        # 1. Clean p2p_links and IPs from neighbouring routers
+        for rname, props in _xarxa.nodes.items():
+            if props['type'] == 'router' and rname != name and 'p2p_links' in props:
+                intfs_to_remove = {
+                    l['local_intf'] for l in props['p2p_links'] if l['peer'] == name
+                }
+                for intf in intfs_to_remove:
+                    props['ips'].pop(intf, None)
+                props['p2p_links'] = [
+                    l for l in props['p2p_links'] if l['peer'] != name
+                ]
+
+        # 2. Remove router + its entire subnet (hosts + switch)
+        t_local_start   = time.time()
+        nodes_to_remove = _xarxa.find_router_subnet(name)
+        nodes_to_remove.append(name)
+        for node in nodes_to_remove:
+            _xarxa.remove_from_matrix(node)
+            _xarxa.net.delNode(_xarxa.mininet_nodes[node])
+            del _xarxa.mininet_nodes[node]
+            del _xarxa.nodes[node]
+
+        # 3. Recalculate routes for remaining routers
+        _update_all_routes()
+        t_local_ms = round((time.time() - t_local_start) * 1000, 2)
+
+    else:
+        t_local_start = time.time()
+        _xarxa.remove_from_matrix(name)
+        _xarxa.net.delNode(_xarxa.mininet_nodes[name])
+        del _xarxa.mininet_nodes[name]
+        del _xarxa.nodes[name]
+        t_local_ms = round((time.time() - t_local_start) * 1000, 2)
+
+    if not is_sync:
+        sync_in_background('remove_node', t_local_ms)
+        return jsonify({'ok': True})
+    return jsonify({'ok': True, 't_local_ms': t_local_ms})
+
+
+@bp.route('/add_router', methods=['POST'])
+def add_router():
+    if not _xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    data              = request.json
+    router_name       = data['name']
+    connected_routers = data['connected_routers']
+    is_sync           = data.get('sync', False)
+
+    if router_name in _xarxa.nodes:
+        return jsonify({'ok': False, 'error': f'A node named {router_name} already exists'})
+
+    switch_num  = len([n for n, p in _xarxa.nodes.items() if p['type'] == 'switch']) + 1
+    switch_name = f'sw{switch_num}'
+    subnet_num  = _xarxa.find_next_subnet()
+    ip_eth1     = f'10.{subnet_num}.0.1/24'
+
+    _xarxa.nodes[router_name] = {
+        'type': 'router', 'ips': {'lan': ip_eth1}, 'routes': [], 'p2p_links': []
+    }
+    _xarxa.update_matrix_multi(router_name, connected_routers)
+    _xarxa.nodes[switch_name] = {'type': 'switch'}
+    _xarxa.update_matrix_multi(switch_name, [router_name])
+
+    t_local_start = time.time()
+    new_router    = _xarxa.net.addHost(router_name, ip='127.0.0.1')
+    new_switch    = _xarxa.net.addSwitch(switch_name, failMode='standalone')
+    _xarxa.mininet_nodes[router_name] = new_router
+    _xarxa.mininet_nodes[switch_name] = new_switch
+    new_switch.start([])
+
+    eth_idx = 0
+    for connected_router in connected_routers:
+        p2p           = _xarxa.find_next_p2p_subnet()
+        intf_new      = f'{router_name}-eth{eth_idx}'
+        existing_node = _xarxa.mininet_nodes[connected_router]
+        intf_existing = f'{connected_router}-eth{len(existing_node.intfList())}'
+
+        _xarxa.net.addLink(new_router, existing_node,
+                           intfName1=intf_new, intfName2=intf_existing)
+        new_router.cmd(
+            f'ifconfig {intf_new} {p2p["ip_a"]}/30 ; ip link set {intf_new} up'
+        )
+        existing_node.cmd(
+            f'ifconfig {intf_existing} {p2p["ip_b"]}/30 ; ip link set {intf_existing} up'
+        )
+
+        _xarxa.nodes[router_name]['ips'][f'eth{eth_idx}'] = f'{p2p["ip_a"]}/30'
+        _xarxa.nodes[router_name]['p2p_links'].append({
+            'peer': connected_router, 'local_ip': p2p['ip_a'],
+            'peer_ip': p2p['ip_b'], 'subnet': p2p['subnet'],
+            'local_intf': f'eth{eth_idx}',
+        })
+
+        existing_props   = _xarxa.nodes[connected_router]
+        ex_eth_idx       = len([k for k in existing_props['ips'] if k.startswith('eth')])
+        ex_intf_name     = f'eth{ex_eth_idx}'
+        existing_props['ips'][ex_intf_name] = f'{p2p["ip_b"]}/30'
+        existing_props.setdefault('p2p_links', []).append({
+            'peer': router_name, 'local_ip': p2p['ip_b'],
+            'peer_ip': p2p['ip_a'], 'subnet': p2p['subnet'],
+            'local_intf': ex_intf_name,
+        })
+        eth_idx += 1
+
+    intf_eth_lan = f'{router_name}-eth{eth_idx}'
+    _xarxa.net.addLink(new_router, new_switch, intfName1=intf_eth_lan)
+    new_router.cmd(
+        f'ifconfig {intf_eth_lan} {ip_eth1} ; '
+        f'ip link set {intf_eth_lan} up ; '
+        f'sysctl -w net.ipv4.ip_forward=1 ; '
+        f'ifconfig lo up'
+    )
+    _xarxa.nodes[router_name]['ips'][f'eth{eth_idx}'] = ip_eth1
+
+    sw_intf = f'{switch_name}-eth1'
+    new_switch.cmd(f'ip link set {sw_intf} up ; ovs-vsctl add-port {switch_name} {sw_intf}')
+
+    _start_routing_on_new_router(router_name)
+    t_local_ms = round((time.time() - t_local_start) * 1000, 2)
+
+    if not is_sync:
+        sync_in_background('add_router', t_local_ms)
+        return jsonify({'ok': True})
+    return jsonify({'ok': True, 't_local_ms': t_local_ms})
+
+
+@bp.route('/rename_node', methods=['POST'])
+def rename_node():
+    if not _xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    data     = request.json
+    old_name = data['old_name']
+    new_name = data['new_name']
+    is_sync  = data.get('sync', False)
+
+    if not new_name.replace('_', '').replace('-', '').isalnum() or new_name[0].isupper():
+        return jsonify({'ok': False,
+                        'error': 'Name must be lowercase alphanumeric (e.g. h6, router1)'})
+    if old_name not in _xarxa.nodes:
+        return jsonify({'ok': False, 'error': f'Node {old_name} not found'})
+    if new_name in _xarxa.nodes:
+        return jsonify({'ok': False, 'error': f'A node named {new_name} already exists'})
+
+    new_nodes = {(new_name if n == old_name else n): p for n, p in _xarxa.nodes.items()}
+    for props in new_nodes.values():
+        if props['type'] == 'router':
+            for link in props.get('p2p_links', []):
+                if link['peer'] == old_name:
+                    link['peer'] = new_name
+
+    matrix_copy   = copy.deepcopy(_xarxa.network_matrix)
+    t_local_start = time.time()
+    threading.Thread(
+        target=_xarxa.restart_network, args=(matrix_copy, new_nodes)
+    ).start()
+    t_local_ms = round((time.time() - t_local_start) * 1000, 2)
+
+    if not is_sync:
+        sync_in_background('rename_node', t_local_ms)
+        return jsonify({'ok': True})
+    return jsonify({'ok': True, 't_local_ms': t_local_ms})

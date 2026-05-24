@@ -1,0 +1,400 @@
+"""
+routes/metrics.py — Network and system measurement endpoints.
+
+Endpoints:
+  GET /metrics/system       → CPU + RAM of the host machine
+  GET /metrics/ping         → ping (10 pkts) between two hosts
+  GET /metrics/ping_fast    → ping (1 pkt) for live dashboard graph
+  GET /metrics/internal     → full ping + iperf measurement between two hosts
+  GET /metrics/global       → Global Scan: all host pairs in parallel
+  GET /metrics/sync         → sync latency history + stats
+  POST /sync_metrics        → receive sync metrics pushed by the Original
+  GET /metrics/hosts        → list of host node names
+  GET /metrics/traffic      → per-interface byte/packet counters for a node
+  GET /metrics/link_traffic → byte counters for all router interfaces
+  GET /ip_dashboard         → flat IP list + subnet grouping for all nodes
+"""
+
+import threading
+import time
+
+import psutil
+from flask import Blueprint, jsonify, request
+
+from sync import sync_history_lock, sync_latency_history, record_sync_latency
+from utils import (
+    get_ping_lock,
+    jitter_of,
+    measure_bandwidth,
+    parse_ping,
+    safe_stats,
+    system_stats,
+)
+
+_xarxa          = None
+_metrics_running = False
+
+bp = Blueprint('metrics', __name__)
+
+
+def init_blueprint(xarxa_instance):
+    global _xarxa
+    _xarxa = xarxa_instance
+
+
+# ── Routes ──
+
+@bp.route('/metrics/system')
+def metrics_system():
+    cpu = psutil.cpu_percent(interval=0.3)
+    ram = psutil.virtual_memory()
+    return jsonify({
+        'ok':           True,
+        'cpu_percent':  cpu,
+        'ram_used_mb':  round(ram.used  / 1024 / 1024, 1),
+        'ram_total_mb': round(ram.total / 1024 / 1024, 1),
+        'ram_percent':  ram.percent,
+    })
+
+
+@bp.route('/metrics/ping')
+def metrics_ping():
+    """Ping measurement (10 packets) between two hosts."""
+    if not _xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    src = request.args.get('src')
+    dst = request.args.get('dst')
+    if not src or not dst:
+        return jsonify({'ok': False, 'error': 'src and dst parameters required'})
+    if src not in _xarxa.nodes or dst not in _xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Node not found'})
+    if _xarxa.nodes[src]['type'] != 'host' or _xarxa.nodes[dst]['type'] != 'host':
+        return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
+
+    lock = get_ping_lock(src)
+    with lock:
+        src_node   = _xarxa.mininet_nodes[src]
+        dst_ip     = _xarxa.nodes[dst]['ip'].split('/')[0]
+        out        = src_node.cmd(f'ping -c 10 -i 0.2 {dst_ip}')
+        latency, jitter = parse_ping(out)
+
+    return jsonify({'ok': True, 'src': src, 'dst': dst,
+                    'latency_ms': latency, 'jitter_ms': jitter})
+
+
+@bp.route('/metrics/ping_fast')
+def metrics_ping_fast():
+    """Single-packet ping for the live dashboard graph."""
+    if not _xarxa.network_ready:
+        return jsonify({'ok': False, 'avg': None})
+
+    src = request.args.get('src')
+    dst = request.args.get('dst')
+    if not src or not dst or src not in _xarxa.nodes or dst not in _xarxa.nodes:
+        return jsonify({'ok': False, 'avg': None})
+
+    lock = get_ping_lock(src)
+    if not lock.acquire(blocking=False):
+        return jsonify({'ok': False, 'avg': None, 'busy': True})
+    try:
+        src_node = _xarxa.mininet_nodes[src]
+        dst_ip   = _xarxa.nodes[dst]['ip'].split('/')[0]
+        out      = src_node.cmd(f'ping -c 1 -W 2 {dst_ip}')
+        latency, _ = parse_ping(out)
+        return jsonify({'ok': True, 'avg': latency['avg']})
+    finally:
+        lock.release()
+
+
+@bp.route('/metrics/internal')
+def metrics_internal():
+    """Full ping + iperf measurement between two hosts."""
+    global _metrics_running
+    if not _xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+    if _metrics_running:
+        return jsonify({'ok': False, 'error': 'A measurement is already running'})
+
+    src = request.args.get('src')
+    dst = request.args.get('dst')
+    if not src or not dst:
+        return jsonify({'ok': False, 'error': 'src and dst parameters required'})
+    if src not in _xarxa.nodes or dst not in _xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Node not found'})
+    if _xarxa.nodes[src]['type'] != 'host' or _xarxa.nodes[dst]['type'] != 'host':
+        return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
+
+    _metrics_running = True
+    try:
+        src_node = _xarxa.mininet_nodes[src]
+        dst_node = _xarxa.mininet_nodes[dst]
+        dst_ip   = _xarxa.nodes[dst]['ip'].split('/')[0]
+
+        out             = src_node.cmd(f'ping -c 10 -i 0.2 {dst_ip}')
+        latency, jitter = parse_ping(out)
+        bandwidth       = measure_bandwidth(src_node, dst_node, dst_ip, iterations=10)
+
+        return jsonify({
+            'ok': True, 'src': src, 'dst': dst,
+            'latency_ms':    latency,
+            'jitter_ms':     jitter,
+            'bandwidth_mbps': bandwidth,
+            'system':        system_stats(),
+        })
+    finally:
+        _metrics_running = False
+
+
+@bp.route('/metrics/global')
+def metrics_global():
+    """Global Scan — ping (and optionally iperf) all host pairs in parallel."""
+    global _metrics_running
+    if not _xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+    if _metrics_running:
+        return jsonify({'ok': False, 'error': 'A measurement is already running'})
+
+    mode = request.args.get('mode', 'full')  # 'full' = ping+iperf, 'fast' = ping only
+
+    hosts = [
+        n for n, p in _xarxa.nodes.items()
+        if p['type'] == 'host'
+        and n in _xarxa.mininet_nodes
+        and _xarxa.mininet_nodes[n].shell is not None
+    ]
+    if len(hosts) < 2:
+        return jsonify({'ok': False, 'error': 'Need at least 2 hosts'})
+
+    _metrics_running = True
+    try:
+        pairs = [
+            (hosts[i], hosts[j])
+            for i in range(len(hosts))
+            for j in range(i + 1, len(hosts))
+        ]
+
+        ping_results, ping_lock = {}, threading.Lock()
+
+        def ping_pair(src, dst):
+            src_node = _xarxa.mininet_nodes[src]
+            dst_ip   = _xarxa.nodes[dst]['ip'].split('/')[0]
+            out      = src_node.cmd(f'ping -c 5 -i 0.2 {dst_ip}')
+            latency, jitter = parse_ping(out)
+            if latency['avg'] is not None:
+                with ping_lock:
+                    ping_results[f'{src}->{dst}'] = {
+                        'min':    latency['min'],
+                        'avg':    latency['avg'],
+                        'max':    latency['max'],
+                        'jitter': jitter,
+                    }
+
+        def get_parallel_groups(pairs):
+            """Group pairs so no node appears twice in the same group."""
+            groups, remaining = [], list(pairs)
+            while remaining:
+                group, used = [], set()
+                for pair in remaining[:]:
+                    s, d = pair
+                    if s not in used and d not in used:
+                        group.append(pair)
+                        used.add(s)
+                        used.add(d)
+                        remaining.remove(pair)
+                groups.append(group)
+            return groups
+
+        for group in get_parallel_groups(pairs):
+            threads = [threading.Thread(target=ping_pair, args=(s, d)) for s, d in group]
+            for t in threads: t.start()
+            for t in threads: t.join()
+
+        bw_results = {}
+        if mode == 'full':
+            for src, dst in pairs:
+                src_node = _xarxa.mininet_nodes[src]
+                dst_node = _xarxa.mininet_nodes[dst]
+                dst_ip   = _xarxa.nodes[dst]['ip'].split('/')[0]
+                bw       = measure_bandwidth(src_node, dst_node, dst_ip, iterations=3)
+                if bw['avg'] is not None:
+                    bw_results[f'{src}->{dst}'] = bw
+
+        all_avg_lat = [v['avg']    for v in ping_results.values()]
+        all_min_lat = [v['min']    for v in ping_results.values()]
+        all_max_lat = [v['max']    for v in ping_results.values()]
+        all_jitter  = [v['jitter'] for v in ping_results.values()]
+        all_avg_bw  = [v['avg']    for v in bw_results.values()]
+        all_min_bw  = [v['min']    for v in bw_results.values()]
+        all_max_bw  = [v['max']    for v in bw_results.values()]
+
+        return jsonify({
+            'ok':                 True,
+            'pairs_tested':       len(pairs),
+            'latency_ms':         safe_stats(all_avg_lat),
+            'latency_min_ms':     round(min(all_min_lat), 2) if all_min_lat else None,
+            'latency_max_ms':     round(max(all_max_lat), 2) if all_max_lat else None,
+            'jitter_ms':          safe_stats(all_jitter),
+            'bandwidth_mbps':     safe_stats(all_avg_bw),
+            'bandwidth_min_mbps': round(min(all_min_bw), 2) if all_min_bw else None,
+            'bandwidth_max_mbps': round(max(all_max_bw), 2) if all_max_bw else None,
+            'per_pair':           {'latency': ping_results, 'bandwidth': bw_results},
+            'system':             system_stats(),
+        })
+    finally:
+        _metrics_running = False
+
+
+@bp.route('/metrics/sync')
+def metrics_sync():
+    with sync_history_lock:
+        history = list(sync_latency_history)
+    if not history:
+        return jsonify({'ok': True, 'history': [], 'stats': None})
+
+    t_local   = [e.get('t_local_ms')   for e in history]
+    t_network = [e.get('t_network_ms') for e in history]
+    t_twin    = [e.get('t_twin_ms')    for e in history]
+
+    return jsonify({
+        'ok':      True,
+        'history': history,
+        'stats': {
+            'count':     len(history),
+            't_local':   safe_stats(t_local),
+            't_network': safe_stats(t_network),
+            't_twin':    safe_stats(t_twin),
+            # Legacy fields kept for backwards compatibility
+            'avg_ms':    safe_stats(t_network)['avg'],
+            'min_ms':    safe_stats(t_network)['min'],
+            'max_ms':    safe_stats(t_network)['max'],
+            'jitter_ms': jitter_of(t_network),
+        },
+    })
+
+
+@bp.route('/sync_metrics', methods=['POST'])
+def update_sync_metrics():
+    """Receive a sync timing entry pushed by the Original."""
+    data  = request.json
+    entry = {
+        'operation':    data.get('operation', 'External Update'),
+        'latency_ms':   data.get('latency_ms'),
+        't_local_ms':   data.get('t_local_ms'),
+        't_network_ms': data.get('t_network_ms'),
+        't_twin_ms':    data.get('t_twin_ms'),
+        'timestamp':    data.get('timestamp', time.time()),
+    }
+    with sync_history_lock:
+        sync_latency_history.append(entry)
+    return jsonify({'ok': True})
+
+
+@bp.route('/metrics/hosts')
+def metrics_hosts():
+    hosts = [name for name, props in _xarxa.nodes.items() if props['type'] == 'host']
+    return jsonify({'hosts': hosts})
+
+
+@bp.route('/metrics/traffic')
+def metrics_traffic():
+    if not _xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    node = request.args.get('node')
+    if not node or node not in _xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Node not found'})
+    if _xarxa.nodes[node]['type'] == 'switch':
+        return jsonify({'ok': False, 'error': 'Switches not supported'})
+
+    mn_node = _xarxa.mininet_nodes[node]
+    if mn_node.shell is None or mn_node.waiting:
+        return jsonify({'ok': False, 'error': 'Node shell busy'})
+    try:
+        raw = mn_node.cmd('cat /proc/net/dev')
+    except Exception:
+        return jsonify({'ok': False, 'error': 'Node shell error'})
+
+    interfaces = {}
+    for line in raw.strip().split('\n')[2:]:  # skip 2 header lines
+        parts = line.split(':')
+        if len(parts) < 2:
+            continue
+        intf = parts[0].strip()
+        if intf == 'lo':
+            continue
+        values = parts[1].split()
+        interfaces[intf] = {
+            'rx_bytes':   int(values[0]),
+            'rx_packets': int(values[1]),
+            'tx_bytes':   int(values[8]),
+            'tx_packets': int(values[9]),
+        }
+    return jsonify({'ok': True, 'node': node, 'interfaces': interfaces})
+
+
+@bp.route('/metrics/link_traffic')
+def metrics_link_traffic():
+    if not _xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+
+    links = {}
+    for name, props in _xarxa.nodes.items():
+        if props['type'] != 'router':
+            continue
+        mn_node = _xarxa.mininet_nodes[name]
+        if mn_node.shell is None or mn_node.waiting:
+            continue
+        try:
+            raw = mn_node.cmd('cat /proc/net/dev')
+        except Exception:
+            continue
+        for line in raw.strip().split('\n')[2:]:
+            parts = line.split(':')
+            if len(parts) < 2:
+                continue
+            intf = parts[0].strip()
+            if intf == 'lo':
+                continue
+            values = parts[1].split()
+            links[f'{name}-{intf}'] = {
+                'node':     name,
+                'intf':     intf,
+                'rx_bytes': int(values[0]),
+                'tx_bytes': int(values[8]),
+            }
+    return jsonify({'ok': True, 'links': links})
+
+
+@bp.route('/ip_dashboard')
+def ip_dashboard():
+    flat    = []
+    subnets = {}
+
+    for name, props in _xarxa.nodes.items():
+        t = props['type']
+        if t == 'host':
+            ip  = props.get('ip', '—')
+            gw  = props.get('gw', None)
+            flat.append({'node': name, 'type': t, 'intf': 'eth0', 'ip': ip, 'gw': gw})
+            subnet = ip.rsplit('.', 1)[0] + '.0/' + ip.split('/')[1] if '/' in ip else ip
+            subnets.setdefault(subnet, []).append(
+                {'node': name, 'type': t, 'intf': 'eth0', 'ip': ip, 'gw': gw})
+
+        elif t == 'router':
+            for intf, ip in props.get('ips', {}).items():
+                if intf == 'lan':
+                    continue
+                flat.append({'node': name, 'type': t, 'intf': intf, 'ip': ip, 'gw': None})
+                subnet = ip.rsplit('.', 1)[0] + '.0/' + ip.split('/')[1] if '/' in ip else ip
+                subnets.setdefault(subnet, []).append(
+                    {'node': name, 'type': t, 'intf': intf, 'ip': ip, 'gw': None})
+
+    type_order = {'router': 0, 'host': 1, 'switch': 2}
+    flat.sort(key=lambda r: (type_order.get(r['type'], 9), r['node']))
+
+    subnet_list = [
+        {'subnet': s, 'members': sorted(members, key=lambda m: (m['type'], m['node']))}
+        for s, members in sorted(subnets.items())
+    ]
+    return jsonify({'ok': True, 'flat': flat, 'subnets': subnet_list})
