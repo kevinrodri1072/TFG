@@ -13,7 +13,7 @@
         <button onclick="showRouterForm()">Add Router</button>
         <button onclick="showMatrix()">View Matrix</button>
         <button onclick="showIPDashboard()">IP Dashboard</button>
-        <button id="btn-xrfs" onclick="showXRFModal()" style="display:none;">XRFs</button>
+        <button id="btn-xrfs" onclick="window.open('/xrfs', '_blank')" style="display:none;">XRFs</button>
         <button onclick="saveNetwork()">Save Network</button>
         <button onclick="document.getElementById('load-input').click()">Load Network</button>
         <input type="file" id="load-input" accept=".mat" style="display:none" onchange="loadNetwork(this)">
@@ -70,93 +70,6 @@
     </div>
 
     <!-- Routes modal -->
-    <!-- XRF Modal -->
-    <div id="xrf-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; overflow:auto;">
-        <div style="background:white; margin:4% auto; padding:24px; width:92%; max-width:700px; border-radius:8px; max-height:85vh; overflow-y:auto;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                <h2 style="margin:0;">🧩 Extended Reality Functions</h2>
-                <button onclick="closeXRFModal()" style="padding:5px 14px; background:#e74c3c; color:white; border:none; border-radius:4px; cursor:pointer;">✕</button>
-            </div>
-
-            <!-- XRF list -->
-            <div id="xrf-modal-list"></div>
-
-            <!-- Query result area -->
-            <div id="xrf-modal-result" style="display:none; margin-top:16px; border-top:1px solid #eee; padding-top:14px;">
-                <div style="font-weight:bold; font-size:14px; margin-bottom:10px;" id="xrf-modal-result-title"></div>
-
-                <!-- Neighbors params -->
-                <div id="xrf-neighbors-params" style="display:none; margin-bottom:10px;">
-                    <div style="display:flex; gap:8px; align-items:center;">
-                        <select id="neighbors-node" style="flex:1; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;">
-                            <option value="">All nodes</option>
-                        </select>
-                        <button onclick="queryXRF('neighbors')" style="padding:6px 14px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">Run</button>
-                    </div>
-                </div>
-
-                <!-- Hops params -->
-                <div id="xrf-hops-params" style="display:none; margin-bottom:10px;">
-                    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-                        <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
-                            <label style="font-size:11px; color:#7f8c8d;">Source</label>
-                            <select id="hops-src" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;"></select>
-                        </div>
-                        <div style="display:flex; flex-direction:column; gap:4px; flex:1;" id="hops-dst-group">
-                            <label style="font-size:11px; color:#7f8c8d;">Destination</label>
-                            <select id="hops-dst" onchange="toggleMaxHops()" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;">
-                                <option value="">— Any (use max hops) —</option>
-                            </select>
-                        </div>
-                        <div style="display:flex; flex-direction:column; gap:4px;" id="hops-max-group">
-                            <label style="font-size:11px; color:#7f8c8d;">Max hops</label>
-                            <input type="number" id="hops-max" value="2" min="1" max="10"
-                                style="width:80px; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;">
-                        </div>
-                        <div style="display:flex; flex-direction:column; justify-content:flex-end;">
-                            <button onclick="queryXRF('hops')" style="padding:6px 14px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer; margin-top:18px;">Run</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Traffic params -->
-                <div id="xrf-traffic-params" style="display:none; margin-bottom:10px;">
-                    <div style="display:flex; gap:8px; align-items:center;">
-                        <select id="traffic-node" style="flex:1; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;"><option value="">All nodes</option></select>
-                        <button onclick="queryXRF('traffic')" style="padding:6px 14px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">Run</button>
-                    </div>
-                </div>
-
-                <!-- Chaos params -->
-                <div id="xrf-chaos-params" style="display:none; margin-bottom:10px;">
-                    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
-                        <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
-                            <label style="font-size:11px; color:#7f8c8d;">Router to kill</label>
-                            <select id="chaos-node" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;"></select>
-                        </div>
-                        <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
-                            <label style="font-size:11px; color:#7f8c8d;">Ping source</label>
-                            <select id="chaos-src" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;"></select>
-                        </div>
-                        <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
-                            <label style="font-size:11px; color:#7f8c8d;">Ping destination</label>
-                            <select id="chaos-dst" style="padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;"></select>
-                        </div>
-                        <div style="display:flex; flex-direction:column; gap:4px;">
-                            <label style="font-size:11px; color:#7f8c8d;">Duration (s)</label>
-                            <input type="number" id="chaos-duration" value="10" min="5" max="60"
-                                style="width:70px; padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px;">
-                        </div>
-                        <button onclick="queryXRF('chaos')" style="padding:6px 14px; background:#e74c3c; color:white; border:none; border-radius:4px; cursor:pointer;">Run Chaos</button>
-                    </div>
-                    <div style="font-size:11px; color:#e74c3c; margin-top:6px;">⚠️ This will temporarily disable the selected router on the Twin</div>
-                </div>
-
-                <!-- Formatted result -->
-                <div id="xrf-modal-result-content" style="margin-top:10px;"></div>
-            </div>
-        </div>
-    </div>
 
     <div id="routes-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; overflow:auto;">
         <div style="background:white; margin:5% auto; padding:20px; width:90%; max-width:600px; border-radius:8px; max-height:80vh; overflow-y:auto;">

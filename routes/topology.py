@@ -140,6 +140,9 @@ def load_network():
 
     return jsonify({'ok': True})
 
+@bp.route('/xrfs')
+def xrfs_page():
+    return render_template('xrfs.html')
 
 @bp.route('/is_twin')
 def is_twin():
