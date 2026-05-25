@@ -1,3 +1,21 @@
+var socket = io();
+
+        // ── WebSocket: system metrics ──
+        socket.on('metrics_system', function(sys) {
+            var cpuEl  = document.getElementById('cpu-val');
+            var cpuBar = document.getElementById('cpu-bar');
+            var ramEl  = document.getElementById('ram-val');
+            var ramBar = document.getElementById('ram-bar');
+            var ramDet = document.getElementById('ram-detail');
+            if (!cpuEl) return;
+            cpuEl.textContent  = sys.cpu_percent + '%';
+            cpuBar.style.width = sys.cpu_percent + '%';
+            cpuBar.style.background = sys.cpu_percent < 60 ? '#3498db' : sys.cpu_percent < 85 ? '#f39c12' : '#e74c3c';
+            ramEl.textContent  = sys.ram_percent + '%';
+            ramBar.style.width = sys.ram_percent + '%';
+            if (ramDet) ramDet.textContent = sys.ram_used_mb.toFixed(0) + ' MB / ' + sys.ram_total_mb.toFixed(0) + ' MB';
+        });
+
 var selectedNode = null;
         var topologyData = null;
 
@@ -31,49 +49,36 @@ var selectedNode = null;
                     interaction: { navigationButtons: false, keyboard: false, hover: true }
                 });
 
-                // ── Link traffic coloring ──
+                // ── Link traffic coloring via WebSocket ──
                 var _prevLinkBytes = {};
-                function updateLinkColors() {
-                    fetch('/metrics/link_traffic')
-                    .then(r => r.json())
-                    .then(d => {
-                        if (!d.ok) return;
-                        var routers = Object.keys(topologyData.nodes).filter(n => topologyData.nodes[n].type === 'router');
-                        routers.forEach(function(rname) {
-                            var props = topologyData.nodes[rname];
-                            if (!props.p2p_links) return;
-                            props.p2p_links.forEach(function(link) {
-                                var key = rname + '-' + rname + '-' + link.local_intf;
-                                var trafficKey = rname + '-' + rname + '-' + link.local_intf;
-                                var entry = d.links[rname + '-' + rname + '-' + link.local_intf];
-                                if (!entry) {
-                                    entry = d.links[rname + '-' + link.local_intf];
-                                }
-                                if (!entry) return;
-                                var fullKey = rname + '_' + link.local_intf;
-                                var prev = _prevLinkBytes[fullKey];
-                                var curr = entry.rx_bytes + entry.tx_bytes;
-                                _prevLinkBytes[fullKey] = curr;
-                                if (prev === undefined) return;
-                                var bps = (curr - prev) / 3;
-                                var color;
-                                if (bps < 1000) color = '#27ae60';
-                                else if (bps < 50000) color = '#f39c12';
-                                else color = '#e74c3c';
-                                var edgeId1 = rname + '___' + link.peer;
-                                var edgeId2 = link.peer + '___' + rname;
-                                if (edges.get(edgeId1)) {
-                                    edges.update([{id: edgeId1, color: {color: color, highlight: color, hover: color}, width: bps < 1000 ? 2 : bps < 50000 ? 3 : 5}]);
-                                } else if (edges.get(edgeId2)) {
-                                    edges.update([{id: edgeId2, color: {color: color, highlight: color, hover: color}, width: bps < 1000 ? 2 : bps < 50000 ? 3 : 5}]);
-                                }
-                            });
+                function applyLinkColors(d) {
+                    if (!d || !d.links || !topologyData) return;
+                    var routers = Object.keys(topologyData.nodes).filter(function(n) {
+                        return topologyData.nodes[n].type === 'router';
+                    });
+                    routers.forEach(function(rname) {
+                        var props = topologyData.nodes[rname];
+                        if (!props.p2p_links) return;
+                        props.p2p_links.forEach(function(link) {
+                            var entry = d.links[rname + '-' + link.local_intf];
+                            if (!entry) return;
+                            var fullKey = rname + '_' + link.local_intf;
+                            var prev = _prevLinkBytes[fullKey];
+                            var curr = entry.rx_bytes + entry.tx_bytes;
+                            _prevLinkBytes[fullKey] = curr;
+                            if (prev === undefined) return;
+                            var bps = curr - prev;
+                            var color = bps < 1000 ? '#27ae60' : bps < 50000 ? '#f39c12' : '#e74c3c';
+                            var width = bps < 1000 ? 2 : bps < 50000 ? 3 : 5;
+                            var update = {color: {color: color, highlight: color, hover: color}, width: width};
+                            var edgeId1 = rname + '___' + link.peer;
+                            var edgeId2 = link.peer + '___' + rname;
+                            if (edges.get(edgeId1)) edges.update([Object.assign({id: edgeId1}, update)]);
+                            else if (edges.get(edgeId2)) edges.update([Object.assign({id: edgeId2}, update)]);
                         });
-                    })
-                    .catch(() => {});
+                    });
                 }
-                setInterval(updateLinkColors, 1000);
-                updateLinkColors();
+                socket.on('metrics_link_traffic', function(d) { applyLinkColors(d); });
 
                 network.on('hoverNode', function(params) {
                     var popup = document.getElementById('node-popup');
@@ -467,22 +472,7 @@ var selectedNode = null;
             });
         }
 
-        function refreshSystemResources() {
-            fetch('/metrics/system')
-                .then(r => r.json())
-                .then(sys => {
-                    if (!sys.ok) return;
-                    document.getElementById('cpu-val').textContent = sys.cpu_percent + '%';
-                    document.getElementById('cpu-bar').style.width = sys.cpu_percent + '%';
-                    document.getElementById('cpu-bar').style.background =
-                        sys.cpu_percent < 60 ? '#3498db' : sys.cpu_percent < 85 ? '#f39c12' : '#e74c3c';
-                    document.getElementById('ram-val').textContent = sys.ram_percent + '%';
-                    document.getElementById('ram-bar').style.width = sys.ram_percent + '%';
-                    document.getElementById('ram-detail').textContent =
-                        sys.ram_used_mb.toFixed(0) + ' MB / ' + sys.ram_total_mb.toFixed(0) + ' MB';
-                })
-                .catch(() => {});
-        }
+        // refreshSystemResources removed — data now pushed via WebSocket metrics_system event
 
         // ── IP Dashboard ──
         var ipView = 'flat';
@@ -774,9 +764,7 @@ var selectedNode = null;
         refreshSyncMetrics();
         setInterval(refreshSyncMetrics, 3000);
 
-        // Refresh system resources 
-        refreshSystemResources();
-        setInterval(refreshSystemResources, 500);
+        // System resources now pushed via WebSocket (no polling needed)
 
         // ── XRFs ──
         var xrfData = {};

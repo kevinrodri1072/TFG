@@ -1,3 +1,19 @@
+var socket = io();
+
+// ── WebSocket: latency matrix progress ──
+socket.on('latency_matrix_progress', function(d) {
+    var bar  = document.getElementById('latency-progress-bar');
+    var msg  = document.getElementById('latency-progress-msg');
+    var pct  = document.getElementById('latency-progress-pct');
+    var wrap = document.getElementById('latency-progress-wrap');
+    if (!bar) return;
+    if (wrap) wrap.style.display = 'block';
+    if (bar)  bar.style.width   = d.percent + '%';
+    if (bar)  bar.style.background = d.percent < 100 ? '#3498db' : '#27ae60';
+    if (msg)  msg.textContent   = d.msg;
+    if (pct)  pct.textContent   = d.percent + '%';
+});
+
 /**
  * xrfs.js — Standalone XRF page logic.
  *
@@ -87,7 +103,8 @@ function showXRFResult(id) {
     document.getElementById('xrf-neighbors-params').style.display = id === 'neighbors' ? 'block' : 'none';
     document.getElementById('xrf-hops-params').style.display      = id === 'hops'      ? 'block' : 'none';
     document.getElementById('xrf-traffic-params').style.display   = id === 'traffic'   ? 'block' : 'none';
-    document.getElementById('xrf-chaos-params').style.display     = id === 'chaos'     ? 'block' : 'none';
+    document.getElementById('xrf-chaos-params').style.display          = id === 'chaos'          ? 'block' : 'none';
+    document.getElementById('xrf-latency-matrix-params').style.display = id === 'latency_matrix' ? 'block' : 'none';
     document.getElementById('xrf-result-content').innerHTML = '';
 
     if (topologyData) {
@@ -268,6 +285,14 @@ function renderLatencyMatrix(data) {
 }
 
 
+// ── Latency Matrix mode helpers ──
+
+function onLatencyModeChange() {
+    var mode    = document.getElementById('latency-mode').value;
+    var warning = document.getElementById('latency-mode-warning');
+    if (warning) warning.style.display = mode === 'full' ? 'block' : 'none';
+}
+
 // ── Query XRF ──
 
 function queryXRF(id) {
@@ -300,6 +325,18 @@ function queryXRF(id) {
                 return;
             }
         }
+    } else if (id === 'latency_matrix') {
+        params.mode = document.getElementById('latency-mode').value;
+        // Reset and show progress bar
+        var wrap = document.getElementById('latency-progress-wrap');
+        var bar  = document.getElementById('latency-progress-bar');
+        var msg  = document.getElementById('latency-progress-msg');
+        var pct  = document.getElementById('latency-progress-pct');
+        if (wrap) wrap.style.display = 'block';
+        if (bar)  bar.style.width   = '0%';
+        if (bar)  bar.style.background = '#3498db';
+        if (msg)  msg.textContent   = 'Starting...';
+        if (pct)  pct.textContent   = '0%';
     }
     document.getElementById('xrf-result-content').innerHTML = '<div style="color:#7f8c8d; font-size:13px;">⏳ Loading...</div>';
     fetch('/xrf/query', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({xrf: id, params: params})})
@@ -312,6 +349,11 @@ function queryXRF(id) {
         else if (id === 'traffic')   html = renderTraffic(data);
         else if (id === 'chaos')     html = renderChaos(data);
         else if (id === 'latency_matrix') html = renderLatencyMatrix(data);
+        // Hide progress bar on completion
+        if (id === 'latency_matrix') {
+            var wrap = document.getElementById('latency-progress-wrap');
+            if (wrap) wrap.style.display = 'none';
+        }
         document.getElementById('xrf-result-content').innerHTML = html;
     });
 }

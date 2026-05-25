@@ -4,6 +4,7 @@
     <title>XRFs — Digital Twin Network</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         body { padding: 24px; }
         .xrf-container { max-width: 800px; margin: 0 auto; }
@@ -95,6 +96,33 @@
                     <button onclick="queryXRF('chaos')" class="btn btn-chaos">Run Chaos</button>
                 </div>
                 <div style="font-size:11px; color:#e74c3c; margin-top:6px;">⚠️ This will temporarily disable the selected router on the Twin</div>
+            </div>
+
+            <!-- Latency Matrix params -->
+            <div id="xrf-latency-matrix-params" style="display:none; margin-bottom:10px;">
+                <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+                    <div style="display:flex; flex-direction:column; gap:4px;">
+                        <label style="font-size:11px; color:#7f8c8d;">Mode</label>
+                        <select id="latency-mode" onchange="onLatencyModeChange()">
+                            <option value="fast">Fast — ping only (~3s)</option>
+                            <option value="full">Full — ping + iperf (~15s)</option>
+                        </select>
+                    </div>
+                    <button onclick="queryXRF('latency_matrix')" class="btn btn-query">Run</button>
+                </div>
+                <div id="latency-mode-warning" style="display:none; font-size:11px; color:#e67e22; margin-top:6px;">
+                    ⚠️ Full mode runs iperf between all host pairs. This may take up to 15 seconds.
+                </div>
+                <!-- Progress bar -->
+                <div id="latency-progress-wrap" style="display:none; margin-top:12px;">
+                    <div style="display:flex; justify-content:space-between; font-size:11px; color:#7f8c8d; margin-bottom:4px;">
+                        <span id="latency-progress-msg">Running...</span>
+                        <span id="latency-progress-pct">0%</span>
+                    </div>
+                    <div style="background:#ecf0f1; border-radius:4px; height:8px; overflow:hidden;">
+                        <div id="latency-progress-bar" style="height:100%; width:0%; background:#3498db; border-radius:4px; transition:width 0.3s ease;"></div>
+                    </div>
+                </div>
             </div>
 
             <div id="xrf-result-content" style="margin-top:10px;"></div>

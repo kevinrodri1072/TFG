@@ -3,10 +3,12 @@ app.py — Application entry point.
 
 Responsibilities:
   - Parse CLI arguments (--twin flag)
-  - Create the Flask app and register all Blueprints
+  - Create the Flask app and Flask-SocketIO instance
+  - Register all Blueprints
   - Initialise shared state (Xarxa instance, sync module)
   - Start the Mininet network in a background thread
-  - Launch the Flask development server
+  - Start the metrics broadcast thread (WebSocket push)
+  - Launch the Flask-SocketIO server
 """
 
 import argparse
@@ -14,7 +16,9 @@ import subprocess
 import threading
 import time
 
+import psutil
 from flask import Flask
+from flask_socketio import SocketIO
 
 from xarxa import Xarxa
 import sync as sync_module
@@ -25,9 +29,9 @@ parser.add_argument('--twin', action='store_true', help='Run as Digital Twin')
 args, _ = parser.parse_known_args()
 IS_TWIN = args.twin
 
-# ── Flask app ──
-app = Flask(__name__)
-
+# ── Flask + SocketIO ──
+app    = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 # ── Register Blueprints ──
 from routes.topology import bp as topology_bp, init_blueprint as init_topology
 from routes.nodes    import bp as nodes_bp,    init_blueprint as init_nodes
@@ -43,27 +47,92 @@ app.register_blueprint(routing_bp)
 app.register_blueprint(xrfs_bp)
 app.register_blueprint(chaos_bp)
 
+# ── WebSocket metrics broadcast ──
+
+def _broadcast_metrics(xarxa):
+    """
+    Background thread that pushes live metrics to all connected clients
+    via WebSocket events — no polling needed from the browser.
+
+    Events emitted:
+      'metrics_system'       → CPU + RAM every 500 ms
+      'metrics_link_traffic' → per-interface byte counters every 1 s
+    """
+    link_tick = 0  # emit link_traffic every 2 iterations (every 1 s)
+
+    while True:
+        try:
+            # ── System metrics (every 500 ms) ──
+            cpu = psutil.cpu_percent(interval=None)
+            ram = psutil.virtual_memory()
+            socketio.emit('metrics_system', {
+                'cpu_percent':  cpu,
+                'ram_percent':  ram.percent,
+                'ram_used_mb':  round(ram.used  / 1024 / 1024, 1),
+                'ram_total_mb': round(ram.total / 1024 / 1024, 1),
+            })
+
+            # ── Link traffic (every 1 s) ──
+            link_tick += 1
+            if link_tick >= 2 and xarxa.network_ready:
+                link_tick = 0
+                links = {}
+                for name, props in xarxa.nodes.items():
+                    if props['type'] != 'router':
+                        continue
+                    mn_node = xarxa.mininet_nodes.get(name)
+                    if not mn_node or mn_node.shell is None or mn_node.waiting:
+                        continue
+                    try:
+                        raw = mn_node.cmd('cat /proc/net/dev')
+                    except Exception:
+                        continue
+                    for line in raw.strip().split('\n')[2:]:
+                        parts = line.split(':')
+                        if len(parts) < 2:
+                            continue
+                        intf = parts[0].strip()
+                        if intf == 'lo':
+                            continue
+                        values = parts[1].split()
+                        links[f'{name}-{intf}'] = {
+                            'node':     name,
+                            'intf':     intf,
+                            'rx_bytes': int(values[0]),
+                            'tx_bytes': int(values[8]),
+                        }
+                socketio.emit('metrics_link_traffic', {'links': links})
+
+        except Exception as e:
+            print(f'[broadcast] error: {e}')
+
+        time.sleep(0.5)
+
+
 # ── Entry point ──
 if __name__ == '__main__':
     subprocess.run(['mn', '-c'], capture_output=True)
 
     xarxa = Xarxa()
 
-    # Give the sync module access to the live Xarxa object
     sync_module.init_sync(xarxa)
 
-    # Inject the Xarxa instance (and IS_TWIN where needed) into each blueprint
     init_topology(xarxa, IS_TWIN)
     init_nodes(xarxa)
-    init_metrics(xarxa)
+    init_metrics(xarxa, socketio)
     init_routing(xarxa)
     init_xrfs(IS_TWIN)
     init_chaos(xarxa)
 
-    # Start Mininet in a background thread so Flask can boot immediately
+    # Start Mininet in a background thread
     t = threading.Thread(target=xarxa.start_network)
     t.daemon = True
     t.start()
     time.sleep(3)
 
-    app.run(host='0.0.0.0', debug=False)
+    # Start WebSocket metrics broadcast thread
+    b = threading.Thread(target=_broadcast_metrics, args=(xarxa,))
+    b.daemon = True
+    b.start()
+
+app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
