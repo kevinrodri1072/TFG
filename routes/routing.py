@@ -14,6 +14,8 @@ import subprocess
 
 from flask import Blueprint, jsonify, request
 
+from sync import sync_event
+
 _xarxa = None
 
 bp = Blueprint('routing', __name__)
@@ -39,11 +41,15 @@ def set_routing_mode():
     if mode not in VALID_MODES:
         return jsonify({'ok': False, 'error': f'Unknown mode: {mode}'})
 
+    is_sync = request.json.get('sync', False)
     _xarxa.routing_mode = mode
     for name, props in _xarxa.nodes.items():
         if props['type'] == 'router' and name in _xarxa.mininet_nodes:
             _xarxa._stop_routing(_xarxa.mininet_nodes[name], name)
             _xarxa._apply_routing(_xarxa.mininet_nodes[name], name, props)
+
+    if not is_sync:
+        sync_event('/set_routing_mode', {'mode': mode}, 0)
     return jsonify({'ok': True, 'mode': mode})
 
 
