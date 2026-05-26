@@ -1,6 +1,24 @@
-var socket = io();
+var socket = io('http://localhost:5001');
 
 // ── WebSocket: latency matrix progress ──
+socket.on('xrf_result', function(data) {
+    // Result from async XRF query (chaos, latency_matrix)
+    var wrap = document.getElementById('latency-progress-wrap');
+    if (wrap) wrap.style.display = 'none';
+
+    var html = '';
+    if (!data.ok) {
+        html = '<p style="color:#e74c3c;">Error: ' + data.error + '</p>';
+    } else {
+        var id = data.xrf;
+        if (id === 'chaos')          html = renderChaos(data);
+        else if (id === 'latency_matrix') html = renderLatencyMatrix(data);
+        else html = '<pre>' + JSON.stringify(data.result, null, 2) + '</pre>';
+    }
+    var el = document.getElementById('xrf-result-content');
+    if (el) el.innerHTML = html;
+});
+
 socket.on('latency_matrix_progress', function(d) {
     var bar  = document.getElementById('latency-progress-bar');
     var msg  = document.getElementById('latency-progress-msg');
@@ -342,18 +360,50 @@ function queryXRF(id) {
     fetch('/xrf/query', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({xrf: id, params: params})})
     .then(function(r) { return r.json(); })
     .then(function(data) {
+        if (!data.ok) {
+            document.getElementById('xrf-result-content').innerHTML =
+                '<p style="color:#e74c3c;">Error: ' + data.error + '</p>';
+            return;
+        }
+        if (data.async && data.job_id) {
+            // Long-running XRF: poll for result every 2s
+            pollXRFResult(id, data.job_id);
+            return;
+        }
+        // Fast XRF: result is already here
         var html = '';
-        if (!data.ok) html = '<p style="color:#e74c3c;">Error: ' + data.error + '</p>';
-        else if (id === 'neighbors') html = renderNeighbors(data);
+        if (id === 'neighbors') html = renderNeighbors(data);
         else if (id === 'hops')      html = renderHops(data);
         else if (id === 'traffic')   html = renderTraffic(data);
-        else if (id === 'chaos')     html = renderChaos(data);
-        else if (id === 'latency_matrix') html = renderLatencyMatrix(data);
-        // Hide progress bar on completion
-        if (id === 'latency_matrix') {
+        document.getElementById('xrf-result-content').innerHTML = html;
+    });
+}
+
+function pollXRFResult(xrf_id, job_id) {
+    fetch('/xrf/result/' + job_id)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!data.ok) {
             var wrap = document.getElementById('latency-progress-wrap');
             if (wrap) wrap.style.display = 'none';
+            document.getElementById('xrf-result-content').innerHTML =
+                '<p style="color:#e74c3c;">Error: ' + data.error + '</p>';
+            return;
         }
+        if (!data.ready) {
+            // Not ready yet, poll again in 2s
+            setTimeout(function() { pollXRFResult(xrf_id, job_id); }, 2000);
+            return;
+        }
+        // Result ready!
+        var wrap = document.getElementById('latency-progress-wrap');
+        if (wrap) wrap.style.display = 'none';
+        var html = '';
+        if (xrf_id === 'chaos')          html = renderChaos(data);
+        else if (xrf_id === 'latency_matrix') html = renderLatencyMatrix(data);
         document.getElementById('xrf-result-content').innerHTML = html;
+    })
+    .catch(function() {
+        setTimeout(function() { pollXRFResult(xrf_id, job_id); }, 2000);
     });
 }

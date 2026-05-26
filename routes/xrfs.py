@@ -1,28 +1,25 @@
 """
 routes/xrfs.py — Extended Reality Functions (XRF) management.
-
-XRFs are microservices running in Kubernetes (Minikube) that extend the
-Digital Twin with extra analytics. Only available when IS_TWIN=True.
-
-Endpoints:
-  GET  /xrf/status         → deployment status of all XRFs
-  POST /xrf/deploy         → kubectl apply an XRF
-  POST /xrf/undeploy       → kubectl delete an XRF
-  POST /xrf/query          → proxy a query to a running XRF's /run endpoint
 """
 
 import os
 import subprocess
+import threading
+import uuid
 
 import requests
 from flask import Blueprint, jsonify, request
 
-_IS_TWIN = False
+_IS_TWIN  = False
+_socketio = None
 
 bp = Blueprint('xrfs', __name__)
 
-# ── Kubernetes config ──
+# ── Job store for async XRF results ──
+_jobs = {}
+_jobs_lock = threading.Lock()
 
+# ── Kubernetes config ──
 KUBECONFIG = os.path.expanduser('~/.kube/config')
 if os.environ.get('SUDO_USER'):
     KUBECONFIG = f'/home/{os.environ["SUDO_USER"]}/.kube/config'
@@ -74,19 +71,20 @@ XRF_REGISTRY = {
     },
 }
 
+ASYNC_XRFS = {'chaos', 'latency_matrix'}
 
-def init_blueprint(is_twin):
-    global _IS_TWIN
-    _IS_TWIN = is_twin
+
+def init_blueprint(is_twin, socketio_instance=None):
+    global _IS_TWIN, _socketio
+    _IS_TWIN  = is_twin
+    _socketio = socketio_instance
 
 
 def _kubectl(args):
-    """Build a kubectl command with the correct kubeconfig."""
     return ['kubectl', f'--kubeconfig={KUBECONFIG}'] + args
 
 
 def _get_xrf_url(service_name):
-    """Return the NodePort URL for a running XRF service, or None."""
     try:
         port = subprocess.check_output(
             _kubectl(['get', 'svc', service_name,
@@ -99,7 +97,6 @@ def _get_xrf_url(service_name):
 
 
 def _get_xrf_status(deployment_name):
-    """Return 'running' if the deployment has 1 ready replica, else 'stopped'."""
     try:
         result = subprocess.check_output(
             _kubectl(['get', 'deployment', deployment_name,
@@ -109,6 +106,23 @@ def _get_xrf_status(deployment_name):
         return 'running' if result == '1' else 'stopped'
     except Exception:
         return 'stopped'
+
+
+def _run_xrf_job(job_id, xrf_id, url, params):
+    """Run XRF in background thread, store result in _jobs dict."""
+    try:
+        print(f'[job {job_id}] starting → {url}/run')
+        resp = requests.post(f'{url}/run', json=params, timeout=180)
+        result = resp.json()
+        print(f'[job {job_id}] result: {result}')
+        print(f'[job {job_id}] done → ok={result.get("ok")}')
+        with _jobs_lock:
+            _jobs[job_id] = {'ready': True, 'ok': True, 'result': result}
+        print(f'[job {job_id}] stored in _jobs')
+    except Exception as e:
+        print(f'[job {job_id}] error: {e}')
+        with _jobs_lock:
+            _jobs[job_id] = {'ready': True, 'ok': False, 'error': str(e)}
 
 
 # ── Routes ──
@@ -175,11 +189,36 @@ def xrf_query():
     url = _get_xrf_url(XRF_REGISTRY[xrf_id]['service'])
     if not url:
         return jsonify({'ok': False, 'error': 'XRF not running'})
-    try:
-        if xrf_id in ('chaos', 'latency_matrix'):
-            resp = requests.post(f'{url}/run', json=params, timeout=120)
-        else:
+
+    if xrf_id in ASYNC_XRFS:
+        job_id = str(uuid.uuid4())[:8]
+        with _jobs_lock:
+            _jobs[job_id] = {'ready': False}
+        print(f'[xrf_query] launching job {job_id} for {xrf_id}')
+        threading.Thread(
+            target=_run_xrf_job,
+            args=(job_id, xrf_id, url, params),
+            daemon=True,
+        ).start()
+        return jsonify({'ok': True, 'async': True, 'job_id': job_id})
+    else:
+        try:
             resp = requests.get(f'{url}/run', params=params, timeout=10)
-        return jsonify({'ok': True, 'result': resp.json()})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)})
+            return jsonify({'ok': True, 'result': resp.json()})
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e)})
+
+
+@bp.route('/xrf/result/<job_id>')
+def xrf_result(job_id):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job is None:
+        return jsonify({'ok': False, 'error': 'Job not found'})
+    if not job['ready']:
+        return jsonify({'ok': True, 'ready': False})
+    with _jobs_lock:
+        _jobs.pop(job_id, None)
+    if job['ok']:
+        return jsonify({'ok': True, 'ready': True, 'result': job['result']})
+    return jsonify({'ok': False, 'ready': True, 'error': job.get('error', 'Unknown error')})

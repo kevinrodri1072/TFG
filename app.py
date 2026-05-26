@@ -1,14 +1,9 @@
 """
 app.py — Application entry point.
 
-Responsibilities:
-  - Parse CLI arguments (--twin flag)
-  - Create the Flask app and Flask-SocketIO instance
-  - Register all Blueprints
-  - Initialise shared state (Xarxa instance, sync module)
-  - Start the Mininet network in a background thread
-  - Start the metrics broadcast thread (WebSocket push)
-  - Launch the Flask-SocketIO server
+Two servers run simultaneously:
+  - Port 5000: Flask HTTP server (threaded=True) for all API endpoints
+  - Port 5001: Flask-SocketIO server for real-time WebSocket metrics
 """
 
 import argparse
@@ -29,10 +24,17 @@ parser.add_argument('--twin', action='store_true', help='Run as Digital Twin')
 args, _ = parser.parse_known_args()
 IS_TWIN = args.twin
 
-# ── Flask + SocketIO ──
-app    = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
-# ── Register Blueprints ──
+# ── Two Flask apps ──
+# Main app: handles all HTTP API endpoints (port 5000)
+app = Flask(__name__)
+app.config['PROPAGATE_EXCEPTIONS'] = True
+
+# SocketIO app: handles WebSocket metrics only (port 5001)
+metrics_app = Flask('metrics_ws')
+socketio    = SocketIO(metrics_app, cors_allowed_origins='*',
+                       async_mode='threading')
+
+# ── Register Blueprints on main app ──
 from routes.topology import bp as topology_bp, init_blueprint as init_topology
 from routes.nodes    import bp as nodes_bp,    init_blueprint as init_nodes
 from routes.metrics  import bp as metrics_bp,  init_blueprint as init_metrics
@@ -47,22 +49,14 @@ app.register_blueprint(routing_bp)
 app.register_blueprint(xrfs_bp)
 app.register_blueprint(chaos_bp)
 
+
 # ── WebSocket metrics broadcast ──
 
 def _broadcast_metrics(xarxa):
-    """
-    Background thread that pushes live metrics to all connected clients
-    via WebSocket events — no polling needed from the browser.
-
-    Events emitted:
-      'metrics_system'       → CPU + RAM every 500 ms
-      'metrics_link_traffic' → per-interface byte counters every 1 s
-    """
-    link_tick = 0  # emit link_traffic every 2 iterations (every 1 s)
-
+    """Push CPU/RAM and link traffic via WebSocket every 500ms."""
+    link_tick = 0
     while True:
         try:
-            # ── System metrics (every 500 ms) ──
             cpu = psutil.cpu_percent(interval=None)
             ram = psutil.virtual_memory()
             socketio.emit('metrics_system', {
@@ -72,7 +66,6 @@ def _broadcast_metrics(xarxa):
                 'ram_total_mb': round(ram.total / 1024 / 1024, 1),
             })
 
-            # ── Link traffic (every 1 s) ──
             link_tick += 1
             if link_tick >= 2 and xarxa.network_ready:
                 link_tick = 0
@@ -109,6 +102,12 @@ def _broadcast_metrics(xarxa):
         time.sleep(0.5)
 
 
+def _run_socketio_server():
+    """Run the SocketIO server on port 5001 in a background thread."""
+    socketio.run(metrics_app, host='0.0.0.0', port=5001, debug=False,
+                 use_reloader=False, allow_unsafe_werkzeug=True)
+
+
 # ── Entry point ──
 if __name__ == '__main__':
     subprocess.run(['mn', '-c'], capture_output=True)
@@ -121,10 +120,10 @@ if __name__ == '__main__':
     init_nodes(xarxa)
     init_metrics(xarxa, socketio)
     init_routing(xarxa)
-    init_xrfs(IS_TWIN)
+    init_xrfs(IS_TWIN, socketio)
     init_chaos(xarxa)
 
-    # Start Mininet in a background thread
+    # Start Mininet
     t = threading.Thread(target=xarxa.start_network)
     t.daemon = True
     t.start()
@@ -135,4 +134,12 @@ if __name__ == '__main__':
     b.daemon = True
     b.start()
 
-app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    # Start SocketIO server on port 5001 in background thread
+    s = threading.Thread(target=_run_socketio_server)
+    s.daemon = True
+    s.start()
+
+    # Start main HTTP server on port 5000 (threaded for concurrency)
+    print(' * HTTP server running on port 5000')
+    print(' * WebSocket server running on port 5001')
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
