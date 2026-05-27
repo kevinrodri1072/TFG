@@ -121,7 +121,7 @@ if __name__ == '__main__':
     init_metrics(xarxa, socketio)
     init_routing(xarxa)
     init_xrfs(IS_TWIN, socketio)
-    init_chaos(xarxa)
+    init_chaos(xarxa, socketio)
 
     # Start Mininet
     t = threading.Thread(target=xarxa.start_network)

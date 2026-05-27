@@ -72,7 +72,7 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
         requests.post(
             f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/sync_metrics',
             json=entry,
-            timeout=1,
+            timeout=3,
         )
     except Exception as e:
         print(f'[sync_metrics] push error: {e}')

@@ -10,14 +10,16 @@ Used to measure OSPF (and OSPF+BFD) convergence time after a failure.
 
 from flask import Blueprint, jsonify, request
 
-_xarxa = None
+_xarxa    = None
+_socketio = None
 
 bp = Blueprint('chaos', __name__)
 
 
-def init_blueprint(xarxa_instance):
-    global _xarxa
-    _xarxa = xarxa_instance
+def init_blueprint(xarxa_instance, socketio_instance=None):
+    global _xarxa, _socketio
+    _xarxa    = xarxa_instance
+    _socketio = socketio_instance
 
 
 def _set_router_interfaces(node_name, state):
@@ -40,6 +42,15 @@ def _validate_router(node_name):
 
 
 # ── Routes ──
+
+@bp.route('/chaos_progress', methods=['POST'])
+def chaos_progress():
+    """Receive a progress event from the Chaos XRF pod and push it via WebSocket."""
+    data = request.json or {}
+    if _socketio:
+        _socketio.emit('chaos_progress', data)
+    return jsonify({'ok': True})
+
 
 @bp.route('/chaos/node_down', methods=['POST'])
 def chaos_node_down():

@@ -61,12 +61,16 @@ def metrics_system():
 
 @bp.route('/metrics/ping')
 def metrics_ping():
-    """Ping measurement (10 packets) between two hosts."""
+    """Ping measurement between two hosts with configurable options."""
     if not _xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
 
-    src = request.args.get('src')
-    dst = request.args.get('dst')
+    src     = request.args.get('src')
+    dst     = request.args.get('dst')
+    count   = int(request.args.get('count', 10))     # number of packets
+    size    = int(request.args.get('size', 64))       # packet size in bytes
+    interval = float(request.args.get('interval', 0.2))  # interval between pings
+
     if not src or not dst:
         return jsonify({'ok': False, 'error': 'src and dst parameters required'})
     if src not in _xarxa.nodes or dst not in _xarxa.nodes:
@@ -74,15 +78,22 @@ def metrics_ping():
     if _xarxa.nodes[src]['type'] != 'host' or _xarxa.nodes[dst]['type'] != 'host':
         return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
 
+    # Build ping command
+    size_flag = f'-s {size}' if size != 64 else ''
+    cmd       = f'ping -c {count} -i {interval} {size_flag} {{}}'.strip()
+    cmd_str   = f'ping -c {count} -i {interval}' + (f' -s {size}' if size != 64 else '') + ' <dst_ip>'
+
     lock = get_ping_lock(src)
     with lock:
         src_node        = _xarxa.mininet_nodes[src]
         dst_ip          = _xarxa.nodes[dst]['ip'].split('/')[0]
-        out             = src_node.cmd(f'ping -c 10 -i 0.2 {dst_ip}')
+        ping_cmd        = f'ping -c {count} -i {interval}' + (f' -s {size}' if size != 64 else '') + f' {dst_ip}'
+        out             = src_node.cmd(ping_cmd)
         latency, jitter = parse_ping(out)
 
     return jsonify({'ok': True, 'src': src, 'dst': dst,
-                    'latency_ms': latency, 'jitter_ms': jitter})
+                    'latency_ms': latency, 'jitter_ms': jitter,
+                    'cmd': cmd_str, 'count': count, 'size': size})
 
 
 @bp.route('/metrics/ping_fast')
@@ -158,6 +169,19 @@ def _emit_progress(step, total, msg):
         })
 
 
+def _build_iperf_cmd(protocol, duration, parallel, bandwidth, reverse):
+    flags = [f'-t {duration}', '-f m']
+    if protocol == 'udp':
+        flags.append('-u')
+        if bandwidth:
+            flags.append(f'-b {bandwidth}M')
+    if parallel > 1:
+        flags.append(f'-P {parallel}')
+    if reverse:
+        flags.append('-R')
+    return 'iperf -c <dst_ip> ' + ' '.join(flags)
+
+
 @bp.route('/metrics/global')
 def metrics_global():
     """
@@ -176,7 +200,23 @@ def metrics_global():
     if _metrics_running:
         return jsonify({'ok': False, 'error': 'A measurement is already running'})
 
-    mode = request.args.get('mode', 'fast')
+    mode              = request.args.get('mode', 'fast')
+    iperf_protocol    = request.args.get('protocol', 'tcp')
+    iperf_duration    = int(request.args.get('duration', 1))
+    iperf_parallel    = int(request.args.get('parallel', 1))
+    iperf_iterations  = int(request.args.get('iterations', 3))
+    iperf_bandwidth   = request.args.get('bandwidth', None)   # UDP only, Mbps
+    iperf_reverse     = request.args.get('reverse', 'false').lower() == 'true'
+    ping_count        = int(request.args.get('ping_count', 5))
+    ping_size         = int(request.args.get('ping_size', 64))
+
+    # Dynamic timeout based on iperf params
+    if mode == 'full':
+        n_pairs      = len(hosts) * (len(hosts) - 1) // 2 if 'hosts' in dir() else 20
+        est_time     = n_pairs * iperf_iterations * iperf_duration * 1.5 + 30
+        iperf_timeout = int(est_time)
+    else:
+        iperf_timeout = 60
 
     hosts = [
         n for n, p in _xarxa.nodes.items()
@@ -219,7 +259,9 @@ def metrics_global():
             nonlocal step
             src_node        = _xarxa.mininet_nodes[src]
             dst_ip          = _xarxa.nodes[dst]['ip'].split('/')[0]
-            out             = src_node.cmd(f'ping -c 5 -i 0.2 {dst_ip}')
+            size_flag       = f'-s {ping_size}' if ping_size != 64 else ''
+            ping_cmd        = f'ping -c {ping_count} -i 0.2 {size_flag} {dst_ip}'.strip()
+            out             = src_node.cmd(ping_cmd)
             latency, jitter = parse_ping(out)
             if latency['avg'] is not None:
                 with ping_lock:
@@ -249,7 +291,15 @@ def metrics_global():
                 src_node = _xarxa.mininet_nodes[src]
                 dst_node = _xarxa.mininet_nodes[dst]
                 dst_ip   = _xarxa.nodes[dst]['ip'].split('/')[0]
-                bw       = measure_bandwidth(src_node, dst_node, dst_ip, iterations=3)
+                bw       = measure_bandwidth(
+                    src_node, dst_node, dst_ip,
+                    iterations=iperf_iterations,
+                    protocol=iperf_protocol,
+                    duration=iperf_duration,
+                    parallel=iperf_parallel,
+                    bandwidth_mbps=iperf_bandwidth,
+                    reverse=iperf_reverse,
+                )
                 with bw_lock:
                     if bw['avg'] is not None:
                         bw_results[f'{src}->{dst}'] = bw
@@ -283,6 +333,8 @@ def metrics_global():
             'bandwidth_min_mbps': round(min(all_min_bw), 2) if all_min_bw else None,
             'bandwidth_max_mbps': round(max(all_max_bw), 2) if all_max_bw else None,
             'per_pair':           {'latency': ping_results, 'bandwidth': bw_results},
+            'iperf_cmd':          _build_iperf_cmd(iperf_protocol, iperf_duration, iperf_parallel, iperf_bandwidth, iperf_reverse),
+            'ping_cmd':           f'ping -c {ping_count} -i 0.2' + (f' -s {ping_size}' if ping_size != 64 else '') + ' <dst_ip>',
             'system':             system_stats(),
         })
     finally:
@@ -300,18 +352,29 @@ def metrics_sync():
     t_network = [e.get('t_network_ms') for e in history]
     t_twin    = [e.get('t_twin_ms')    for e in history]
 
+    # t_total = t_local + t_network (the real end-to-end sync latency)
+    t_total = [
+        round(e.get('t_local_ms', 0) + e.get('t_network_ms', 0), 2)
+        if e.get('t_local_ms') is not None and e.get('t_network_ms') is not None
+        else None
+        for e in history
+    ]
+
     return jsonify({
         'ok':      True,
         'history': history,
         'stats': {
-            'count':     len(history),
-            't_local':   safe_stats(t_local),
-            't_network': safe_stats(t_network),
-            't_twin':    safe_stats(t_twin),
-            'avg_ms':    safe_stats(t_network)['avg'],
-            'min_ms':    safe_stats(t_network)['min'],
-            'max_ms':    safe_stats(t_network)['max'],
-            'jitter_ms': jitter_of(t_network),
+            'count':          len(history),
+            't_local':        safe_stats(t_local),
+            't_network':      safe_stats(t_network),
+            't_twin':         safe_stats(t_twin),
+            't_total':        safe_stats(t_total),
+            'avg_ms':         safe_stats(t_total)['avg'],
+            'min_ms':         safe_stats(t_total)['min'],
+            'max_ms':         safe_stats(t_total)['max'],
+            'jitter_ms':      jitter_of(t_total),
+            'jitter_net_ms':  jitter_of(t_network),
+            'jitter_twin_ms': jitter_of(t_twin),
         },
     })
 

@@ -69,9 +69,12 @@
             <!-- Traffic params -->
             <div id="xrf-traffic-params" style="display:none; margin-bottom:10px;">
                 <div style="display:flex; gap:8px; align-items:center;">
-                    <select id="traffic-node" style="flex:1;"><option value="">All nodes</option></select>
-                    <button onclick="queryXRF('traffic')" class="btn btn-query">Run</button>
+                    <select id="traffic-node" style="flex:1;" onchange="startTrafficLive()">
+                        <option value="">-- Select a node --</option>
+                    </select>
+                    <button onclick="stopTrafficLive()" id="traffic-stop-btn" class="btn" style="display:none; background:#e74c3c;">Stop</button>
                 </div>
+                <div style="font-size:11px; color:#7f8c8d; margin-top:5px;">Select a node to start live monitoring (updates every 2s)</div>
             </div>
 
             <!-- Chaos params -->
@@ -96,6 +99,16 @@
                     <button onclick="queryXRF('chaos')" class="btn btn-chaos">Run Chaos</button>
                 </div>
                 <div style="font-size:11px; color:#e74c3c; margin-top:6px;">⚠️ This will temporarily disable the selected router on the Twin</div>
+                <!-- Chaos progress bar -->
+                <div id="chaos-progress-wrap" style="display:none; margin-top:12px;">
+                    <div style="display:flex; justify-content:space-between; font-size:11px; color:#7f8c8d; margin-bottom:4px;">
+                        <span id="chaos-progress-msg">Running...</span>
+                        <span id="chaos-progress-pct">0%</span>
+                    </div>
+                    <div style="background:#ecf0f1; border-radius:4px; height:8px; overflow:hidden;">
+                        <div id="chaos-progress-bar" style="height:100%; width:0%; background:#e74c3c; border-radius:4px; transition:width 0.3s ease;"></div>
+                    </div>
+                </div>
             </div>
 
             <!-- Latency Matrix params -->
@@ -110,8 +123,61 @@
                     </div>
                     <button onclick="queryXRF('latency_matrix')" class="btn btn-query">Run</button>
                 </div>
-                <div id="latency-mode-warning" style="display:none; font-size:11px; color:#e67e22; margin-top:6px;">
-                    ⚠️ Full mode runs iperf between all host pairs. This may take up to 15 seconds.
+                <div id="latency-mode-warning" style="display:none; margin-top:8px;">
+                    <div style="font-size:11px; color:#e67e22; margin-bottom:8px;">⚠️ Full mode runs iperf between all host pairs (~15s).</div>
+                    <!-- iperf options -->
+                    <div style="background:#f8f9fa; border-radius:6px; padding:10px; border:1px solid #ecf0f1;">
+                        <div style="font-size:11px; color:#7f8c8d; font-weight:bold; margin-bottom:8px;">⚙️ iperf options</div>
+                        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+                            <div style="display:flex; flex-direction:column; gap:3px;">
+                                <label style="font-size:11px; color:#7f8c8d;">Protocol</label>
+                                <select id="iperf-protocol" style="font-size:12px;" onchange="onIperfProtocolChange()">
+                                    <option value="tcp">TCP</option>
+                                    <option value="udp">UDP</option>
+                                </select>
+                            </div>
+                            <div style="display:flex; flex-direction:column; gap:3px;">
+                                <label style="font-size:11px; color:#7f8c8d;">Duration (s/run)</label>
+                                <input type="number" id="iperf-duration" value="1" min="1" max="10" style="width:65px; font-size:12px;" oninput="updateIperfPreview()">
+                            </div>
+                            <div style="display:flex; flex-direction:column; gap:3px;">
+                                <label style="font-size:11px; color:#7f8c8d;">Parallel streams</label>
+                                <input type="number" id="iperf-parallel" value="1" min="1" max="8" style="width:65px; font-size:12px;" oninput="updateIperfPreview()">
+                            </div>
+                            <div style="display:flex; flex-direction:column; gap:3px;">
+                                <label style="font-size:11px; color:#7f8c8d;">Iterations/pair</label>
+                                <input type="number" id="iperf-iterations" value="3" min="1" max="10" style="width:65px; font-size:12px;" oninput="updateIperfPreview()">
+                            </div>
+                            <div id="iperf-bw-group" style="display:none; flex-direction:column; gap:3px;">
+                                <label style="font-size:11px; color:#7f8c8d;">Bandwidth (Mbps)</label>
+                                <input type="number" id="iperf-bandwidth" value="" placeholder="max" min="1" style="width:75px; font-size:12px;" oninput="updateIperfPreview()">
+                            </div>
+                            <div style="display:flex; flex-direction:column; gap:3px; justify-content:flex-end;">
+                                <label style="font-size:11px; color:#7f8c8d; display:flex; align-items:center; gap:4px; cursor:pointer;">
+                                    <input type="checkbox" id="iperf-reverse" onchange="updateIperfPreview()"> Reverse (-R)
+                                </label>
+                            </div>
+                        </div>
+                        <!-- Ping options -->
+                        <div style="margin-top:8px; border-top:1px solid #ecf0f1; padding-top:8px;">
+                            <div style="font-size:11px; color:#7f8c8d; font-weight:bold; margin-bottom:6px;">🏓 ping options</div>
+                            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+                                <div style="display:flex; flex-direction:column; gap:3px;">
+                                    <label style="font-size:11px; color:#7f8c8d;">Packets/pair</label>
+                                    <input type="number" id="lm-ping-count" value="5" min="1" max="50"
+                                           style="width:65px; font-size:12px; padding:3px 6px; border:1px solid #ddd; border-radius:4px;"
+                                           oninput="updateLmPingPreview()">
+                                </div>
+                                <div style="display:flex; flex-direction:column; gap:3px;">
+                                    <label style="font-size:11px; color:#7f8c8d;">Packet size (B)</label>
+                                    <input type="number" id="lm-ping-size" value="64" min="28" max="1400"
+                                           style="width:75px; font-size:12px; padding:3px 6px; border:1px solid #ddd; border-radius:4px;"
+                                           oninput="updateLmPingPreview()">
+                                </div>
+                            </div>
+                        </div>
+                        <div id="iperf-cmd-preview" style="font-family:monospace; font-size:11px; color:#2c3e50; background:#ecf0f1; padding:6px 8px; border-radius:4px; margin-top:8px;">iperf -c &lt;dst&gt; -t 1 -f m</div>
+                    </div>
                 </div>
                 <!-- Progress bar -->
                 <div id="latency-progress-wrap" style="display:none; margin-top:12px;">

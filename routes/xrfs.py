@@ -16,8 +16,18 @@ _socketio = None
 bp = Blueprint('xrfs', __name__)
 
 # ── Job store for async XRF results ──
-_jobs = {}
+_jobs      = {}
 _jobs_lock = threading.Lock()
+import time as _time
+
+def _cleanup_old_jobs():
+    """Remove jobs older than 10 minutes that were never polled."""
+    now = _time.time()
+    with _jobs_lock:
+        expired = [jid for jid, j in _jobs.items()
+                   if j.get('created_at', now) < now - 600]
+        for jid in expired:
+            _jobs.pop(jid, None)
 
 # ── Kubernetes config ──
 KUBECONFIG = os.path.expanduser('~/.kube/config')
@@ -111,16 +121,11 @@ def _get_xrf_status(deployment_name):
 def _run_xrf_job(job_id, xrf_id, url, params):
     """Run XRF in background thread, store result in _jobs dict."""
     try:
-        print(f'[job {job_id}] starting → {url}/run')
         resp = requests.post(f'{url}/run', json=params, timeout=180)
         result = resp.json()
-        print(f'[job {job_id}] result: {result}')
-        print(f'[job {job_id}] done → ok={result.get("ok")}')
         with _jobs_lock:
             _jobs[job_id] = {'ready': True, 'ok': True, 'result': result}
-        print(f'[job {job_id}] stored in _jobs')
     except Exception as e:
-        print(f'[job {job_id}] error: {e}')
         with _jobs_lock:
             _jobs[job_id] = {'ready': True, 'ok': False, 'error': str(e)}
 
@@ -193,8 +198,8 @@ def xrf_query():
     if xrf_id in ASYNC_XRFS:
         job_id = str(uuid.uuid4())[:8]
         with _jobs_lock:
-            _jobs[job_id] = {'ready': False}
-        print(f'[xrf_query] launching job {job_id} for {xrf_id}')
+            _jobs[job_id] = {'ready': False, 'created_at': _time.time()}
+        _cleanup_old_jobs()
         threading.Thread(
             target=_run_xrf_job,
             args=(job_id, xrf_id, url, params),

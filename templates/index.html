@@ -170,8 +170,22 @@
                     <select id="ping-src"><option value="">Source</option></select>
                     <select id="ping-dst"><option value="">Destination</option></select>
                 </div>
+                <!-- Ping options -->
+                <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap; align-items:flex-end;">
+                    <div style="display:flex; flex-direction:column; gap:2px;">
+                        <label style="font-size:10px; color:#95a5a6; text-transform:uppercase; letter-spacing:0.3px;">Packets</label>
+                        <input type="number" id="ping-count" value="10" min="1" max="100"
+                               style="width:60px; font-size:12px; padding:3px 6px; background:#3d5166; color:#ecf0f1; border:1px solid #4a6278; border-radius:4px; outline:none;">
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:2px;">
+                        <label style="font-size:10px; color:#95a5a6; text-transform:uppercase; letter-spacing:0.3px;">Size (B)</label>
+                        <input type="number" id="ping-size" value="64" min="28" max="1400"
+                               style="width:70px; font-size:12px; padding:3px 6px; background:#3d5166; color:#ecf0f1; border:1px solid #4a6278; border-radius:4px; outline:none;">
+                    </div>
+                </div>
+                <div id="ping-cmd-preview" style="font-family:monospace; font-size:10px; color:#7f8c8d; margin-top:4px; padding:3px 6px; background:#2a3f52; border-radius:3px;">ping -c 10 -i 0.2 &lt;dst&gt;</div>
                 <button class="btn-measure" id="btn-ping" onclick="measurePing()">Ping</button>
-                <div class="measuring-spinner" id="ping-spinner">⏳ Pinging... (~3s)</div>
+                <div class="measuring-spinner" id="ping-spinner">⏳ Pinging...</div>
 
                 <div style="margin-top:10px;">
                     <div class="metric-row">
@@ -231,9 +245,29 @@
                     <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="sync-net-avg">—</div></div>
                     <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="sync-net-max">—</div></div>
                 </div>
+                <div style="margin-top:8px; font-size:11px; color:#7f8c8d; margin-bottom:3px;">🔄 Twin (Twin Mininet)</div>
+                <div class="metric-sub">
+                    <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="sync-twin-min">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="sync-twin-avg">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="sync-twin-max">—</div></div>
+                </div>
+                <div style="margin-top:8px; font-size:11px; color:#7f8c8d; margin-bottom:3px;">⏱ Total (t_local + t_network)</div>
+                <div class="metric-sub">
+                    <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="sync-total-min">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="sync-total-avg">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="sync-total-max">—</div></div>
+                </div>
                 <div class="metric-row" style="margin-top:4px;">
-                    <span class="metric-label">Network jitter</span>
+                    <span class="metric-label">Total jitter</span>
                     <span class="metric-value" id="sync-jitter">—</span>
+                </div>
+                <div class="metric-row" style="margin-top:2px;">
+                    <span class="metric-label">Network jitter</span>
+                    <span class="metric-value" id="sync-jitter-net">—</span>
+                </div>
+                <div class="metric-row" style="margin-top:2px;">
+                    <span class="metric-label">Twin jitter</span>
+                    <span class="metric-value" id="sync-jitter-twin">—</span>
                 </div>
                 <div style="margin-top:10px; font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recent operations:</div>
                 <div id="sync-history-list"></div>

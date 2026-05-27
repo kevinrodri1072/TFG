@@ -43,20 +43,46 @@ def parse_ping(output):
     return latency, jitter
 
 
-def measure_bandwidth(src_node, dst_node, dst_ip, iterations=3):
+def measure_bandwidth(src_node, dst_node, dst_ip, iterations=3,
+                      protocol='tcp', duration=1, parallel=1,
+                      bandwidth_mbps=None, reverse=False):
     """
-    Run iperf between src_node and dst_node for `iterations` rounds of 1 s each.
-    Returns a dict with min/avg/max in Mbps, or all-None on failure.
+    Run iperf between src_node and dst_node.
+
+    Parameters:
+      iterations    : number of iperf runs (results averaged)
+      protocol      : 'tcp' or 'udp'
+      duration      : seconds per iperf run (default 1)
+      parallel      : number of parallel streams (-P flag)
+      bandwidth_mbps: target bandwidth in Mbps (UDP only, -b flag)
+      reverse       : measure in reverse direction (-R flag, server→client)
+
+    Returns a dict with min/avg/max in Mbps, plus the exact cmd used.
     """
     import time
-    result = {'min': None, 'avg': None, 'max': None}
+
+    flags = []
+    if protocol == 'udp':
+        flags.append('-u')
+        if bandwidth_mbps:
+            flags.append(f'-b {bandwidth_mbps}M')
+    if parallel > 1:
+        flags.append(f'-P {parallel}')
+    if reverse:
+        flags.append('-R')
+
+    flags_str = ' '.join(flags)
+    cmd_str   = f'iperf -c {dst_ip} -t {duration} -f m {flags_str}'.strip()
+    srv_flags = '-u' if protocol == 'udp' else ''
+
+    result = {'min': None, 'avg': None, 'max': None, 'cmd': cmd_str}
     bw_values = []
     try:
         dst_node.cmd('pkill -f iperf 2>/dev/null; sleep 0.2')
-        dst_node.sendCmd('iperf -s')
+        dst_node.sendCmd(f'iperf -s {srv_flags}')
         time.sleep(0.5)
         for _ in range(iterations):
-            out      = src_node.cmd(f'iperf -c {dst_ip} -t 1 -f m')
+            out      = src_node.cmd(cmd_str)
             bw_match = re.search(r'([\d.]+)\s+Mbits/sec', out)
             if bw_match:
                 bw_values.append(float(bw_match.group(1)))

@@ -363,6 +363,20 @@ var selectedNode = null;
             });
         }
 
+        // Update ping cmd preview on input change
+        ['ping-count','ping-size'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.addEventListener('input', function() {
+                var c = document.getElementById('ping-count').value || 10;
+                var s = document.getElementById('ping-size').value || 64;
+                var prev = document.getElementById('ping-cmd-preview');
+                if (prev) {
+                    var sFlag = parseInt(s) !== 64 ? ' -s ' + s : '';
+                    prev.textContent = 'ping -c ' + c + ' -i 0.2' + sFlag + ' <dst>';
+                }
+            });
+        });
+
         function loadHostSelectors() {
             fetch('/metrics/hosts')
                 .then(r => r.json())
@@ -390,7 +404,16 @@ var selectedNode = null;
             btn.disabled = true;
             document.getElementById('ping-spinner').style.display = 'block';
 
-            fetch(`/metrics/ping?src=${src}&dst=${dst}`)
+            var pingCount = document.getElementById('ping-count') ? document.getElementById('ping-count').value : 10;
+            var pingSize  = document.getElementById('ping-size')  ? document.getElementById('ping-size').value  : 64;
+            // Show command being executed
+            var cmdPrev = document.getElementById('ping-cmd-preview');
+            if (cmdPrev) {
+                var sizeFlag = parseInt(pingSize) !== 64 ? ' -s ' + pingSize : '';
+                cmdPrev.textContent = 'ping -c ' + pingCount + ' -i 0.2' + sizeFlag + ' <dst>';
+                cmdPrev.style.color = '#3498db';
+            }
+            fetch(`/metrics/ping?src=${src}&dst=${dst}&count=${pingCount}&size=${pingSize}`)
                 .then(r => r.json())
                 .then(data => {
                     btn.disabled = false;
@@ -451,19 +474,28 @@ var selectedNode = null;
             fill('sync-local', stats.t_local);
             fill('sync-net',   stats.t_network);
             fill('sync-twin',  stats.t_twin);
+            fill('sync-total', stats.t_total);
             document.getElementById('sync-jitter').textContent =
                 stats.jitter_ms !== null ? stats.jitter_ms + ' ms' : '—';
+            document.getElementById('sync-jitter-net').textContent =
+                stats.jitter_net_ms !== null && stats.jitter_net_ms !== undefined ? stats.jitter_net_ms + ' ms' : '—';
+            document.getElementById('sync-jitter-twin').textContent =
+                stats.jitter_twin_ms !== null && stats.jitter_twin_ms !== undefined ? stats.jitter_twin_ms + ' ms' : '—';
 
             var list   = document.getElementById('sync-history-list');
             list.innerHTML = '';
             var recent = data.history.slice(-8).reverse();
             recent.forEach(entry => {
-                var d    = new Date(entry.timestamp * 1000);
-                var time = d.toLocaleTimeString('ca-ES', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-                var net  = entry.t_network_ms !== null && entry.t_network_ms !== undefined ? entry.t_network_ms : '?';
-                var color = net < 100 ? '#2ecc71' : net < 300 ? '#f39c12' : '#e74c3c';
-                var detail = `local:${entry.t_local_ms ?? '?'}ms net:${net}ms twin:${entry.t_twin_ms ?? '?'}ms`;
-                list.innerHTML += `<div class="sync-entry"><span class="sync-op">${time} · ${entry.operation}</span><span class="sync-ms" style="color:${color}" title="${detail}">${net} ms</span></div>`;
+                var d     = new Date(entry.timestamp * 1000);
+                var time  = d.toLocaleTimeString('ca-ES', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                var net   = entry.t_network_ms !== null && entry.t_network_ms !== undefined ? entry.t_network_ms : null;
+                var local = entry.t_local_ms !== null && entry.t_local_ms !== undefined ? entry.t_local_ms : null;
+                var twin  = entry.t_twin_ms !== null && entry.t_twin_ms !== undefined ? entry.t_twin_ms : null;
+                var total = (local !== null && net !== null) ? Math.round((local + net) * 100) / 100 : null;
+                var color = total === null ? '#aaa' : total < 150 ? '#2ecc71' : total < 500 ? '#f39c12' : '#e74c3c';
+                var detail = `local:${local ?? '?'}ms  net:${net ?? '?'}ms  twin:${twin ?? '?'}ms  total:${total ?? '?'}ms`;
+                var display = total !== null ? total + ' ms' : (net !== null ? net + ' ms' : '?');
+                list.innerHTML += `<div class="sync-entry"><span class="sync-op">${time} · ${entry.operation}</span><span class="sync-ms" style="color:${color}" title="${detail}">${display}</span></div>`;
             });
         }
 
