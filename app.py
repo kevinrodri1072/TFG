@@ -52,6 +52,45 @@ app.register_blueprint(chaos_bp)
 
 # ── WebSocket metrics broadcast ──
 
+def _ping_twin_channel():
+    """
+    Ping the peer PC every 5s and emit results via WebSocket.
+    - Original pings the Twin IP
+    - Twin pings the Original IP
+    Both show the physical channel latency on their dashboard.
+    """
+    from sync import DIGITAL_TWIN_IP, ORIGINAL_IP
+    from utils import parse_ping
+
+    target_ip = DIGITAL_TWIN_IP if not IS_TWIN else ORIGINAL_IP
+
+    # Wait for WebSocket to be ready before first ping
+    time.sleep(2)
+    while True:
+        try:
+            result = subprocess.run(
+                ['ping', '-c', '3', '-i', '0.2', target_ip],
+                capture_output=True, text=True, timeout=10
+            )
+            latency, jitter = parse_ping(result.stdout)
+            socketio.emit('twin_channel_ping', {
+                'latency_min': latency['min'],
+                'latency_avg': latency['avg'],
+                'latency_max': latency['max'],
+                'jitter':      jitter,
+                'reachable':   latency['avg'] is not None,
+                'target':      target_ip,
+            })
+        except Exception:
+            socketio.emit('twin_channel_ping', {
+                'latency_min': None, 'latency_avg': None,
+                'latency_max': None, 'jitter': None,
+                'reachable': False,
+                'target':    target_ip,
+            })
+        time.sleep(5)
+
+
 def _broadcast_metrics(xarxa):
     """Push CPU/RAM and link traffic via WebSocket every 500ms."""
     link_tick = 0
@@ -133,6 +172,11 @@ if __name__ == '__main__':
     b = threading.Thread(target=_broadcast_metrics, args=(xarxa,))
     b.daemon = True
     b.start()
+
+    # Start physical channel ping (runs on both Original and Twin)
+    p = threading.Thread(target=_ping_twin_channel)
+    p.daemon = True
+    p.start()
 
     # Start SocketIO server on port 5001 in background thread
     s = threading.Thread(target=_run_socketio_server)

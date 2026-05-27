@@ -273,6 +273,28 @@
                 <div id="sync-history-list"></div>
             </div>
 
+            <!-- Physical channel metrics -->
+            <div class="metrics-section" id="twin-channel-section">
+                <h3><i class="fa fa-plug"></i> <span id="channel-title">Physical Channel</span></h3>
+                <div class="metric-row">
+                    <span class="metric-label"><span class="status-dot grey" id="channel-dot"></span>Switch latency</span>
+                    <span class="metric-value" id="channel-avg">—</span>
+                </div>
+                <div class="metric-sub">
+                    <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="channel-min">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="channel-avg2">—</div></div>
+                    <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="channel-max">—</div></div>
+                </div>
+                <div class="metric-row" style="margin-top:4px;">
+                    <span class="metric-label">Jitter</span>
+                    <span class="metric-value" id="channel-jitter">—</span>
+                </div>
+                <div style="margin-top:8px; background:#2a3f52; border-radius:4px; padding:4px;">
+                    <canvas id="channel-chart" height="40" style="width:100%; display:block;"></canvas>
+                </div>
+                <div style="font-size:10px; color:#4a6278; margin-top:3px; font-family:monospace;" id="channel-cmd">ping -c 3 -i 0.2 · every 5s</div>
+            </div>
+
         </div><!-- end metrics-panel -->
     </div><!-- end main-layout -->
 

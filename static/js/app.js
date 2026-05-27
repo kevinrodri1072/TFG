@@ -1,4 +1,143 @@
-var selectedNode = null;
+var socket = io('http://localhost:5001');
+
+        // ── WebSocket: System metrics (CPU/RAM) ──
+        socket.on('metrics_system', function(sys) {
+            var cpuEl  = document.getElementById('cpu-val');
+            var cpuBar = document.getElementById('cpu-bar');
+            var ramEl  = document.getElementById('ram-val');
+            var ramBar = document.getElementById('ram-bar');
+            var ramDet = document.getElementById('ram-detail');
+            if (!cpuEl) return;
+            cpuEl.textContent  = sys.cpu_percent + '%';
+            cpuBar.style.width = sys.cpu_percent + '%';
+            cpuBar.style.background = sys.cpu_percent < 60 ? '#3498db' : sys.cpu_percent < 85 ? '#f39c12' : '#e74c3c';
+            ramEl.textContent  = sys.ram_percent + '%';
+            ramBar.style.width = sys.ram_percent + '%';
+            if (ramDet) ramDet.textContent = sys.ram_used_mb.toFixed(0) + ' MB / ' + sys.ram_total_mb.toFixed(0) + ' MB';
+        });
+
+        // ── WebSocket: Link traffic colors ──
+        socket.on('metrics_link_traffic', function(d) {
+            if (!d || !d.links || !topologyData) return;
+            var _prevLinkBytes = window._prevLinkBytes || {};
+            window._prevLinkBytes = _prevLinkBytes;
+            var routers = Object.keys(topologyData.nodes).filter(function(n) {
+                return topologyData.nodes[n].type === 'router';
+            });
+            routers.forEach(function(rname) {
+                var props = topologyData.nodes[rname];
+                if (!props.p2p_links) return;
+                props.p2p_links.forEach(function(link) {
+                    var entry = d.links[rname + '-' + link.local_intf];
+                    if (!entry) return;
+                    var fullKey = rname + '_' + link.local_intf;
+                    var prev = _prevLinkBytes[fullKey];
+                    var curr = entry.rx_bytes + entry.tx_bytes;
+                    _prevLinkBytes[fullKey] = curr;
+                    if (prev === undefined) return;
+                    var bps = curr - prev;
+                    var color = bps < 1000 ? '#27ae60' : bps < 50000 ? '#f39c12' : '#e74c3c';
+                    var width = bps < 1000 ? 2 : bps < 50000 ? 3 : 5;
+                    var update = {color: {color: color, highlight: color, hover: color}, width: width};
+                    if (typeof edges !== 'undefined') {
+                        var edgeId1 = rname + '___' + link.peer;
+                        var edgeId2 = link.peer + '___' + rname;
+                        if (edges.get(edgeId1)) edges.update([Object.assign({id: edgeId1}, update)]);
+                        else if (edges.get(edgeId2)) edges.update([Object.assign({id: edgeId2}, update)]);
+                    }
+                });
+            });
+        });
+
+        // ── WebSocket: Twin physical channel ping ──
+        var _channelHistory = [];
+        var _channelMaxPoints = 20;
+
+        socket.on('twin_channel_ping', function(d) {
+            var section = document.getElementById('twin-channel-section');
+            if (section) section.style.display = 'block';
+
+            // Update title with target IP
+            var title = document.getElementById('channel-title');
+            if (title && d.target) title.textContent = 'Physical Channel → ' + d.target;
+
+            var dot    = document.getElementById('channel-dot');
+            var avg    = document.getElementById('channel-avg');
+            var avg2   = document.getElementById('channel-avg2');
+            var minEl  = document.getElementById('channel-min');
+            var maxEl  = document.getElementById('channel-max');
+            var jitter = document.getElementById('channel-jitter');
+            var cmd    = document.getElementById('channel-cmd');
+
+            if (cmd && d.target) cmd.textContent = 'ping -c 3 -i 0.2 ' + d.target + ' · every 5s';
+
+            if (!d.reachable) {
+                if (dot) dot.style.background = '#e74c3c';
+                if (avg) avg.textContent = 'Unreachable';
+                return;
+            }
+
+            var color = d.latency_avg < 1 ? '#2ecc71' : d.latency_avg < 5 ? '#f39c12' : '#e74c3c';
+            if (dot)    dot.style.background = color;
+            if (avg)    avg.textContent    = d.latency_avg !== null ? d.latency_avg.toFixed(3) + ' ms' : '—';
+            if (avg2)   avg2.textContent   = d.latency_avg !== null ? d.latency_avg.toFixed(3) : '—';
+            if (minEl)  minEl.textContent  = d.latency_min !== null ? d.latency_min.toFixed(3) : '—';
+            if (maxEl)  maxEl.textContent  = d.latency_max !== null ? d.latency_max.toFixed(3) : '—';
+            if (jitter) jitter.textContent = d.jitter !== null ? d.jitter.toFixed(3) + ' ms' : '—';
+
+            if (d.latency_avg !== null) {
+                _channelHistory.push(d.latency_avg);
+                if (_channelHistory.length > _channelMaxPoints) _channelHistory.shift();
+                _drawChannelChart();
+            }
+        });
+
+        function _drawChannelChart() {
+            var canvas = document.getElementById('channel-chart');
+            if (!canvas || _channelHistory.length < 2) return;
+            var ctx = canvas.getContext('2d');
+            canvas.width = canvas.offsetWidth;
+            var w = canvas.width, h = canvas.height, pad = 4;
+            ctx.clearRect(0, 0, w, h);
+            var maxV = Math.max.apply(null, _channelHistory) || 1;
+            var minV = Math.min.apply(null, _channelHistory);
+            var stepX = (w - pad * 2) / Math.max(_channelMaxPoints - 1, 1);
+
+            // Area fill
+            ctx.beginPath();
+            ctx.moveTo(pad, h - pad);
+            _channelHistory.forEach(function(v, i) {
+                var x = pad + i * stepX;
+                var y = h - pad - ((v - minV) / (maxV - minV + 0.001)) * (h - pad * 2);
+                ctx.lineTo(x, y);
+            });
+            ctx.lineTo(pad + (_channelHistory.length - 1) * stepX, h - pad);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(46,204,113,0.2)';
+            ctx.fill();
+
+            // Line
+            ctx.beginPath();
+            _channelHistory.forEach(function(v, i) {
+                var x = pad + i * stepX;
+                var y = h - pad - ((v - minV) / (maxV - minV + 0.001)) * (h - pad * 2);
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            });
+            ctx.strokeStyle = '#2ecc71';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            // Last point dot
+            var last = _channelHistory[_channelHistory.length - 1];
+            var lx = pad + (_channelHistory.length - 1) * stepX;
+            var ly = h - pad - ((last - minV) / (maxV - minV + 0.001)) * (h - pad * 2);
+            ctx.beginPath();
+            ctx.arc(lx, ly, 3, 0, Math.PI * 2);
+            ctx.fillStyle = '#2ecc71';
+            ctx.fill();
+        }
+
+        var selectedNode = null;
         var topologyData = null;
 
         // ── Load topology and build vis.js network ──
