@@ -298,7 +298,7 @@ def add_router():
         return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
     else:
-        # ── Original path: compute everything from scratch ──
+        # ── Original path ──
         switch_num  = len([n for n, p in _xarxa.nodes.items() if p['type'] == 'switch']) + 1
         switch_name = f'sw{switch_num}'
         subnet_num  = _xarxa.find_next_subnet()
@@ -312,16 +312,41 @@ def add_router():
         _xarxa.update_matrix_multi(switch_name, [router_name])
 
         t_local_start = time.time()
-        new_router    = _xarxa.net.addHost(router_name, ip='127.0.0.1')
-        new_switch    = _xarxa.net.addSwitch(switch_name, failMode='standalone')
-        _xarxa.mininet_nodes[router_name] = new_router
-        _xarxa.mininet_nodes[switch_name] = new_switch
-        new_switch.start([])
 
+        # ── Try to claim from pool first ──
+        use_pool = _xarxa._router_pool_available()
+        if use_pool:
+            new_router, new_switch = _xarxa.claim_from_pool(
+                router_name, switch_name, ip_eth1
+            )
+            if new_router is None:
+                use_pool = False
+
+        if not use_pool:
+            # Pool empty — create from scratch (fallback)
+            new_router = _xarxa.net.addHost(router_name, ip='127.0.0.1')
+            new_switch = _xarxa.net.addSwitch(switch_name, failMode='standalone')
+            _xarxa.mininet_nodes[router_name] = new_router
+            _xarxa.mininet_nodes[switch_name] = new_switch
+            new_switch.start([])
+
+            intf_eth_lan = f'{router_name}-eth0'
+            _xarxa.net.addLink(new_router, new_switch, intfName1=intf_eth_lan)
+            new_router.cmd(
+                f'ifconfig {intf_eth_lan} {ip_eth1} ; '
+                f'ip link set {intf_eth_lan} up ; '
+                f'sysctl -w net.ipv4.ip_forward=1 ; '
+                f'ifconfig lo up'
+            )
+            sw_intf = f'{switch_name}-eth1'
+            new_switch.cmd(f'ip link set {sw_intf} up ; ovs-vsctl add-port {switch_name} {sw_intf}')
+            _xarxa.nodes[router_name]['ips']['eth0'] = ip_eth1
+
+        # ── Connect p2p links (same for both paths) ──
         eth_idx = 0
         for connected_router in connected_routers:
             p2p           = _xarxa.find_next_p2p_subnet()
-            intf_new      = f'{router_name}-eth{eth_idx}'
+            intf_new      = f'{router_name}-eth{eth_idx + 1}' if use_pool else f'{router_name}-eth{eth_idx}'
             existing_node = _xarxa.mininet_nodes[connected_router]
             intf_existing = f'{connected_router}-eth{len(existing_node.intfList())}'
 
@@ -334,11 +359,11 @@ def add_router():
                 f'ifconfig {intf_existing} {p2p["ip_b"]}/30 ; ip link set {intf_existing} up'
             )
 
-            _xarxa.nodes[router_name]['ips'][f'eth{eth_idx}'] = f'{p2p["ip_a"]}/30'
+            _xarxa.nodes[router_name]['ips'][f'eth{eth_idx + (1 if use_pool else 0)}'] = f'{p2p["ip_a"]}/30'
             _xarxa.nodes[router_name]['p2p_links'].append({
                 'peer': connected_router, 'local_ip': p2p['ip_a'],
                 'peer_ip': p2p['ip_b'], 'subnet': p2p['subnet'],
-                'local_intf': f'eth{eth_idx}',
+                'local_intf': f'eth{eth_idx + (1 if use_pool else 0)}',
             })
 
             existing_props = _xarxa.nodes[connected_router]
@@ -351,19 +376,6 @@ def add_router():
                 'local_intf': ex_intf_name,
             })
             eth_idx += 1
-
-        intf_eth_lan = f'{router_name}-eth{eth_idx}'
-        _xarxa.net.addLink(new_router, new_switch, intfName1=intf_eth_lan)
-        new_router.cmd(
-            f'ifconfig {intf_eth_lan} {ip_eth1} ; '
-            f'ip link set {intf_eth_lan} up ; '
-            f'sysctl -w net.ipv4.ip_forward=1 ; '
-            f'ifconfig lo up'
-        )
-        _xarxa.nodes[router_name]['ips'][f'eth{eth_idx}'] = ip_eth1
-
-        sw_intf = f'{switch_name}-eth1'
-        new_switch.cmd(f'ip link set {sw_intf} up ; ovs-vsctl add-port {switch_name} {sw_intf}')
 
         _start_routing_on_new_router(router_name)
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)

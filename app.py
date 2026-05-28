@@ -170,6 +170,9 @@ if __name__ == '__main__':
     t.start()
     time.sleep(3)
 
+    # Pre-warm router pool (2 routers ready in background)
+    xarxa.init_router_pool(pool_size=2)
+
     # Start WebSocket metrics broadcast thread
     b = threading.Thread(target=_broadcast_metrics, args=(xarxa,))
     b.daemon = True
