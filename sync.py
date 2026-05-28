@@ -80,12 +80,13 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
             # If no match found, fall through and create new entry
 
         if updated_entry is None:
+            # parallel=True means t_local and t_network ran simultaneously
+            # so t_total = max(t_local, t_network), not their sum
             entry = {
                 'operation':    operation,
                 't_local_ms':   round(t_local_ms,   2) if t_local_ms   is not None else None,
                 't_network_ms': round(t_network_ms, 2) if t_network_ms is not None else None,
                 't_twin_ms':    round(t_twin_ms,    2) if t_twin_ms    is not None else None,
-                'latency_ms':   round(t_network_ms, 2) if t_network_ms is not None else None,
                 'timestamp':    time.time(),
             }
             sync_latency_history.append(entry)

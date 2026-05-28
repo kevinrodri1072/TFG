@@ -127,6 +127,17 @@ def add_host():
     _xarxa.nodes[name] = {'type': 'host', 'ip': ip, 'gw': gw}
     _xarxa.update_matrix(name, switch)
 
+    if not is_sync:
+        # ── Send to Twin in parallel with Mininet apply ──
+        sync_event('/add_host', {
+            'name':   name,
+            'router': router,
+            'switch': switch,
+            'ip':     ip,
+            'gw':     gw,
+        }, None)
+
+    # ── Apply to Mininet (parallel with Twin) ──
     t_local_start = time.time()
     new_host      = _xarxa.net.addHost(name, ip=ip)
     _xarxa.mininet_nodes[name] = new_host
@@ -143,21 +154,14 @@ def add_host():
     )
     sw_node.cmd(f'ip link set {sw_intf_name} up')
     t_local_ms = round((time.time() - t_local_start) * 1000, 2)
-    # ovs-vsctl is slow — run in background after timing
     threading.Thread(
         target=lambda: sw_node.cmd(f'ovs-vsctl add-port {switch} {sw_intf_name}'),
         daemon=True
     ).start()
 
     if not is_sync:
-        # Send pre-computed values so Twin uses identical IP/switch/gw
-        sync_event('/add_host', {
-            'name':   name,
-            'router': router,
-            'switch': switch,
-            'ip':     ip,
-            'gw':     gw,
-        }, t_local_ms)
+        from sync import record_sync_latency
+        record_sync_latency('add_host', t_local_ms, None, None)
         return jsonify({'ok': True})
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
@@ -173,6 +177,10 @@ def remove_node():
 
     if name not in _xarxa.nodes:
         return jsonify({'ok': False, 'error': f'Node {name} not found'})
+
+    if not is_sync:
+        # ── Send to Twin in parallel with Mininet apply ──
+        sync_event('/remove_node', {'name': name}, None)
 
     if _xarxa.nodes[name]['type'] == 'router':
         # Clean p2p_links and IPs from neighbouring routers
@@ -195,9 +203,7 @@ def remove_node():
             _xarxa.net.delNode(_xarxa.mininet_nodes[node])
             del _xarxa.mininet_nodes[node]
             del _xarxa.nodes[node]
-
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
-        # Update routes in background — don't block the response
         threading.Thread(target=_update_all_routes, daemon=True).start()
 
     else:
@@ -209,7 +215,8 @@ def remove_node():
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
-        sync_event('/remove_node', {'name': name}, t_local_ms)
+        from sync import record_sync_latency
+        record_sync_latency('remove_node', t_local_ms, None, None)
         return jsonify({'ok': True})
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
 

@@ -356,15 +356,18 @@ def metrics_sync():
     # For sequential ops: t_local + t_network
     # For parallel ops (add_router): max(t_local, t_network)
     # latency_ms in the entry stores the correct value when available
+    # All operations are parallel: Original and Twin apply simultaneously.
+    # t_total = max(t_local, t_network) — the system is ready when
+    # the slower of the two has finished.
     t_total = []
     for e in history:
         tl = e.get('t_local_ms')
         tn = e.get('t_network_ms')
-        lm = e.get('latency_ms')
-        if lm is not None:
-            t_total.append(round(lm, 2))
-        elif tl is not None and tn is not None:
-            t_total.append(round(tl + tn, 2))
+        if tl is not None and tn is not None:
+            t_total.append(round(max(tl, tn), 2))
+        elif tn is not None:
+            # t_local not yet recorded (late update pending)
+            t_total.append(round(tn, 2))
         else:
             t_total.append(None)
 
