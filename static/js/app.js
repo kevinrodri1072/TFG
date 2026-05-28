@@ -624,6 +624,8 @@ var socket = io('http://localhost:5001');
         }
 
         function refreshSystemResources() {
+            // Fallback polling — only runs if WebSocket is not connected
+            if (socket && socket.connected) return;
             fetch('/metrics/system')
                 .then(r => r.json())
                 .then(sys => {
