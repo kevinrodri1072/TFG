@@ -218,6 +218,44 @@ class Xarxa:
             f.write('\n'.join(lines) + '\n')
         os.system(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
 
+    def _update_ospf_hot_pool(self, node, router_name, props):
+        """
+        Hot-update OSPF on a freshly claimed pool router.
+        The daemons still run under the pool name/socket path stored in
+        node._pool_frr_path. We inject the real networks and router-id,
+        then rename the interface inside the running OSPF config.
+        Finally rename the FRR dir so future hot-updates use the real name.
+        """
+        pool_path = getattr(node, '_pool_frr_path', None)
+        if not pool_path:
+            # Fallback: just do a normal hot update
+            self._update_ospf_hot(node, router_name, props)
+            return
+
+        router_id = props['ips'].get('eth0', '1.1.1.1/30').split('/')[0]
+        vtysh_file = f'{pool_path}/pool_claim.vtysh'
+        lines = ['configure terminal', 'router ospf',
+                 f' ospf router-id {router_id}',
+                 ' no network 10.254.0.0/24 area 0']
+        for intf, ip in props['ips'].items():
+            if intf == 'lan':
+                continue
+            base = ip.split('/')[0].rsplit('.', 1)[0]
+            mask = ip.split('/')[1]
+            lines.append(f' network {base}.0/{mask} area 0')
+        lines += ['exit', 'end']
+
+        with open(vtysh_file, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        os.system(f'vtysh --vty_socket {pool_path} -f {vtysh_file} 2>/dev/null')
+
+        # Rename the FRR dir to the real router name so future _update_ospf_hot
+        # calls find the socket. Use os.rename (atomic, no nesting issue).
+        real_path = f'/tmp/frr_{router_name}'
+        if not os.path.exists(real_path):
+            os.rename(pool_path, real_path)
+        node._pool_frr_path = None
+
     # ── Router pool ──────────────────────────────────────────────────────────
 
     def _pool_create_entry(self, pool_name, pool_switch_name):
@@ -350,15 +388,11 @@ class Xarxa:
             f'ifconfig lo up ; ip link set lo up'
         )
 
-        # Kill pool daemons and clean up their dir.
-        # The pool value is the pre-created Mininet node/namespace/links — not
-        # the daemons. FRR will be restarted fresh by _apply_routing after
-        # p2p links are wired, using the correct name, IPs and router-id.
-        import os
-        os.system(f'pkill -f "ospfd.*{pool_name}" 2>/dev/null; '
-                  f'pkill -f "zebra.*{pool_name}" 2>/dev/null; '
-                  f'pkill -f "bfdd.*{pool_name}" 2>/dev/null; '
-                  f'rm -rf /tmp/frr_{pool_name}')
+        # Keep pool daemons running — they own the VTY socket at /tmp/frr_{pool_name}.
+        # We'll hot-update them in place (correct networks + router-id) via
+        # _update_ospf_hot_pool(), which uses the pool socket path directly.
+        # Store pool_name on the node so nodes.py can reference the socket path.
+        router_node._pool_frr_path = f'/tmp/frr_{pool_name}'
 
         # Replenish pool to full size in background
         threading.Thread(target=self._pool_replenish, daemon=True).start()
