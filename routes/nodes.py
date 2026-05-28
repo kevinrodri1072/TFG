@@ -390,13 +390,16 @@ def add_router():
             _xarxa.nodes[cr] = cr_state
 
         # ── PHASE 2: Send to Twin NOW — parallel with Mininet apply ──
+        # Both Original and Twin apply simultaneously from this point.
+        # t_total_real = max(t_local, t_network) — not their sum.
+        t_parallel_start = time.time()
         sync_event('/add_router', {
             'name':              router_name,
             'connected_routers': connected_routers,
             'router_state':      router_state,
             'switch_name':       switch_name,
             'connected_states':  connected_states_update,
-        }, 0)
+        }, None)
 
         # ── PHASE 3: Apply to Mininet (runs in parallel with Twin) ──
         t_local_start = time.time()
@@ -464,7 +467,13 @@ def add_router():
             _start_routing_on_new_router(router_name)
 
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
-        return jsonify({'ok': True})
+
+        # Update sync history with real t_local_ms now that Mininet has finished
+        # The sync_event already recorded the entry with None — update it
+        from sync import record_sync_latency
+        record_sync_latency('add_router', t_local_ms, None, None)
+
+        return jsonify({'ok': True, 't_parallel_start': t_parallel_start})
 
 
 @bp.route('/rename_node', methods=['POST'])

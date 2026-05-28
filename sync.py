@@ -32,8 +32,8 @@ from collections import deque
 import requests
 
 # ── Connection settings ──
-DIGITAL_TWIN_IP   = '10.4.39.202'   # Twin PC IP
-ORIGINAL_IP       = '10.4.39.205'   # Original PC IP
+DIGITAL_TWIN_IP   = '10.4.39.103'   # Twin PC IP
+ORIGINAL_IP       = '10.4.39.153'   # Original PC IP
 DIGITAL_TWIN_PORT = 5000
 
 # ── Sync latency history ──
@@ -57,16 +57,35 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
     """
     Append one timing entry to the in-memory history and push it to
     the Twin's dashboard endpoint so both sides can display sync metrics.
+
+    When t_local_ms is provided but t_network_ms is None, this is a
+    'late update' call after parallel sync — update the most recent
+    matching entry instead of appending a new one.
     """
-    entry = {
-        'operation':    operation,
-        't_local_ms':   round(t_local_ms,   2) if t_local_ms   is not None else None,
-        't_network_ms': round(t_network_ms, 2) if t_network_ms is not None else None,
-        't_twin_ms':    round(t_twin_ms,    2) if t_twin_ms    is not None else None,
-        'latency_ms':   round(t_network_ms, 2) if t_network_ms is not None else None,
-        'timestamp':    time.time(),
-    }
     with sync_history_lock:
+        # Late update: t_local_ms known, network/twin already recorded
+        # t_total_real = max(t_local, t_network) since they ran in parallel
+        if t_local_ms is not None and t_network_ms is None and t_twin_ms is None:
+            for entry in reversed(sync_latency_history):
+                if entry.get('operation') == operation:
+                    entry['t_local_ms'] = round(t_local_ms, 2)
+                    # Recalculate t_total as max(t_local, t_network)
+                    t_net = entry.get('t_network_ms')
+                    if t_net is not None:
+                        entry['latency_ms'] = round(
+                            max(t_local_ms, t_net), 2
+                        )
+                    return
+            # No matching entry found — fall through to append
+        
+        entry = {
+            'operation':    operation,
+            't_local_ms':   round(t_local_ms,   2) if t_local_ms   is not None else None,
+            't_network_ms': round(t_network_ms, 2) if t_network_ms is not None else None,
+            't_twin_ms':    round(t_twin_ms,    2) if t_twin_ms    is not None else None,
+            'latency_ms':   round(t_network_ms, 2) if t_network_ms is not None else None,
+            'timestamp':    time.time(),
+        }
         sync_latency_history.append(entry)
 
     try:

@@ -5,6 +5,7 @@ Endpoints:
   GET /metrics/system       → CPU + RAM of the host machine
   GET /metrics/ping         → ping (10 pkts) between two hosts
   GET /metrics/ping_fast    → ping (1 pkt) for live dashboard graph
+  GET /metrics/internal     → full ping + iperf measurement between two hosts
   GET /metrics/global       → Global Scan: all host pairs in parallel
   GET /metrics/sync         → sync latency history + stats
   POST /sync_metrics        → receive sync metrics pushed by the Original
@@ -119,6 +120,43 @@ def metrics_ping_fast():
         lock.release()
 
 
+@bp.route('/metrics/internal')
+def metrics_internal():
+    """Full ping + iperf measurement between two hosts."""
+    global _metrics_running
+    if not _xarxa.network_ready:
+        return jsonify({'ok': False, 'error': 'Network not ready'})
+    if _metrics_running:
+        return jsonify({'ok': False, 'error': 'A measurement is already running'})
+
+    src = request.args.get('src')
+    dst = request.args.get('dst')
+    if not src or not dst:
+        return jsonify({'ok': False, 'error': 'src and dst parameters required'})
+    if src not in _xarxa.nodes or dst not in _xarxa.nodes:
+        return jsonify({'ok': False, 'error': 'Node not found'})
+    if _xarxa.nodes[src]['type'] != 'host' or _xarxa.nodes[dst]['type'] != 'host':
+        return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
+
+    _metrics_running = True
+    try:
+        src_node        = _xarxa.mininet_nodes[src]
+        dst_node        = _xarxa.mininet_nodes[dst]
+        dst_ip          = _xarxa.nodes[dst]['ip'].split('/')[0]
+        out             = src_node.cmd(f'ping -c 10 -i 0.2 {dst_ip}')
+        latency, jitter = parse_ping(out)
+        bandwidth       = measure_bandwidth(src_node, dst_node, dst_ip, iterations=10)
+
+        return jsonify({
+            'ok': True, 'src': src, 'dst': dst,
+            'latency_ms':     latency,
+            'jitter_ms':      jitter,
+            'bandwidth_mbps': bandwidth,
+            'system':         system_stats(),
+        })
+    finally:
+        _metrics_running = False
+
 
 def _emit_progress(step, total, msg):
     """Emit a progress event via WebSocket if SocketIO is available."""
@@ -171,6 +209,14 @@ def metrics_global():
     iperf_reverse     = request.args.get('reverse', 'false').lower() == 'true'
     ping_count        = int(request.args.get('ping_count', 5))
     ping_size         = int(request.args.get('ping_size', 64))
+
+    # Dynamic timeout based on iperf params
+    if mode == 'full':
+        n_pairs      = len(hosts) * (len(hosts) - 1) // 2 if 'hosts' in dir() else 20
+        est_time     = n_pairs * iperf_iterations * iperf_duration * 1.5 + 30
+        iperf_timeout = int(est_time)
+    else:
+        iperf_timeout = 60
 
     hosts = [
         n for n, p in _xarxa.nodes.items()
@@ -306,13 +352,21 @@ def metrics_sync():
     t_network = [e.get('t_network_ms') for e in history]
     t_twin    = [e.get('t_twin_ms')    for e in history]
 
-    # t_total = t_local + t_network (the real end-to-end sync latency)
-    t_total = [
-        round(e.get('t_local_ms', 0) + e.get('t_network_ms', 0), 2)
-        if e.get('t_local_ms') is not None and e.get('t_network_ms') is not None
-        else None
-        for e in history
-    ]
+    # t_total = real end-to-end latency
+    # For sequential ops: t_local + t_network
+    # For parallel ops (add_router): max(t_local, t_network)
+    # latency_ms in the entry stores the correct value when available
+    t_total = []
+    for e in history:
+        tl = e.get('t_local_ms')
+        tn = e.get('t_network_ms')
+        lm = e.get('latency_ms')
+        if lm is not None:
+            t_total.append(round(lm, 2))
+        elif tl is not None and tn is not None:
+            t_total.append(round(tl + tn, 2))
+        else:
+            t_total.append(None)
 
     return jsonify({
         'ok':      True,
