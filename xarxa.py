@@ -139,17 +139,20 @@ class Xarxa:
             f'> {conf_path}/{daemon}.log 2>&1'
         )
 
-    def _start_ospf(self, node, name, props):
+    def _start_ospf(self, node, name, props, skip_kill=False):
         """
         Starts zebra + ospfd inside the router's network namespace.
-        zebra manages the kernel routing table; ospfd runs OSPF on top.
+        skip_kill=True when daemons are guaranteed dead (e.g. pool routers)
+        to avoid the kill sleep overhead.
         """
         conf_path = f'/tmp/frr_{name}'
-        node.cmd(f'mkdir -p {conf_path} && chmod 777 {conf_path}')
+        os.makedirs(conf_path, exist_ok=True)
+        os.system(f'chmod 777 {conf_path}')
 
         self._write_zebra_conf(node, name, conf_path)
         self._write_ospfd_conf(node, name, props, conf_path)
-        self._kill_daemons(node, name, ['zebra', 'ospfd'])
+        if not skip_kill:
+            self._kill_daemons(node, name, ['zebra', 'ospfd'])
 
         self._launch_daemon(node, name, ZEBRA, conf_path)
         node.cmd('sleep 0.05')
@@ -388,11 +391,12 @@ class Xarxa:
             f'ifconfig lo up ; ip link set lo up'
         )
 
-        # Keep pool daemons running — they own the VTY socket at /tmp/frr_{pool_name}.
-        # We'll hot-update them in place (correct networks + router-id) via
-        # _update_ospf_hot_pool(), which uses the pool socket path directly.
-        # Store pool_name on the node so nodes.py can reference the socket path.
-        router_node._pool_frr_path = f'/tmp/frr_{pool_name}'
+        # Kill pool daemons from the HOST (os.system = non-blocking, no namespace needed).
+        # The pool value is the pre-created Mininet node+namespace — not the daemons.
+        # _start_ospf will be called after p2p links are set up, with skip_kill=True
+        # since the daemons are already dead here.
+        import os
+        os.system(f'pkill -f "{pool_name}" 2>/dev/null; sleep 0.05; rm -rf /tmp/frr_{pool_name}')
 
         # Replenish pool to full size in background
         threading.Thread(target=self._pool_replenish, daemon=True).start()
@@ -449,11 +453,11 @@ class Xarxa:
             )
 
     # This applies the routing mode set by the user (self.routing_mode)
-    def _apply_routing(self, node, name, props):
+    def _apply_routing(self, node, name, props, skip_kill=False):
         if self.routing_mode == 'ospf':
-            self._start_ospf(node, name, props)
+            self._start_ospf(node, name, props, skip_kill=skip_kill)
         elif self.routing_mode == 'ospf_bfd':
-            self._start_ospf(node, name, props)
+            self._start_ospf(node, name, props, skip_kill=skip_kill)
             self._start_bfd(node, name, props)
         elif self.routing_mode == 'mpls':
             self._start_mpls(node, name, props)
