@@ -305,12 +305,14 @@ def add_router():
 
         # ── Start routing ──
         if use_pool:
-            _xarxa._update_ospf_hot(new_router, router_name, router_state)
             existing = {
                 n: p for n, p in _xarxa.nodes.items()
                 if p['type'] == 'router' and n != router_name
                 and n in _xarxa.mininet_nodes
             }
+            # New router + all existing routers hot-updated in parallel.
+            # Existing routers run in background (no join) — OSPF will
+            # converge on its own; no need to block the response on them.
             ths = [
                 threading.Thread(
                     target=_xarxa._update_ospf_hot,
@@ -320,7 +322,8 @@ def add_router():
                 for n, p in existing.items()
             ]
             for th in ths: th.start()
-            for th in ths: th.join()
+            _xarxa._update_ospf_hot(new_router, router_name, router_state)
+            # intentionally no join on existing routers
         else:
             _start_routing_on_new_router(router_name)
 
@@ -451,12 +454,14 @@ def add_router():
 
         # Start routing
         if use_pool:
-            _xarxa._update_ospf_hot(new_router, router_name, router_state)
             existing = {
                 n: p for n, p in _xarxa.nodes.items()
                 if p['type'] == 'router' and n != router_name
                 and n in _xarxa.mininet_nodes
             }
+            # New router + all existing routers hot-updated in parallel.
+            # Existing routers run in background (no join) — OSPF will
+            # converge on its own; no need to block the response on them.
             ths = [
                 threading.Thread(
                     target=_xarxa._update_ospf_hot,
@@ -466,7 +471,8 @@ def add_router():
                 for n, p in existing.items()
             ]
             for th in ths: th.start()
-            for th in ths: th.join()
+            _xarxa._update_ospf_hot(new_router, router_name, router_state)
+            # intentionally no join on existing routers
         else:
             _start_routing_on_new_router(router_name)
 
