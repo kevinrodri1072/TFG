@@ -391,12 +391,15 @@ class Xarxa:
             f'ifconfig lo up ; ip link set lo up'
         )
 
-        # Kill pool daemons from the HOST (os.system = non-blocking, no namespace needed).
-        # The pool value is the pre-created Mininet node+namespace — not the daemons.
-        # _start_ospf will be called after p2p links are set up, with skip_kill=True
-        # since the daemons are already dead here.
+        # Kill ONLY the FRR daemons by their config path — NOT by pool_name,
+        # which would also kill the node's bash shell and break node.cmd().
         import os
-        os.system(f'pkill -f "{pool_name}" 2>/dev/null; sleep 0.05; rm -rf /tmp/frr_{pool_name}')
+        frr_dir = f'/tmp/frr_{pool_name}'
+        os.system(
+            f'pkill -f "config_file {frr_dir}" 2>/dev/null; '
+            f'sleep 0.05; '
+            f'rm -rf {frr_dir}'
+        )
 
         # Replenish pool to full size in background
         threading.Thread(target=self._pool_replenish, daemon=True).start()
