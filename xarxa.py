@@ -134,7 +134,7 @@ class Xarxa:
         """Kills the specified FRRouting daemons for a given router."""
         for daemon in daemons:
             node.cmd(f'pkill -f "{daemon}.*{name}" 2>/dev/null')
-        node.cmd('sleep 0.2')
+        node.cmd('sleep 0.1')
 
     def _launch_daemon(self, node, name, binary, conf_path):
         """Launches an FRRouting daemon in background mode."""
@@ -160,7 +160,7 @@ class Xarxa:
         self._kill_daemons(node, name, ['zebra', 'ospfd'])
 
         self._launch_daemon(node, name, ZEBRA, conf_path)
-        node.cmd('sleep 0.3')
+        node.cmd('sleep 0.1')
         self._launch_daemon(node, name, OSPFD, conf_path)
 
     def _start_mpls(self, node, name, props):
@@ -187,7 +187,7 @@ class Xarxa:
         self._kill_daemons(node, name, ['zebra', 'ospfd', 'ldpd'])
 
         self._launch_daemon(node, name, ZEBRA, conf_path)
-        node.cmd('sleep 0.3')
+        node.cmd('sleep 0.1')
         self._launch_daemon(node, name, OSPFD, conf_path)
         node.cmd('sleep 0.3')
         self._launch_daemon(node, name, LDPD, conf_path)
@@ -198,7 +198,7 @@ class Xarxa:
         node.cmd(f'pkill -f "ldpd.*{name}" 2>/dev/null')
         node.cmd(f'pkill -f "bfdd.*{name}" 2>/dev/null')
         node.cmd(f'pkill -f "zebra.*{name}" 2>/dev/null')
-        node.cmd('sleep 0.2')
+        node.cmd('sleep 0.1')
 
     def _update_ospf_hot(self, node, name, props):
         """

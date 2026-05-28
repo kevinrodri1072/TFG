@@ -77,13 +77,33 @@ def _start_routing_on_new_router(router_name):
 
 
 def _update_all_routes():
-    """Restart routing on every router (called after a router is removed)."""
+    """
+    Update routing on every remaining router after a router is removed.
+    Uses hot update (vtysh) for OSPF — removes the deleted router's networks
+    and keeps the rest. No daemon restarts needed.
+    """
     routers = {
         n: p for n, p in _xarxa.nodes.items()
         if p['type'] == 'router' and n in _xarxa.mininet_nodes
     }
+    mode = _xarxa.routing_mode
+    threads = []
     for name, props in routers.items():
-        _xarxa._apply_routing(_xarxa.mininet_nodes[name], name, props)
+        if mode in ('ospf', 'ospf_bfd'):
+            t = threading.Thread(
+                target=_xarxa._update_ospf_hot,
+                args=(_xarxa.mininet_nodes[name], name, props),
+                daemon=True
+            )
+            threads.append(t)
+        else:
+            _xarxa._stop_routing(_xarxa.mininet_nodes[name], name)
+            _xarxa._apply_routing(_xarxa.mininet_nodes[name], name, props)
+    # Run all hot updates in parallel
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
 
 # ── Routes ──
