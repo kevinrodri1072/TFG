@@ -326,23 +326,81 @@ def add_router():
 
     else:
         # ── Original path ──
+
+        # ── PHASE 1: Pure Python — calculate everything before touching Mininet ──
         switch_num  = len([n for n, p in _xarxa.nodes.items() if p['type'] == 'switch']) + 1
         switch_name = f'sw{switch_num}'
         subnet_num  = _xarxa.find_next_subnet()
         ip_lan      = f'10.{subnet_num}.0.1/24'
+        use_pool    = _xarxa._router_pool_available()
+        eth_base    = 1 if use_pool else 0
+        lan_eth_idx = len(connected_routers)
 
-        # Register in nodes + matrix BEFORE timing (pure Python, fast)
-        _xarxa.nodes[router_name] = {
-            'type': 'router', 'ips': {'lan': ip_lan}, 'routes': [], 'p2p_links': []
+        # Pre-compute all p2p subnets (no Mininet involved)
+        p2p_subnets = [_xarxa.find_next_p2p_subnet() for _ in connected_routers]
+
+        # Pre-compute existing router eth indices
+        existing_eth_idxs = {
+            cr: len([k for k in _xarxa.nodes[cr]['ips'] if k.startswith('eth')])
+            for cr in connected_routers
         }
+
+        # Build complete router_state and connected_states
+        new_ips       = {'lan': ip_lan}
+        new_p2p_links = []
+        connected_states_update = {}
+
+        for idx, (cr, p2p) in enumerate(zip(connected_routers, p2p_subnets)):
+            local_intf = f'eth{eth_base + idx}'
+            ex_intf    = f'eth{existing_eth_idxs[cr]}'
+            new_ips[local_intf] = f'{p2p["ip_a"]}/30'
+            new_p2p_links.append({
+                'peer': cr, 'local_ip': p2p['ip_a'],
+                'peer_ip': p2p['ip_b'], 'subnet': p2p['subnet'],
+                'local_intf': local_intf,
+            })
+            cr_state = {
+                'type': _xarxa.nodes[cr]['type'],
+                'ips':  dict(_xarxa.nodes[cr]['ips']),
+                'routes': list(_xarxa.nodes[cr].get('routes', [])),
+                'p2p_links': list(_xarxa.nodes[cr].get('p2p_links', [])),
+            }
+            cr_state['ips'][ex_intf] = f'{p2p["ip_b"]}/30'
+            cr_state['p2p_links'].append({
+                'peer': router_name, 'local_ip': p2p['ip_b'],
+                'peer_ip': p2p['ip_a'], 'subnet': p2p['subnet'],
+                'local_intf': ex_intf,
+            })
+            connected_states_update[cr] = cr_state
+
+        if not use_pool:
+            new_ips[f'eth{lan_eth_idx}'] = ip_lan
+
+        router_state = {
+            'type': 'router', 'ips': new_ips,
+            'routes': [], 'p2p_links': new_p2p_links
+        }
+
+        # Update self.nodes with computed state (pure Python, instant)
+        _xarxa.nodes[router_name] = router_state
         _xarxa.update_matrix_multi(router_name, connected_routers)
         _xarxa.nodes[switch_name] = {'type': 'switch'}
         _xarxa.update_matrix_multi(switch_name, [router_name])
+        for cr, cr_state in connected_states_update.items():
+            _xarxa.nodes[cr] = cr_state
 
+        # ── PHASE 2: Send to Twin NOW — parallel with Mininet apply ──
+        sync_event('/add_router', {
+            'name':              router_name,
+            'connected_routers': connected_routers,
+            'router_state':      router_state,
+            'switch_name':       switch_name,
+            'connected_states':  connected_states_update,
+        }, 0)
+
+        # ── PHASE 3: Apply to Mininet (runs in parallel with Twin) ──
         t_local_start = time.time()
 
-        # ── Try pool first ──
-        use_pool = _xarxa._router_pool_available()
         if use_pool:
             new_router, new_switch = _xarxa.claim_from_pool(
                 router_name, switch_name, ip_lan
@@ -351,20 +409,16 @@ def add_router():
                 use_pool = False
 
         if not use_pool:
-            # Pool empty — create from scratch (fallback)
             new_router = _xarxa.net.addHost(router_name, ip='127.0.0.1')
             new_switch = _xarxa.net.addSwitch(switch_name, failMode='standalone')
             _xarxa.mininet_nodes[router_name] = new_router
             _xarxa.mininet_nodes[switch_name] = new_switch
             new_switch.start([])
-
-            # LAN interface
-            intf_lan_idx = len(connected_routers)
-            intf_lan     = f'{router_name}-eth{intf_lan_idx}'
-            _xarxa.net.addLink(new_router, new_switch, intfName1=intf_lan)
+            intf_lan_name = f'{router_name}-eth{lan_eth_idx}'
+            _xarxa.net.addLink(new_router, new_switch, intfName1=intf_lan_name)
             new_router.cmd(
-                f'ifconfig {intf_lan} {ip_lan} ; '
-                f'ip link set {intf_lan} up ; '
+                f'ifconfig {intf_lan_name} {ip_lan} ; '
+                f'ip link set {intf_lan_name} up ; '
                 f'sysctl -w net.ipv4.ip_forward=1 ; '
                 f'ifconfig lo up'
             )
@@ -373,53 +427,24 @@ def add_router():
                 f'ip link set {sw_intf} up ; '
                 f'ovs-vsctl add-port {switch_name} {sw_intf}'
             )
-            _xarxa.nodes[router_name]['ips'][f'eth{intf_lan_idx}'] = ip_lan
 
-        # ── Connect p2p links ──
-        # Pool: eth0 = LAN (already exists), p2p start at eth1
-        # Normal: p2p start at eth0, LAN is last
-        eth_base = 1 if use_pool else 0
-        for eth_idx, connected_router in enumerate(connected_routers):
-            p2p           = _xarxa.find_next_p2p_subnet()
-            intf_new      = f'{router_name}-eth{eth_base + eth_idx}'
-            existing_node = _xarxa.mininet_nodes[connected_router]
-            intf_existing = f'{connected_router}-eth{len(existing_node.intfList())}'
-
+        # Connect p2p links using pre-computed subnets
+        for idx, (cr, p2p) in enumerate(zip(connected_routers, p2p_subnets)):
+            intf_new      = f'{router_name}-eth{eth_base + idx}'
+            existing_node = _xarxa.mininet_nodes[cr]
+            ex_intf       = f'{cr}-eth{len(existing_node.intfList())}'
             _xarxa.net.addLink(new_router, existing_node,
-                               intfName1=intf_new, intfName2=intf_existing)
+                               intfName1=intf_new, intfName2=ex_intf)
             new_router.cmd(
                 f'ifconfig {intf_new} {p2p["ip_a"]}/30 ; ip link set {intf_new} up'
             )
             existing_node.cmd(
-                f'ifconfig {intf_existing} {p2p["ip_b"]}/30 ; ip link set {intf_existing} up'
+                f'ifconfig {ex_intf} {p2p["ip_b"]}/30 ; ip link set {ex_intf} up'
             )
 
-            _xarxa.nodes[router_name]['ips'][f'eth{eth_base + eth_idx}'] = f'{p2p["ip_a"]}/30'
-            _xarxa.nodes[router_name]['p2p_links'].append({
-                'peer':       connected_router,
-                'local_ip':   p2p['ip_a'],
-                'peer_ip':    p2p['ip_b'],
-                'subnet':     p2p['subnet'],
-                'local_intf': f'eth{eth_base + eth_idx}',
-            })
-
-            existing_props = _xarxa.nodes[connected_router]
-            ex_eth_idx     = len([k for k in existing_props['ips'] if k.startswith('eth')])
-            ex_intf_name   = f'eth{ex_eth_idx}'
-            existing_props['ips'][ex_intf_name] = f'{p2p["ip_b"]}/30'
-            existing_props.setdefault('p2p_links', []).append({
-                'peer':       router_name,
-                'local_ip':   p2p['ip_b'],
-                'peer_ip':    p2p['ip_a'],
-                'subnet':     p2p['subnet'],
-                'local_intf': ex_intf_name,
-            })
-
-        # ── Start routing ──
+        # Start routing
         if use_pool:
-            # Daemons already running — hot update via vtysh only
-            _xarxa._update_ospf_hot(new_router, router_name,
-                                    _xarxa.nodes[router_name])
+            _xarxa._update_ospf_hot(new_router, router_name, router_state)
             existing = {
                 n: p for n, p in _xarxa.nodes.items()
                 if p['type'] == 'router' and n != router_name
@@ -439,15 +464,6 @@ def add_router():
             _start_routing_on_new_router(router_name)
 
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
-
-        # Send fully-computed state so Twin uses identical IPs/subnets
-        sync_event('/add_router', {
-            'name':              router_name,
-            'connected_routers': connected_routers,
-            'router_state':      _xarxa.nodes[router_name],
-            'switch_name':       switch_name,
-            'connected_states':  {r: _xarxa.nodes[r] for r in connected_routers},
-        }, t_local_ms)
         return jsonify({'ok': True})
 
 
