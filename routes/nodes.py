@@ -442,7 +442,7 @@ def add_router():
         for idx, (cr, p2p) in enumerate(zip(connected_routers, p2p_subnets)):
             intf_new      = f'{router_name}-eth{eth_base + idx}'
             existing_node = _xarxa.mininet_nodes[cr]
-            ex_intf       = f'{cr}-eth{len(existing_node.intfList())}'
+            ex_intf       = f'{cr}-eth{existing_eth_idxs[cr]}'
             _xarxa.net.addLink(new_router, existing_node,
                                intfName1=intf_new, intfName2=ex_intf)
             new_router.cmd(
