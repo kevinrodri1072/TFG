@@ -45,32 +45,39 @@ def index():
 
 @bp.route('/topology')
 def topology():
-    node_names = list(_xarxa.nodes.keys())
+    # Snapshot to avoid race conditions with pool/remove operations
+    nodes_snap = dict(_xarxa.nodes)
+    matrix_snap = [row[:] for row in _xarxa.network_matrix]
+    node_names = list(nodes_snap.keys())
+    # Safety: ensure matrix size matches node count
+    if len(matrix_snap) != len(node_names):
+        return jsonify({'nodes': {}, 'links': []})
     links = []
 
     # Direct router↔router links (skip switches)
-    for i in range(len(_xarxa.network_matrix)):
-        for j in range(i + 1, len(_xarxa.network_matrix[i])):
-            if _xarxa.network_matrix[i][j] != 0:
+    for i in range(len(matrix_snap)):
+        for j in range(i + 1, len(matrix_snap[i])):
+            if matrix_snap[i][j] != 0:
                 node_i = node_names[i]
                 node_j = node_names[j]
-                if (_xarxa.nodes[node_i]['type'] == 'switch' or
-                        _xarxa.nodes[node_j]['type'] == 'switch'):
+                if (nodes_snap[node_i]['type'] == 'switch' or
+                        nodes_snap[node_j]['type'] == 'switch'):
                     continue
                 links.append({'from': node_i, 'to': node_j})
 
     # Replace switch with direct router↔host links for the frontend graph
-    for switch_name, props in _xarxa.nodes.items():
+    for switch_name, props in nodes_snap.items():
         if props['type'] != 'switch':
             continue
         switch_idx    = node_names.index(switch_name)
+        if switch_idx >= len(matrix_snap): continue
         router, hosts = None, []
-        for i, val in enumerate(_xarxa.network_matrix[switch_idx]):
+        for i, val in enumerate(matrix_snap[switch_idx]):
             if val != 0:
                 node = node_names[i]
-                if _xarxa.nodes[node]['type'] == 'router':
+                if nodes_snap[node]['type'] == 'router':
                     router = node
-                elif _xarxa.nodes[node]['type'] == 'host':
+                elif nodes_snap[node]['type'] == 'host':
                     hosts.append(node)
         if router:
             for host in hosts:

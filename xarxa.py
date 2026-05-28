@@ -189,7 +189,7 @@ class Xarxa:
         self._launch_daemon(node, name, ZEBRA, conf_path)
         node.cmd('sleep 0.1')
         self._launch_daemon(node, name, OSPFD, conf_path)
-        node.cmd('sleep 0.3')
+        node.cmd('sleep 0.1')
         self._launch_daemon(node, name, LDPD, conf_path)
 
     def _stop_routing(self, node, name):
@@ -200,14 +200,33 @@ class Xarxa:
         node.cmd(f'pkill -f "zebra.*{name}" 2>/dev/null')
         node.cmd('sleep 0.1')
 
+    def _update_ospf_hot(self, node, name, props):
+        """
+        Inject OSPF networks into a running ospfd WITHOUT restarting daemons.
+        Uses vtysh -f (file mode) — single fork+exec per router.
+        """
+        conf_path  = f'/tmp/frr_{name}'
+        vtysh_file = f'{conf_path}/hot_update.vtysh'
+        lines = ['configure terminal', 'router ospf']
+        for intf, ip in props['ips'].items():
+            if intf == 'lan':
+                continue
+            base = ip.split('/')[0].rsplit('.', 1)[0]
+            mask = ip.split('/')[1]
+            lines.append(f' network {base}.0/{mask} area 0')
+        lines += ['exit', 'end']
+        node.cmd(f"printf '%s\\n' {' '.join(repr(l) for l in lines)} > {vtysh_file}")
+        node.cmd(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
+
     # ── Router pool ──────────────────────────────────────────────────────────
 
     def _pool_create_entry(self, pool_name, pool_switch_name):
         """
         Pre-create a router + switch + zebra + ospfd in background.
-        IMPORTANT: pool nodes are NOT added to self.nodes or network_matrix.
-        They exist only in Mininet and are invisible to the rest of the system
-        until claimed. This avoids corrupting topology/matrix state.
+        IMPORTANT:
+          - NOT added to self.nodes (invisible to topology/matrix)
+          - NOT added to self.mininet_nodes
+          - Only exists inside Mininet's net object and pool dicts
         """
         pool_lan_ip = '10.254.0.1/24'
         pool_props  = {
@@ -215,11 +234,8 @@ class Xarxa:
             'ips':  {'eth0': pool_lan_ip, 'lan': pool_lan_ip},
             'routes': [], 'p2p_links': []
         }
-
-        # Create Mininet nodes — but NOT in self.nodes or network_matrix
         new_router = self.net.addHost(pool_name, ip='127.0.0.1')
         new_switch = self.net.addSwitch(pool_switch_name, failMode='standalone')
-        # Store privately in pool dicts, not in self.mininet_nodes
         new_switch.start([])
 
         intf_lan = f'{pool_name}-eth0'
@@ -235,22 +251,19 @@ class Xarxa:
             f'ip link set {sw_intf} up ; '
             f'ovs-vsctl add-port {pool_switch_name} {sw_intf}'
         )
-
-        # Start routing daemons
         self._start_ospf(new_router, pool_name, pool_props)
-
         return new_router, new_switch
 
-    def init_router_pool(self, pool_size=2):
+    def init_router_pool(self, pool_size=3):
         """
         Pre-create pool_size routers in background after network starts.
         Called once from app.py after start_network().
         """
         import threading
-        # Pool stores raw (router_node, switch_node, pool_name, pool_switch_name)
         self._router_pool      = []
         self._router_pool_lock = threading.Lock()
         self._pool_counter     = 0
+        self._pool_target_size = pool_size
 
         def fill():
             for _ in range(pool_size):
@@ -259,7 +272,7 @@ class Xarxa:
         threading.Thread(target=fill, daemon=True).start()
 
     def _pool_add_one(self):
-        """Create one pre-warmed router entry and add it to the pool."""
+        """Create one pre-warmed router and add it to the pool."""
         with self._router_pool_lock:
             self._pool_counter += 1
             idx = self._pool_counter
@@ -280,10 +293,10 @@ class Xarxa:
     def claim_from_pool(self, router_name, switch_name, lan_ip):
         """
         Claim a pre-warmed router from the pool.
-        Renames the pool node, reconfigures LAN IP, registers it in
-        self.mininet_nodes and self.net.nameToNode so the rest of the
-        system can use it normally.
-        Replenishes the pool in background.
+        - Renames pool nodes to final names
+        - Renames LAN interface from __pool_rN-eth0 to router_name-eth0
+        - Registers in net.nameToNode and mininet_nodes
+        - Replenishes pool in background
         Returns (router_node, switch_node) or (None, None) if pool empty.
         """
         import threading
@@ -292,66 +305,35 @@ class Xarxa:
                 return None, None
             router_node, switch_node, pool_name, pool_switch_name =                 self._router_pool.pop(0)
 
-        # Rename nodes in Mininet's internal dict
+        # Rename nodes in Mininet's nameToNode
         router_node.name = router_name
         switch_node.name = switch_name
         self.net.nameToNode[router_name] = router_node
         self.net.nameToNode[switch_name] = switch_node
-        # Remove old pool names from Mininet
         self.net.nameToNode.pop(pool_name, None)
         self.net.nameToNode.pop(pool_switch_name, None)
 
-        # Register in mininet_nodes so the rest of the system finds them
+        # Register in mininet_nodes
         self.mininet_nodes[router_name] = router_node
         self.mininet_nodes[switch_name] = switch_node
 
-        # Rename LAN interface and reconfigure IP
-        old_lan_intf = f'{pool_name}-eth0'
-        new_lan_intf = f'{router_name}-eth0'
-        router_node.cmd(
-            f'ip link set {old_lan_intf} name {new_lan_intf} 2>/dev/null || true'
-        )
-        router_node.cmd(
-            f'ifconfig {new_lan_intf} {lan_ip} ; '
-            f'ip link set {new_lan_intf} up'
-        )
+        # Rename LAN interface: __pool_rN-eth0 → router_name-eth0
+        old_lan = f'{pool_name}-eth0'
+        new_lan = f'{router_name}-eth0'
+        router_node.cmd(f'ip link set {old_lan} name {new_lan} 2>/dev/null || true')
+        router_node.cmd(f'ifconfig {new_lan} {lan_ip} ; ip link set {new_lan} up')
 
-        # Do NOT kill ospfd/zebra — they keep running.
-        # _update_ospf_hot will reconfigure them via vtysh after links are added.
         # Replenish pool in background
         threading.Thread(target=self._pool_add_one, daemon=True).start()
 
         return router_node, switch_node
 
     def _router_pool_available(self):
-        """Check if the pool has at least one entry ready."""
+        """Check if pool has at least one entry ready."""
         if not hasattr(self, '_router_pool'):
             return False
         with self._router_pool_lock:
             return len(self._router_pool) > 0
-
-    def _update_ospf_hot(self, node, name, props):
-        """
-        Inject new OSPF networks into a running ospfd WITHOUT restarting daemons.
-        Uses vtysh -f (file mode) — faster than multiple -c args because
-        it avoids repeated fork+exec overhead.
-        """
-        conf_path = f'/tmp/frr_{name}'
-        lines = ['configure terminal', 'router ospf']
-
-        for intf, ip in props['ips'].items():
-            if intf == 'lan':
-                continue
-            base = ip.split('/')[0].rsplit('.', 1)[0]
-            mask = ip.split('/')[1]
-            lines.append(f' network {base}.0/{mask} area 0')
-
-        lines += ['exit', 'end']
-
-        # Write to a temp file and execute with vtysh -f (single process)
-        vtysh_file = f'{conf_path}/hot_update.vtysh'
-        node.cmd(f'printf "%s\n" {chr(39)}' + '\n'.join(lines) + f'{chr(39)} > {vtysh_file}')
-        node.cmd(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
 
     def _start_bfd(self, node, name, props):
         """
@@ -380,7 +362,7 @@ class Xarxa:
             f'--vty_socket {conf_path}/ '
             f'> {conf_path}/bfdd.log 2>&1'
         )
-        node.cmd('sleep 0.2')
+        node.cmd('sleep 0.1')
 
         # Enable BFD on all OSPF interfaces via vtysh
         for intf, ip in props['ips'].items():

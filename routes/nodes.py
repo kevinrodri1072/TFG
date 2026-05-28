@@ -46,12 +46,9 @@ def init_blueprint(xarxa_instance):
 
 def _start_routing_on_new_router(router_name):
     """
-    Start routing on a new router, then update existing routers.
-
-    For the NEW router: full daemon start (zebra + ospfd).
-    For EXISTING routers: hot update via vtysh — inject new networks
-    into the running ospfd without restarting daemons.
-    This reduces add_router latency from ~1500ms to ~200ms.
+    Start routing on a new router, then hot-update existing routers.
+    New router: full daemon start (zebra + ospfd).
+    Existing routers: vtysh hot update — no daemon restart needed.
     """
     props = _xarxa.nodes[router_name]
     node  = _xarxa.mininet_nodes[router_name]
@@ -64,31 +61,32 @@ def _start_routing_on_new_router(router_name):
 
     def update_existing():
         mode = _xarxa.routing_mode
+        threads = []
         for name, p in existing.items():
             if mode in ('ospf', 'ospf_bfd'):
-                # Hot update: inject new networks without restarting daemons
-                _xarxa._update_ospf_hot(_xarxa.mininet_nodes[name], name, p)
+                t = threading.Thread(
+                    target=_xarxa._update_ospf_hot,
+                    args=(_xarxa.mininet_nodes[name], name, p),
+                    daemon=True
+                )
+                threads.append(t)
             else:
-                # MPLS/manual: still needs full restart
                 _xarxa._stop_routing(_xarxa.mininet_nodes[name], name)
                 _xarxa._apply_routing(_xarxa.mininet_nodes[name], name, p)
+        for t in threads: t.start()
+        for t in threads: t.join()
 
     threading.Thread(target=update_existing, daemon=True).start()
 
 
 def _update_all_routes():
-    """
-    Update routing on every remaining router after a router is removed.
-    Uses hot update (vtysh) for OSPF — removes the deleted router's networks
-    and keeps the rest. No daemon restarts needed.
-    """
-    routers = {
-        n: p for n, p in _xarxa.nodes.items()
-        if p['type'] == 'router' and n in _xarxa.mininet_nodes
-    }
+    """Hot-update OSPF on all remaining routers after a router removal."""
+    routers = dict(_xarxa.nodes)  # snapshot to avoid dict-changed-during-iteration
     mode = _xarxa.routing_mode
     threads = []
     for name, props in routers.items():
+        if props['type'] != 'router' or name not in _xarxa.mininet_nodes:
+            continue
         if mode in ('ospf', 'ospf_bfd'):
             t = threading.Thread(
                 target=_xarxa._update_ospf_hot,
@@ -99,11 +97,8 @@ def _update_all_routes():
         else:
             _xarxa._stop_routing(_xarxa.mininet_nodes[name], name)
             _xarxa._apply_routing(_xarxa.mininet_nodes[name], name, props)
-    # Run all hot updates in parallel
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    for t in threads: t.start()
+    for t in threads: t.join()
 
 
 # ── Routes ──
@@ -200,8 +195,8 @@ def remove_node():
             _xarxa.net.delNode(_xarxa.mininet_nodes[node])
             del _xarxa.mininet_nodes[node]
             del _xarxa.nodes[node]
-        t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
+        t_local_ms = round((time.time() - t_local_start) * 1000, 2)
         # Update routes in background — don't block the response
         threading.Thread(target=_update_all_routes, daemon=True).start()
 
@@ -305,10 +300,11 @@ def add_router():
         switch_num  = len([n for n, p in _xarxa.nodes.items() if p['type'] == 'switch']) + 1
         switch_name = f'sw{switch_num}'
         subnet_num  = _xarxa.find_next_subnet()
-        ip_eth1     = f'10.{subnet_num}.0.1/24'
+        ip_lan      = f'10.{subnet_num}.0.1/24'
 
+        # Register in nodes + matrix BEFORE timing (pure Python, fast)
         _xarxa.nodes[router_name] = {
-            'type': 'router', 'ips': {'lan': ip_eth1}, 'routes': [], 'p2p_links': []
+            'type': 'router', 'ips': {'lan': ip_lan}, 'routes': [], 'p2p_links': []
         }
         _xarxa.update_matrix_multi(router_name, connected_routers)
         _xarxa.nodes[switch_name] = {'type': 'switch'}
@@ -316,11 +312,11 @@ def add_router():
 
         t_local_start = time.time()
 
-        # ── Try to claim from pool first ──
+        # ── Try pool first ──
         use_pool = _xarxa._router_pool_available()
         if use_pool:
             new_router, new_switch = _xarxa.claim_from_pool(
-                router_name, switch_name, ip_eth1
+                router_name, switch_name, ip_lan
             )
             if new_router is None:
                 use_pool = False
@@ -333,21 +329,26 @@ def add_router():
             _xarxa.mininet_nodes[switch_name] = new_switch
             new_switch.start([])
 
-            intf_eth_lan = f'{router_name}-eth0'
-            _xarxa.net.addLink(new_router, new_switch, intfName1=intf_eth_lan)
+            # LAN interface
+            intf_lan_idx = len(connected_routers)
+            intf_lan     = f'{router_name}-eth{intf_lan_idx}'
+            _xarxa.net.addLink(new_router, new_switch, intfName1=intf_lan)
             new_router.cmd(
-                f'ifconfig {intf_eth_lan} {ip_eth1} ; '
-                f'ip link set {intf_eth_lan} up ; '
+                f'ifconfig {intf_lan} {ip_lan} ; '
+                f'ip link set {intf_lan} up ; '
                 f'sysctl -w net.ipv4.ip_forward=1 ; '
                 f'ifconfig lo up'
             )
             sw_intf = f'{switch_name}-eth1'
-            new_switch.cmd(f'ip link set {sw_intf} up ; ovs-vsctl add-port {switch_name} {sw_intf}')
-            _xarxa.nodes[router_name]['ips']['eth0'] = ip_eth1
+            new_switch.cmd(
+                f'ip link set {sw_intf} up ; '
+                f'ovs-vsctl add-port {switch_name} {sw_intf}'
+            )
+            _xarxa.nodes[router_name]['ips'][f'eth{intf_lan_idx}'] = ip_lan
 
-        # ── Connect p2p links (same for both paths) ──
-        # Pool path: eth0 is LAN (already exists), p2p start at eth1
-        # Normal path: eth0 is first p2p, LAN is last eth
+        # ── Connect p2p links ──
+        # Pool: eth0 = LAN (already exists), p2p start at eth1
+        # Normal: p2p start at eth0, LAN is last
         eth_base = 1 if use_pool else 0
         for eth_idx, connected_router in enumerate(connected_routers):
             p2p           = _xarxa.find_next_p2p_subnet()
@@ -366,8 +367,10 @@ def add_router():
 
             _xarxa.nodes[router_name]['ips'][f'eth{eth_base + eth_idx}'] = f'{p2p["ip_a"]}/30'
             _xarxa.nodes[router_name]['p2p_links'].append({
-                'peer': connected_router, 'local_ip': p2p['ip_a'],
-                'peer_ip': p2p['ip_b'], 'subnet': p2p['subnet'],
+                'peer':       connected_router,
+                'local_ip':   p2p['ip_a'],
+                'peer_ip':    p2p['ip_b'],
+                'subnet':     p2p['subnet'],
                 'local_intf': f'eth{eth_base + eth_idx}',
             })
 
@@ -376,32 +379,33 @@ def add_router():
             ex_intf_name   = f'eth{ex_eth_idx}'
             existing_props['ips'][ex_intf_name] = f'{p2p["ip_b"]}/30'
             existing_props.setdefault('p2p_links', []).append({
-                'peer': router_name, 'local_ip': p2p['ip_b'],
-                'peer_ip': p2p['ip_a'], 'subnet': p2p['subnet'],
+                'peer':       router_name,
+                'local_ip':   p2p['ip_b'],
+                'peer_ip':    p2p['ip_a'],
+                'subnet':     p2p['subnet'],
                 'local_intf': ex_intf_name,
             })
 
+        # ── Start routing ──
         if use_pool:
-            # Pool router already has zebra+ospfd running.
-            # Just update OSPF config via vtysh for new router + existing ones.
-            _xarxa._update_ospf_hot(new_router, router_name, _xarxa.nodes[router_name])
-            # Also update existing routers in parallel
+            # Daemons already running — hot update via vtysh only
+            _xarxa._update_ospf_hot(new_router, router_name,
+                                    _xarxa.nodes[router_name])
             existing = {
                 n: p for n, p in _xarxa.nodes.items()
                 if p['type'] == 'router' and n != router_name
                 and n in _xarxa.mininet_nodes
             }
-            import threading as _t
-            threads = [
-                _t.Thread(
+            ths = [
+                threading.Thread(
                     target=_xarxa._update_ospf_hot,
                     args=(_xarxa.mininet_nodes[n], n, p),
                     daemon=True
                 )
                 for n, p in existing.items()
             ]
-            for th in threads: th.start()
-            for th in threads: th.join()
+            for th in ths: th.start()
+            for th in ths: th.join()
         else:
             _start_routing_on_new_router(router_name)
 

@@ -109,7 +109,9 @@ def _broadcast_metrics(xarxa):
             if link_tick >= 2 and xarxa.network_ready:
                 link_tick = 0
                 links = {}
-                for name, props in xarxa.nodes.items():
+                # Snapshot to avoid dict-changed-during-iteration errors
+                nodes_snap = dict(xarxa.nodes)
+                for name, props in nodes_snap.items():
                     if props['type'] not in ('router', 'host'):
                         continue
                     mn_node = xarxa.mininet_nodes.get(name)
@@ -170,13 +172,13 @@ if __name__ == '__main__':
     t.start()
     time.sleep(3)
 
-    # Pre-warm router pool (2 routers ready in background)
-    xarxa.init_router_pool(pool_size=2)
-
     # Start WebSocket metrics broadcast thread
     b = threading.Thread(target=_broadcast_metrics, args=(xarxa,))
     b.daemon = True
     b.start()
+
+    # Pre-warm router pool (3 routers ready in background)
+    xarxa.init_router_pool(pool_size=3)
 
     # Start physical channel ping (runs on both Original and Twin)
     p = threading.Thread(target=_ping_twin_channel)
