@@ -64,14 +64,14 @@ class Xarxa:
     #  ROUTING PROTOCOLS
 
     def _write_zebra_conf(self, node, name, conf_path):
-        """Writes the zebra configuration file."""
-        node.cmd(f'rm -f {conf_path}/zebra.conf')
-        for line in [f'hostname {name}', 'log syslog informational', '!']:
-            node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/zebra.conf')
-        node.cmd(f'chmod 644 {conf_path}/zebra.conf')
+        """Writes the zebra configuration file directly on host filesystem."""
+        os.makedirs(conf_path, exist_ok=True)
+        with open(f'{conf_path}/zebra.conf', 'w') as f:
+            f.write(f'hostname {name}\nlog syslog informational\n!\n')
+        os.chmod(f'{conf_path}/zebra.conf', 0o644)
 
     def _write_ospfd_conf(self, node, name, props, conf_path):
-        """Writes the ospfd configuration file."""
+        """Writes the ospfd configuration file directly on host filesystem."""
         router_id = props['ips'].get('eth0', '1.1.1.1/30').split('/')[0]
         networks = []
         for intf, ip in props['ips'].items():
@@ -81,31 +81,23 @@ class Xarxa:
             mask = ip.split('/')[1]
             networks.append(f'{base}.0/{mask}')
 
-        ospf_lines = [
-            f'hostname {name}',
-            'log syslog informational',
-            '!',
-            'router ospf',
-            f'  ospf router-id {router_id}',
+        lines = [
+            f'hostname {name}', 'log syslog informational', '!',
+            'router ospf', f'  ospf router-id {router_id}',
             '  timers throttle spf 0 50 200',
         ] + [f'  network {n} area 0' for n in networks] + ['!']
-
         for intf, ip in props['ips'].items():
             if intf == 'lan':
                 continue
-            intf_name = f'{name}-{intf}'
-            ospf_lines += [
-                f'interface {intf_name}',
-                '  ip ospf hello-interval 1',
-                '  ip ospf dead-interval 4',
-                '!',
-            ]
-        ospf_lines += ['line vty', '!']
+            lines += [f'interface {name}-{intf}',
+                      '  ip ospf hello-interval 1',
+                      '  ip ospf dead-interval 4', '!']
+        lines += ['line vty', '!']
 
-        node.cmd(f'rm -f {conf_path}/ospfd.conf')
-        for line in ospf_lines:
-            node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/ospfd.conf')
-        node.cmd(f'chmod 644 {conf_path}/ospfd.conf')
+        os.makedirs(conf_path, exist_ok=True)
+        with open(f'{conf_path}/ospfd.conf', 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        os.chmod(f'{conf_path}/ospfd.conf', 0o644)
 
     def _write_ldpd_conf(self, node, name, props, conf_path, router_id):
         """Writes the ldpd configuration file."""
@@ -134,7 +126,7 @@ class Xarxa:
         """Kills the specified FRRouting daemons for a given router."""
         for daemon in daemons:
             node.cmd(f'pkill -f "{daemon}.*{name}" 2>/dev/null')
-        node.cmd('sleep 0.1')
+        node.cmd('sleep 0.05')
 
     def _launch_daemon(self, node, name, binary, conf_path):
         """Launches an FRRouting daemon in background mode."""
@@ -160,7 +152,7 @@ class Xarxa:
         self._kill_daemons(node, name, ['zebra', 'ospfd'])
 
         self._launch_daemon(node, name, ZEBRA, conf_path)
-        node.cmd('sleep 0.1')
+        node.cmd('sleep 0.05')
         self._launch_daemon(node, name, OSPFD, conf_path)
 
     def _start_mpls(self, node, name, props):
@@ -187,7 +179,7 @@ class Xarxa:
         self._kill_daemons(node, name, ['zebra', 'ospfd', 'ldpd'])
 
         self._launch_daemon(node, name, ZEBRA, conf_path)
-        node.cmd('sleep 0.1')
+        node.cmd('sleep 0.05')
         self._launch_daemon(node, name, OSPFD, conf_path)
         node.cmd('sleep 0.1')
         self._launch_daemon(node, name, LDPD, conf_path)
@@ -203,23 +195,28 @@ class Xarxa:
     def _update_ospf_hot(self, node, name, props):
         """
         Inject OSPF networks into a running ospfd WITHOUT restarting daemons.
-        Uses vtysh -f (file mode) — single fork+exec per router.
-        Also updates router-id so pool routers get the correct ID after rename.
+        vtysh and the conf file are written/run on the HOST (os.system), not
+        inside the node namespace, because the VTY socket lives on the host
+        filesystem and is owned by the daemon process (which may be a renamed
+        pool router running in a different namespace).
         """
         conf_path  = f'/tmp/frr_{name}'
         vtysh_file = f'{conf_path}/hot_update.vtysh'
         router_id  = props['ips'].get('eth0', '1.1.1.1/30').split('/')[0]
-        lines = ['configure terminal', 'router ospf', f' ospf router-id {router_id}',
-                 ' no network 10.254.0.0/24 area 0']  # remove pool placeholder
+        lines = ['configure terminal', 'router ospf',
+                 f' ospf router-id {router_id}',
+                 ' no network 10.254.0.0/24 area 0']
         for intf, ip in props['ips'].items():
             if intf == 'lan':
                 continue
             base = ip.split('/')[0].rsplit('.', 1)[0]
             mask = ip.split('/')[1]
             lines.append(f' network {base}.0/{mask} area 0')
-        lines += ['exit', 'end', 'clear ip ospf process']
-        node.cmd(f"printf '%s\\n' {' '.join(repr(l) for l in lines)} > {vtysh_file}")
-        node.cmd(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
+        lines += ['exit', 'end']
+        # Write file and run vtysh on the HOST — socket is on host filesystem
+        with open(vtysh_file, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        os.system(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
 
     # ── Router pool ──────────────────────────────────────────────────────────
 
@@ -353,14 +350,15 @@ class Xarxa:
             f'ifconfig lo up ; ip link set lo up'
         )
 
-        # Move FRR dir so _update_ospf_hot finds the socket at the new path.
-        # os.system runs on the HOST filesystem (not the network namespace),
-        # so the mv actually works. Unix sockets can be moved — the daemon
-        # keeps its fd open and vtysh connects by the new path.
+        # Kill pool daemons and clean up their dir.
+        # The pool value is the pre-created Mininet node/namespace/links — not
+        # the daemons. FRR will be restarted fresh by _apply_routing after
+        # p2p links are wired, using the correct name, IPs and router-id.
         import os
-        old_frr = f'/tmp/frr_{pool_name}'
-        new_frr = f'/tmp/frr_{router_name}'
-        os.system(f'mv {old_frr} {new_frr} 2>/dev/null')
+        os.system(f'pkill -f "ospfd.*{pool_name}" 2>/dev/null; '
+                  f'pkill -f "zebra.*{pool_name}" 2>/dev/null; '
+                  f'pkill -f "bfdd.*{pool_name}" 2>/dev/null; '
+                  f'rm -rf /tmp/frr_{pool_name}')
 
         # Replenish pool to full size in background
         threading.Thread(target=self._pool_replenish, daemon=True).start()
