@@ -343,10 +343,12 @@ def add_router():
             _xarxa.nodes[router_name]['ips']['eth0'] = ip_eth1
 
         # ── Connect p2p links (same for both paths) ──
-        eth_idx = 0
-        for connected_router in connected_routers:
+        # Pool path: eth0 is LAN (already exists), p2p start at eth1
+        # Normal path: eth0 is first p2p, LAN is last eth
+        eth_base = 1 if use_pool else 0
+        for eth_idx, connected_router in enumerate(connected_routers):
             p2p           = _xarxa.find_next_p2p_subnet()
-            intf_new      = f'{router_name}-eth{eth_idx + 1}' if use_pool else f'{router_name}-eth{eth_idx}'
+            intf_new      = f'{router_name}-eth{eth_base + eth_idx}'
             existing_node = _xarxa.mininet_nodes[connected_router]
             intf_existing = f'{connected_router}-eth{len(existing_node.intfList())}'
 
@@ -359,11 +361,11 @@ def add_router():
                 f'ifconfig {intf_existing} {p2p["ip_b"]}/30 ; ip link set {intf_existing} up'
             )
 
-            _xarxa.nodes[router_name]['ips'][f'eth{eth_idx + (1 if use_pool else 0)}'] = f'{p2p["ip_a"]}/30'
+            _xarxa.nodes[router_name]['ips'][f'eth{eth_base + eth_idx}'] = f'{p2p["ip_a"]}/30'
             _xarxa.nodes[router_name]['p2p_links'].append({
                 'peer': connected_router, 'local_ip': p2p['ip_a'],
                 'peer_ip': p2p['ip_b'], 'subnet': p2p['subnet'],
-                'local_intf': f'eth{eth_idx + (1 if use_pool else 0)}',
+                'local_intf': f'eth{eth_base + eth_idx}',
             })
 
             existing_props = _xarxa.nodes[connected_router]
@@ -375,7 +377,6 @@ def add_router():
                 'peer_ip': p2p['ip_a'], 'subnet': p2p['subnet'],
                 'local_intf': ex_intf_name,
             })
-            eth_idx += 1
 
         _start_routing_on_new_router(router_name)
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)

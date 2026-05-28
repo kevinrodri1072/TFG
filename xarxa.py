@@ -205,21 +205,24 @@ class Xarxa:
     def _pool_create_entry(self, pool_name, pool_switch_name):
         """
         Pre-create a router + switch + zebra + ospfd in background.
-        The router has no p2p links yet — it sits isolated until claimed.
-        Uses a temporary subnet that will be replaced when claimed.
+        IMPORTANT: pool nodes are NOT added to self.nodes or network_matrix.
+        They exist only in Mininet and are invisible to the rest of the system
+        until claimed. This avoids corrupting topology/matrix state.
         """
-        conf_path = f'/tmp/frr_{pool_name}'
+        pool_lan_ip = '10.254.0.1/24'
+        pool_props  = {
+            'type': 'router',
+            'ips':  {'eth0': pool_lan_ip, 'lan': pool_lan_ip},
+            'routes': [], 'p2p_links': []
+        }
 
-        # Create Mininet node + switch
+        # Create Mininet nodes — but NOT in self.nodes or network_matrix
         new_router = self.net.addHost(pool_name, ip='127.0.0.1')
         new_switch = self.net.addSwitch(pool_switch_name, failMode='standalone')
-        self.mininet_nodes[pool_name]        = new_router
-        self.mininet_nodes[pool_switch_name] = new_switch
+        # Store privately in pool dicts, not in self.mininet_nodes
         new_switch.start([])
 
-        # LAN interface (will be reconfigured when claimed)
-        pool_lan_ip = '10.254.0.1/24'
-        intf_lan    = f'{pool_name}-eth0'
+        intf_lan = f'{pool_name}-eth0'
         self.net.addLink(new_router, new_switch, intfName1=intf_lan)
         new_router.cmd(
             f'ifconfig {intf_lan} {pool_lan_ip} ; '
@@ -228,15 +231,15 @@ class Xarxa:
             f'ifconfig lo up'
         )
         sw_intf = f'{pool_switch_name}-eth1'
-        new_switch.cmd(f'ip link set {sw_intf} up ; ovs-vsctl add-port {pool_switch_name} {sw_intf}')
+        new_switch.cmd(
+            f'ip link set {sw_intf} up ; '
+            f'ovs-vsctl add-port {pool_switch_name} {sw_intf}'
+        )
 
-        # Start routing daemons with minimal config
-        pool_props = {
-            'type': 'router',
-            'ips':  {'eth0': pool_lan_ip, 'lan': pool_lan_ip},
-            'routes': [], 'p2p_links': []
-        }
+        # Start routing daemons
         self._start_ospf(new_router, pool_name, pool_props)
+
+        return new_router, new_switch
 
     def init_router_pool(self, pool_size=2):
         """
@@ -244,10 +247,10 @@ class Xarxa:
         Called once from app.py after start_network().
         """
         import threading
-        self._router_pool        = []  # list of (router_node, switch_node, pool_name, pool_switch)
-        self._router_pool_lock   = threading.Lock()
-        self._pool_size          = pool_size
-        self._pool_counter       = 0   # for unique pool names
+        # Pool stores raw (router_node, switch_node, pool_name, pool_switch_name)
+        self._router_pool      = []
+        self._router_pool_lock = threading.Lock()
+        self._pool_counter     = 0
 
         def fill():
             for _ in range(pool_size):
@@ -257,48 +260,67 @@ class Xarxa:
 
     def _pool_add_one(self):
         """Create one pre-warmed router entry and add it to the pool."""
-        import threading
         with self._router_pool_lock:
             self._pool_counter += 1
             idx = self._pool_counter
         pool_name        = f'__pool_r{idx}'
         pool_switch_name = f'__pool_sw{idx}'
         try:
-            self._pool_create_entry(pool_name, pool_switch_name)
+            router_node, switch_node = self._pool_create_entry(
+                pool_name, pool_switch_name
+            )
             with self._router_pool_lock:
-                self._router_pool.append((pool_name, pool_switch_name))
+                self._router_pool.append(
+                    (router_node, switch_node, pool_name, pool_switch_name)
+                )
+            print(f'[pool] pre-warmed router ready ({pool_name})')
         except Exception as e:
             print(f'[pool] failed to create entry: {e}')
 
     def claim_from_pool(self, router_name, switch_name, lan_ip):
         """
-        Claim a pre-warmed router from the pool and rename it.
-        Returns (router_node, switch_node) or (None, None) if pool is empty.
-        Immediately replenishes the pool in background.
+        Claim a pre-warmed router from the pool.
+        Renames the pool node, reconfigures LAN IP, registers it in
+        self.mininet_nodes and self.net.nameToNode so the rest of the
+        system can use it normally.
+        Replenishes the pool in background.
+        Returns (router_node, switch_node) or (None, None) if pool empty.
         """
         import threading
         with self._router_pool_lock:
             if not self._router_pool:
                 return None, None
-            pool_name, pool_switch_name = self._router_pool.pop(0)
+            router_node, switch_node, pool_name, pool_switch_name =                 self._router_pool.pop(0)
 
-        router_node = self.mininet_nodes.pop(pool_name)
-        switch_node = self.mininet_nodes.pop(pool_switch_name)
-
-        # Rename: update Mininet node names
+        # Rename nodes in Mininet's internal dict
         router_node.name = router_name
         switch_node.name = switch_name
+        self.net.nameToNode[router_name] = router_node
+        self.net.nameToNode[switch_name] = switch_node
+        # Remove old pool names from Mininet
+        self.net.nameToNode.pop(pool_name, None)
+        self.net.nameToNode.pop(pool_switch_name, None)
+
+        # Register in mininet_nodes so the rest of the system finds them
         self.mininet_nodes[router_name] = router_node
         self.mininet_nodes[switch_name] = switch_node
 
-        # Reconfigure LAN interface with real IP
+        # Rename LAN interface and reconfigure IP
         old_lan_intf = f'{pool_name}-eth0'
         new_lan_intf = f'{router_name}-eth0'
-        router_node.cmd(f'ip link set {old_lan_intf} name {new_lan_intf} 2>/dev/null || true')
+        router_node.cmd(
+            f'ip link set {old_lan_intf} name {new_lan_intf} 2>/dev/null || true'
+        )
         router_node.cmd(
             f'ifconfig {new_lan_intf} {lan_ip} ; '
             f'ip link set {new_lan_intf} up'
         )
+
+        # Kill old ospfd/zebra (they used pool_name as router-id config)
+        # and restart with correct name — this is fast because the namespace exists
+        router_node.cmd(f'pkill -f "ospfd.*{pool_name}" 2>/dev/null')
+        router_node.cmd(f'pkill -f "zebra.*{pool_name}" 2>/dev/null')
+        router_node.cmd('sleep 0.1')
 
         # Replenish pool in background
         threading.Thread(target=self._pool_add_one, daemon=True).start()
