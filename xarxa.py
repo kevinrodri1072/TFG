@@ -351,10 +351,12 @@ class Xarxa:
         )
 
         # Move FRR config/socket dir from pool name to real name so that
-        # _update_ospf_hot and _start_ospf can find the VTY socket.
+        # _update_ospf_hot can find the VTY socket.
+        # Must use os.system (host filesystem), NOT node.cmd (network namespace).
+        import os
         old_frr = f'/tmp/frr_{pool_name}'
         new_frr = f'/tmp/frr_{router_name}'
-        router_node.cmd(f'mv {old_frr} {new_frr} 2>/dev/null || true')
+        os.system(f'mv {old_frr} {new_frr} 2>/dev/null')
 
         # Replenish pool to full size in background
         threading.Thread(target=self._pool_replenish, daemon=True).start()
@@ -586,13 +588,15 @@ class Xarxa:
             next_num += 1
         return next_num
 
-    def find_next_p2p_subnet(self):
+    def find_next_p2p_subnet(self, extra_used=None):
         """
         Returns the next available /30 point-to-point subnet for router-router links.
         Subnets are in the form 10.0.X.0/30, X starting from 0.
         Each /30 has 4 IPs: .0 (network), .1 (router A), .2 (router B), .3 (broadcast).
+        extra_used: set of third-octet ints already reserved in this batch
+                    (needed when called N times before self.nodes is updated).
         """
-        used = set()
+        used = set(extra_used or [])
         for name, props in self.nodes.items():
             if props['type'] == 'router':
                 for link in props.get('p2p_links', []):

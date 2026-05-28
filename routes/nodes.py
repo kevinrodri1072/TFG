@@ -304,22 +304,21 @@ def add_router():
             )
 
         # ── Start routing ──
-        # Full _apply_routing on the new router (correct config, IPs, router-id).
-        # Existing routers only need a hot OSPF update in background.
-        _start_routing_on_new_router(router_name)
-
         if use_pool:
             existing = {
                 n: p for n, p in _xarxa.nodes.items()
                 if p['type'] == 'router' and n != router_name
                 and n in _xarxa.mininet_nodes
             }
+            _xarxa._update_ospf_hot(new_router, router_name, router_state)
             for n, p in existing.items():
                 threading.Thread(
                     target=_xarxa._update_ospf_hot,
                     args=(_xarxa.mininet_nodes[n], n, p),
                     daemon=True
                 ).start()
+        else:
+            _start_routing_on_new_router(router_name)
 
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
         return jsonify({'ok': True, 't_local_ms': t_local_ms})
@@ -337,7 +336,13 @@ def add_router():
         lan_eth_idx = len(connected_routers)
 
         # Pre-compute all p2p subnets (no Mininet involved)
-        p2p_subnets = [_xarxa.find_next_p2p_subnet() for _ in connected_routers]
+        # Pass already-reserved octets so consecutive calls get unique subnets
+        p2p_subnets = []
+        reserved = set()
+        for _ in connected_routers:
+            s = _xarxa.find_next_p2p_subnet(extra_used=reserved)
+            reserved.add(int(s['subnet'].split('.')[2]))
+            p2p_subnets.append(s)
 
         # Pre-compute existing router eth indices
         existing_eth_idxs = {
@@ -450,25 +455,23 @@ def add_router():
             )
 
         # Start routing
-        # Always do a full _apply_routing on the new router so that daemons
-        # start with the correct config (right IPs, router-id, hostname).
-        # Pool routers had a provisional config — they need a proper restart.
-        # Existing routers only need a hot OSPF update (no daemon restart).
-        _start_routing_on_new_router(router_name)
-
         if use_pool:
             existing = {
                 n: p for n, p in _xarxa.nodes.items()
                 if p['type'] == 'router' and n != router_name
                 and n in _xarxa.mininet_nodes
             }
-            # Existing routers hot-updated in background — no join needed.
+            # Hot-update new router (FRR dir now correctly renamed by claim_from_pool)
+            # Existing routers updated in background — no join needed.
+            _xarxa._update_ospf_hot(new_router, router_name, router_state)
             for n, p in existing.items():
                 threading.Thread(
                     target=_xarxa._update_ospf_hot,
                     args=(_xarxa.mininet_nodes[n], n, p),
                     daemon=True
                 ).start()
+        else:
+            _start_routing_on_new_router(router_name)
 
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
