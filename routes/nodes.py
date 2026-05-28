@@ -310,7 +310,7 @@ def add_router():
                 if p['type'] == 'router' and n != router_name
                 and n in _xarxa.mininet_nodes
             }
-            _xarxa._update_ospf_hot(new_router, router_name, router_state)
+            _xarxa._apply_routing(new_router, router_name, router_state)
             for n, p in existing.items():
                 threading.Thread(
                     target=_xarxa._update_ospf_hot,
@@ -461,9 +461,9 @@ def add_router():
                 if p['type'] == 'router' and n != router_name
                 and n in _xarxa.mininet_nodes
             }
-            # Hot-update new router (FRR dir now correctly renamed by claim_from_pool)
-            # Existing routers updated in background — no join needed.
-            _xarxa._update_ospf_hot(new_router, router_name, router_state)
+            # New router: full FRR start (pool daemons were killed, need fresh start).
+            # Existing routers: hot update in background — no daemon restart needed.
+            _xarxa._apply_routing(new_router, router_name, router_state)
             for n, p in existing.items():
                 threading.Thread(
                     target=_xarxa._update_ospf_hot,
