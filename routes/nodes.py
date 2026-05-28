@@ -247,9 +247,9 @@ def add_router():
         t_local_start = time.time()
 
         # ── Try pool first (Twin also has pool) ──
-        # LAN IP is the last eth in router_state
+        # 'lan' key always holds the /24 host subnet IP regardless of pool/no-pool.
         n_p2p    = len(connected_routers)
-        ip_lan   = router_state['ips'].get(f'eth{n_p2p}', '10.254.0.1/24')
+        ip_lan   = router_state['ips'].get('lan', '10.254.0.1/24')
         use_pool = _xarxa._router_pool_available()
         if use_pool:
             new_router, new_switch = _xarxa.claim_from_pool(
@@ -304,28 +304,22 @@ def add_router():
             )
 
         # ── Start routing ──
+        # Full _apply_routing on the new router (correct config, IPs, router-id).
+        # Existing routers only need a hot OSPF update in background.
+        _start_routing_on_new_router(router_name)
+
         if use_pool:
             existing = {
                 n: p for n, p in _xarxa.nodes.items()
                 if p['type'] == 'router' and n != router_name
                 and n in _xarxa.mininet_nodes
             }
-            # New router + all existing routers hot-updated in parallel.
-            # Existing routers run in background (no join) — OSPF will
-            # converge on its own; no need to block the response on them.
-            ths = [
+            for n, p in existing.items():
                 threading.Thread(
                     target=_xarxa._update_ospf_hot,
                     args=(_xarxa.mininet_nodes[n], n, p),
                     daemon=True
-                )
-                for n, p in existing.items()
-            ]
-            for th in ths: th.start()
-            _xarxa._update_ospf_hot(new_router, router_name, router_state)
-            # intentionally no join on existing routers
-        else:
-            _start_routing_on_new_router(router_name)
+                ).start()
 
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
         return jsonify({'ok': True, 't_local_ms': t_local_ms})
@@ -379,8 +373,11 @@ def add_router():
             })
             connected_states_update[cr] = cr_state
 
-        if not use_pool:
-            new_ips[f'eth{lan_eth_idx}'] = ip_lan
+        # Always register LAN as ethN so OSPF announces the /24 host subnet.
+        # pool:    eth0=LAN (already on node), p2p at eth1..ethN → LAN key = eth0
+        # no pool: p2p at eth0..eth(N-1),      LAN key = eth{n_p2p}
+        lan_eth_key = 'eth0' if use_pool else f'eth{lan_eth_idx}'
+        new_ips[lan_eth_key] = ip_lan
 
         router_state = {
             'type': 'router', 'ips': new_ips,
@@ -453,28 +450,25 @@ def add_router():
             )
 
         # Start routing
+        # Always do a full _apply_routing on the new router so that daemons
+        # start with the correct config (right IPs, router-id, hostname).
+        # Pool routers had a provisional config — they need a proper restart.
+        # Existing routers only need a hot OSPF update (no daemon restart).
+        _start_routing_on_new_router(router_name)
+
         if use_pool:
             existing = {
                 n: p for n, p in _xarxa.nodes.items()
                 if p['type'] == 'router' and n != router_name
                 and n in _xarxa.mininet_nodes
             }
-            # New router + all existing routers hot-updated in parallel.
-            # Existing routers run in background (no join) — OSPF will
-            # converge on its own; no need to block the response on them.
-            ths = [
+            # Existing routers hot-updated in background — no join needed.
+            for n, p in existing.items():
                 threading.Thread(
                     target=_xarxa._update_ospf_hot,
                     args=(_xarxa.mininet_nodes[n], n, p),
                     daemon=True
-                )
-                for n, p in existing.items()
-            ]
-            for th in ths: th.start()
-            _xarxa._update_ospf_hot(new_router, router_name, router_state)
-            # intentionally no join on existing routers
-        else:
-            _start_routing_on_new_router(router_name)
+                ).start()
 
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 

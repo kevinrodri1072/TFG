@@ -343,7 +343,18 @@ class Xarxa:
         old_lan = f'{pool_name}-eth0'
         new_lan = f'{router_name}-eth0'
         router_node.cmd(f'ip link set {old_lan} name {new_lan} 2>/dev/null || true')
-        router_node.cmd(f'ifconfig {new_lan} {lan_ip} ; ip link set {new_lan} up')
+        router_node.cmd(
+            f'ifconfig {new_lan} {lan_ip} ; '
+            f'ip link set {new_lan} up ; '
+            f'sysctl -w net.ipv4.ip_forward=1 ; '
+            f'ifconfig lo up ; ip link set lo up'
+        )
+
+        # Move FRR config/socket dir from pool name to real name so that
+        # _update_ospf_hot and _start_ospf can find the VTY socket.
+        old_frr = f'/tmp/frr_{pool_name}'
+        new_frr = f'/tmp/frr_{router_name}'
+        router_node.cmd(f'mv {old_frr} {new_frr} 2>/dev/null || true')
 
         # Replenish pool to full size in background
         threading.Thread(target=self._pool_replenish, daemon=True).start()
