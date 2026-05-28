@@ -32,8 +32,8 @@ from collections import deque
 import requests
 
 # ── Connection settings ──
-DIGITAL_TWIN_IP   = '10.4.39.103'   # Twin PC IP
-ORIGINAL_IP       = '10.4.39.153'   # Original PC IP
+DIGITAL_TWIN_IP   = '10.4.39.202'   # Twin PC IP
+ORIGINAL_IP       = '10.4.39.205'   # Original PC IP
 DIGITAL_TWIN_PORT = 5000
 
 # ── Sync latency history ──
