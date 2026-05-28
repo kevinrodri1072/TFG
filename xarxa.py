@@ -204,17 +204,20 @@ class Xarxa:
         """
         Inject OSPF networks into a running ospfd WITHOUT restarting daemons.
         Uses vtysh -f (file mode) — single fork+exec per router.
+        Also updates router-id so pool routers get the correct ID after rename.
         """
         conf_path  = f'/tmp/frr_{name}'
         vtysh_file = f'{conf_path}/hot_update.vtysh'
-        lines = ['configure terminal', 'router ospf']
+        router_id  = props['ips'].get('eth0', '1.1.1.1/30').split('/')[0]
+        lines = ['configure terminal', 'router ospf', f' ospf router-id {router_id}',
+                 ' no network 10.254.0.0/24 area 0']  # remove pool placeholder
         for intf, ip in props['ips'].items():
             if intf == 'lan':
                 continue
             base = ip.split('/')[0].rsplit('.', 1)[0]
             mask = ip.split('/')[1]
             lines.append(f' network {base}.0/{mask} area 0')
-        lines += ['exit', 'end']
+        lines += ['exit', 'end', 'clear ip ospf process']
         node.cmd(f"printf '%s\\n' {' '.join(repr(l) for l in lines)} > {vtysh_file}")
         node.cmd(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
 
@@ -350,14 +353,14 @@ class Xarxa:
             f'ifconfig lo up ; ip link set lo up'
         )
 
-        # Kill pool daemons (they ran with provisional config/hostname).
-        # The pool's value is the pre-created Mininet node+namespace, not the daemons.
-        # FRR will be restarted with correct config by _update_ospf_hot after p2p links
-        # are set up. Clean up the stale pool conf dir.
-        router_node.cmd(f'pkill -f "ospfd.*{pool_name}" 2>/dev/null; '
-                        f'pkill -f "zebra.*{pool_name}" 2>/dev/null')
+        # Move FRR dir so _update_ospf_hot finds the socket at the new path.
+        # os.system runs on the HOST filesystem (not the network namespace),
+        # so the mv actually works. Unix sockets can be moved — the daemon
+        # keeps its fd open and vtysh connects by the new path.
         import os
-        os.system(f'rm -rf /tmp/frr_{pool_name}')
+        old_frr = f'/tmp/frr_{pool_name}'
+        new_frr = f'/tmp/frr_{router_name}'
+        os.system(f'mv {old_frr} {new_frr} 2>/dev/null')
 
         # Replenish pool to full size in background
         threading.Thread(target=self._pool_replenish, daemon=True).start()
