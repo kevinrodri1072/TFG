@@ -316,12 +316,8 @@ class Xarxa:
             f'ip link set {new_lan_intf} up'
         )
 
-        # Kill old ospfd/zebra (they used pool_name as router-id config)
-        # and restart with correct name — this is fast because the namespace exists
-        router_node.cmd(f'pkill -f "ospfd.*{pool_name}" 2>/dev/null')
-        router_node.cmd(f'pkill -f "zebra.*{pool_name}" 2>/dev/null')
-        router_node.cmd('sleep 0.1')
-
+        # Do NOT kill ospfd/zebra — they keep running.
+        # _update_ospf_hot will reconfigure them via vtysh after links are added.
         # Replenish pool in background
         threading.Thread(target=self._pool_add_one, daemon=True).start()
 

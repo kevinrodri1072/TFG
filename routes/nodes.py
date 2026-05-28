@@ -378,7 +378,30 @@ def add_router():
                 'local_intf': ex_intf_name,
             })
 
-        _start_routing_on_new_router(router_name)
+        if use_pool:
+            # Pool router already has zebra+ospfd running.
+            # Just update OSPF config via vtysh for new router + existing ones.
+            _xarxa._update_ospf_hot(new_router, router_name, _xarxa.nodes[router_name])
+            # Also update existing routers in parallel
+            existing = {
+                n: p for n, p in _xarxa.nodes.items()
+                if p['type'] == 'router' and n != router_name
+                and n in _xarxa.mininet_nodes
+            }
+            import threading as _t
+            threads = [
+                _t.Thread(
+                    target=_xarxa._update_ospf_hot,
+                    args=(_xarxa.mininet_nodes[n], n, p),
+                    daemon=True
+                )
+                for n, p in existing.items()
+            ]
+            for th in threads: th.start()
+            for th in threads: th.join()
+        else:
+            _start_routing_on_new_router(router_name)
+
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
         # Send fully-computed state so Twin uses identical IPs/subnets
