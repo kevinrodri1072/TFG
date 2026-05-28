@@ -42,13 +42,13 @@ sync_latency_history = deque(maxlen=50)
 sync_history_lock    = threading.Lock()
 
 # Injected by app.py at startup
-_xarxa_ref = None
+_xarxa = None
 
 
 def init_sync(xarxa_instance):
     """Give sync.py a reference to the live Xarxa object."""
-    global _xarxa_ref
-    _xarxa_ref = xarxa_instance
+    global _xarxa
+    _xarxa = xarxa_instance
 
 
 # ── Latency recording ──
@@ -134,7 +134,7 @@ def _do_sync_snapshot(operation, t_local_ms):
     /load_network endpoint.  The Twin will do a full Mininet rebuild.
     Only used when an in-place update is not possible (e.g. rename_node).
     """
-    xarxa = _xarxa_ref
+    xarxa = _xarxa
     serializable_matrix = [
         [cell if isinstance(cell, str) else int(cell) for cell in row]
         for row in xarxa.network_matrix

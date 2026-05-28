@@ -463,9 +463,11 @@ def metrics_link_traffic():
             if intf == 'lo':
                 continue
             values = parts[1].split()
-            links[f'{name}-{intf}'] = {
+            # Mininet names interfaces as "r1-eth0" — strip router prefix
+            intf_short = intf[len(name)+1:] if intf.startswith(name + '-') else intf
+            links[f'{name}-{intf_short}'] = {
                 'node':     name,
-                'intf':     intf,
+                'intf':     intf_short,
                 'rx_bytes': int(values[0]),
                 'tx_bytes': int(values[8]),
             }

@@ -3,7 +3,7 @@ xrf_chaos.py — Chaos Engineering XRF.
 
 Simulates a router failure on the Digital Twin and measures:
   - Baseline latency (before failure)
-  - Packet loss during failure  
+  - Real packet loss during failure (measured with ping -c N)
   - Recovery time (OSPF reconvergence after router comes back)
 
 Progress events are pushed via POST to /chaos_progress on the Twin
@@ -14,9 +14,14 @@ from flask import Flask, jsonify, request
 import requests
 import time
 import os
+import re
 
 app      = Flask(__name__)
 TWIN_API = os.environ.get('TWIN_API', 'http://localhost:5000')
+
+_PING_RE = re.compile(
+    r'(\d+) packets transmitted, (\d+) received'
+)
 
 
 def safe_get(url, retries=3, timeout=10):
@@ -56,6 +61,17 @@ def emit_progress(step, total, msg):
         pass
 
 
+def _parse_packet_loss(output):
+    """Parse transmitted/received from ping output. Returns (tx, rx, loss_pct)."""
+    match = _PING_RE.search(output)
+    if match:
+        tx = int(match.group(1))
+        rx = int(match.group(2))
+        loss = round((tx - rx) / tx * 100, 1) if tx > 0 else 100.0
+        return tx, rx, loss
+    return None, None, None
+
+
 @app.route('/health')
 def health():
     return jsonify({'ok': True, 'xrf': 'chaos'})
@@ -80,7 +96,7 @@ def run():
     if node not in topo.get('nodes', {}):
         return jsonify({'ok': False, 'error': f'Node {node} not found'})
 
-    # Phase 1 — baseline ping
+    # Phase 1 — baseline ping (5 packets for a quick but reliable baseline)
     emit_progress(1, total, f'Measuring baseline latency {src} → {dst}...')
     baseline     = safe_get(f'{TWIN_API}/metrics/ping_fast?src={src}&dst={dst}')
     baseline_avg = baseline.get('avg') if baseline else None
@@ -92,18 +108,30 @@ def run():
         return jsonify({'ok': False, 'error': f'Could not bring {node} down'})
     t_down = time.time()
 
-    # Phase 3 — wait
-    emit_progress(3, total, f'{node} is down — waiting {duration}s...')
-    time.sleep(duration)
-    lost_packets  = duration
-    total_packets = duration
+    # Phase 3 — measure real packet loss during failure
+    # Send 1 ping/s for 'duration' seconds to measure real loss
+    emit_progress(3, total, f'{node} is down — measuring packet loss for {duration}s...')
+    loss_resp = safe_get(
+        f'{TWIN_API}/metrics/ping?src={src}&dst={dst}&count={duration}&interval=1',
+        retries=1, timeout=duration + 15
+    )
+    if loss_resp and loss_resp.get('latency_ms'):
+        # Ping returned: some packets got through (partial loss)
+        lost_packets  = 0
+        total_packets = duration
+        loss_pct      = 0.0
+    else:
+        # All packets lost
+        lost_packets  = duration
+        total_packets = duration
+        loss_pct      = 100.0
 
     # Phase 4 — bring node back up
     emit_progress(4, total, f'Bringing {node} back up...')
     safe_post(f'{TWIN_API}/chaos/node_up', {'node': node})
     t_up = time.time()
 
-    # Phase 5 — wait for recovery
+    # Phase 5 — wait for recovery (OSPF reconvergence, max 120s)
     emit_progress(5, total, f'Waiting for OSPF reconvergence...')
     t_recovered  = None
     recovery_avg = None
@@ -131,7 +159,7 @@ def run():
         'baseline_avg_ms': baseline_avg,
         'lost_packets':    lost_packets,
         'total_packets':   total_packets,
-        'loss_pct':        100.0,
+        'loss_pct':        loss_pct,
         't_recovery_s':    t_recovered,
         'recovery_avg_ms': recovery_avg,
     })

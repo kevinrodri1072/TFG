@@ -459,13 +459,16 @@ function updateLmPingPreview() {
     var count = c.value || 5;
     var size  = s ? s.value : 64;
     var sFlag = parseInt(size) !== 64 ? ' -s ' + size : '';
-    // Append ping cmd below iperf cmd
-    var pingLine = '<br><span style="color:#27ae60;">ping -c ' + count + ' -i 0.2' + sFlag + ' &lt;dst_ip&gt;</span>';
     // Only update if iperf cmd is shown
     var mode = document.getElementById('latency-mode');
     if (!mode) return;
+    var pingCmd = '<span style="color:#27ae60;">ping -c ' + count + ' -i 0.2' + sFlag + ' &lt;dst_ip&gt;</span>';
     if (mode.value === 'fast') {
-        prev.innerHTML = '<span style="color:#27ae60;">ping -c ' + count + ' -i 0.2' + sFlag + ' &lt;dst_ip&gt;</span>';
+        prev.innerHTML = pingCmd;
+    } else {
+        // In full mode, show both iperf and ping commands
+        updateIperfPreview();
+        prev.innerHTML += '<br>' + pingCmd;
     }
 }
 

@@ -18,11 +18,11 @@ bp = Blueprint('xrfs', __name__)
 # ── Job store for async XRF results ──
 _jobs      = {}
 _jobs_lock = threading.Lock()
-import time as _time
+import time
 
 def _cleanup_old_jobs():
     """Remove jobs older than 10 minutes that were never polled."""
-    now = _time.time()
+    now = time.time()
     with _jobs_lock:
         expired = [jid for jid, j in _jobs.items()
                    if j.get('created_at', now) < now - 600]
@@ -198,7 +198,7 @@ def xrf_query():
     if xrf_id in ASYNC_XRFS:
         job_id = str(uuid.uuid4())[:8]
         with _jobs_lock:
-            _jobs[job_id] = {'ready': False, 'created_at': _time.time()}
+            _jobs[job_id] = {'ready': False, 'created_at': time.time()}
         _cleanup_old_jobs()
         threading.Thread(
             target=_run_xrf_job,

@@ -110,7 +110,7 @@ def _broadcast_metrics(xarxa):
                 link_tick = 0
                 links = {}
                 for name, props in xarxa.nodes.items():
-                    if props['type'] != 'router':
+                    if props['type'] not in ('router', 'host'):
                         continue
                     mn_node = xarxa.mininet_nodes.get(name)
                     if not mn_node or mn_node.shell is None or mn_node.waiting:
@@ -127,9 +127,11 @@ def _broadcast_metrics(xarxa):
                         if intf == 'lo':
                             continue
                         values = parts[1].split()
-                        links[f'{name}-{intf}'] = {
+                        # Mininet names interfaces as "r1-eth0" — strip node prefix
+                        intf_short = intf[len(name)+1:] if intf.startswith(name + '-') else intf
+                        links[f'{name}-{intf_short}'] = {
                             'node':     name,
-                            'intf':     intf,
+                            'intf':     intf_short,
                             'rx_bytes': int(values[0]),
                             'tx_bytes': int(values[8]),
                         }

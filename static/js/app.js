@@ -16,38 +16,7 @@ var socket = io('http://localhost:5001');
             if (ramDet) ramDet.textContent = sys.ram_used_mb.toFixed(0) + ' MB / ' + sys.ram_total_mb.toFixed(0) + ' MB';
         });
 
-        // ── WebSocket: Link traffic colors ──
-        socket.on('metrics_link_traffic', function(d) {
-            if (!d || !d.links || !topologyData) return;
-            var _prevLinkBytes = window._prevLinkBytes || {};
-            window._prevLinkBytes = _prevLinkBytes;
-            var routers = Object.keys(topologyData.nodes).filter(function(n) {
-                return topologyData.nodes[n].type === 'router';
-            });
-            routers.forEach(function(rname) {
-                var props = topologyData.nodes[rname];
-                if (!props.p2p_links) return;
-                props.p2p_links.forEach(function(link) {
-                    var entry = d.links[rname + '-' + link.local_intf];
-                    if (!entry) return;
-                    var fullKey = rname + '_' + link.local_intf;
-                    var prev = _prevLinkBytes[fullKey];
-                    var curr = entry.rx_bytes + entry.tx_bytes;
-                    _prevLinkBytes[fullKey] = curr;
-                    if (prev === undefined) return;
-                    var bps = curr - prev;
-                    var color = bps < 1000 ? '#27ae60' : bps < 50000 ? '#f39c12' : '#e74c3c';
-                    var width = bps < 1000 ? 2 : bps < 50000 ? 3 : 5;
-                    var update = {color: {color: color, highlight: color, hover: color}, width: width};
-                    if (typeof edges !== 'undefined') {
-                        var edgeId1 = rname + '___' + link.peer;
-                        var edgeId2 = link.peer + '___' + rname;
-                        if (edges.get(edgeId1)) edges.update([Object.assign({id: edgeId1}, update)]);
-                        else if (edges.get(edgeId2)) edges.update([Object.assign({id: edgeId2}, update)]);
-                    }
-                });
-            });
-        });
+        // Link traffic WS listener registered inside topology closure (see below)
 
         // ── WebSocket: Twin physical channel ping ──
         var _channelHistory = [];
@@ -170,49 +139,65 @@ var socket = io('http://localhost:5001');
                     interaction: { navigationButtons: false, keyboard: false, hover: true }
                 });
 
-                // ── Link traffic coloring ──
+                // ── Link traffic coloring via WebSocket ──
+                // Registered HERE so applyLinkColors has closure access to edges
                 var _prevLinkBytes = {};
-                function updateLinkColors() {
-                    fetch('/metrics/link_traffic')
-                    .then(r => r.json())
-                    .then(d => {
-                        if (!d.ok) return;
-                        var routers = Object.keys(topologyData.nodes).filter(n => topologyData.nodes[n].type === 'router');
-                        routers.forEach(function(rname) {
-                            var props = topologyData.nodes[rname];
-                            if (!props.p2p_links) return;
-                            props.p2p_links.forEach(function(link) {
-                                var key = rname + '-' + rname + '-' + link.local_intf;
-                                var trafficKey = rname + '-' + rname + '-' + link.local_intf;
-                                var entry = d.links[rname + '-' + rname + '-' + link.local_intf];
-                                if (!entry) {
-                                    entry = d.links[rname + '-' + link.local_intf];
-                                }
-                                if (!entry) return;
-                                var fullKey = rname + '_' + link.local_intf;
-                                var prev = _prevLinkBytes[fullKey];
-                                var curr = entry.rx_bytes + entry.tx_bytes;
-                                _prevLinkBytes[fullKey] = curr;
-                                if (prev === undefined) return;
-                                var bps = (curr - prev) / 3;
-                                var color;
-                                if (bps < 1000) color = '#27ae60';
-                                else if (bps < 50000) color = '#f39c12';
-                                else color = '#e74c3c';
-                                var edgeId1 = rname + '___' + link.peer;
-                                var edgeId2 = link.peer + '___' + rname;
-                                if (edges.get(edgeId1)) {
-                                    edges.update([{id: edgeId1, color: {color: color, highlight: color, hover: color}, width: bps < 1000 ? 2 : bps < 50000 ? 3 : 5}]);
-                                } else if (edges.get(edgeId2)) {
-                                    edges.update([{id: edgeId2, color: {color: color, highlight: color, hover: color}, width: bps < 1000 ? 2 : bps < 50000 ? 3 : 5}]);
-                                }
-                            });
+                function applyLinkColors(d) {
+                    if (!d || !d.links || !topologyData) return;
+
+                    // ── Router-router links (p2p) ──
+                    var routers = Object.keys(topologyData.nodes).filter(function(n) {
+                        return topologyData.nodes[n].type === 'router';
+                    });
+                    routers.forEach(function(rname) {
+                        var props = topologyData.nodes[rname];
+                        if (!props.p2p_links) return;
+                        props.p2p_links.forEach(function(link) {
+                            var entry = d.links[rname + '-' + link.local_intf];
+                            if (!entry) return;
+                            var fullKey = rname + '_' + link.local_intf;
+                            var prev = _prevLinkBytes[fullKey];
+                            var curr = entry.rx_bytes + entry.tx_bytes;
+                            _prevLinkBytes[fullKey] = curr;
+                            if (prev === undefined) return;
+                            var bps = curr - prev;
+                            var color = bps < 1000 ? '#27ae60' : bps < 50000 ? '#f39c12' : '#e74c3c';
+                            var width = bps < 1000 ? 2 : bps < 50000 ? 3 : 5;
+                            var update = {color: {color: color, highlight: color, hover: color}, width: width};
+                            var edgeId1 = rname + '___' + link.peer;
+                            var edgeId2 = link.peer + '___' + rname;
+                            if (edges.get(edgeId1)) edges.update([Object.assign({id: edgeId1}, update)]);
+                            else if (edges.get(edgeId2)) edges.update([Object.assign({id: edgeId2}, update)]);
                         });
-                    })
-                    .catch(() => {});
+                    });
+
+                    // ── Host-router links ──
+                    // Each host has eth0 — color its edge based on its own traffic
+                    var hosts = Object.keys(topologyData.nodes).filter(function(n) {
+                        return topologyData.nodes[n].type === 'host';
+                    });
+                    hosts.forEach(function(hname) {
+                        var entry = d.links[hname + '-' + 'eth0'];
+                        if (!entry) return;
+                        var fullKey = hname + '_eth0';
+                        var prev = _prevLinkBytes[fullKey];
+                        var curr = entry.rx_bytes + entry.tx_bytes;
+                        _prevLinkBytes[fullKey] = curr;
+                        if (prev === undefined) return;
+                        var bps = curr - prev;
+                        var color = bps < 1000 ? '#27ae60' : bps < 50000 ? '#f39c12' : '#e74c3c';
+                        var width = bps < 1000 ? 2 : bps < 50000 ? 3 : 5;
+                        var update = {color: {color: color, highlight: color, hover: color}, width: width};
+                        // Find the edge connecting this host to its router
+                        var allEdges = edges.get();
+                        allEdges.forEach(function(e) {
+                            if (e.from === hname || e.to === hname) {
+                                edges.update([Object.assign({id: e.id}, update)]);
+                            }
+                        });
+                    });
                 }
-                setInterval(updateLinkColors, 1000);
-                updateLinkColors();
+                socket.on('metrics_link_traffic', applyLinkColors);
 
                 network.on('hoverNode', function(params) {
                     var popup = document.getElementById('node-popup');
