@@ -146,11 +146,13 @@ def add_host():
         f'ip link set lo up ; '
         f'ip link set {name}-eth0 up'
     )
-    sw_node.cmd(
-        f'ip link set {sw_intf_name} up ; '
-        f'ovs-vsctl add-port {switch} {sw_intf_name}'
-    )
+    sw_node.cmd(f'ip link set {sw_intf_name} up')
     t_local_ms = round((time.time() - t_local_start) * 1000, 2)
+    # ovs-vsctl is slow — run in background after timing
+    threading.Thread(
+        target=lambda: sw_node.cmd(f'ovs-vsctl add-port {switch} {sw_intf_name}'),
+        daemon=True
+    ).start()
 
     if not is_sync:
         # Send pre-computed values so Twin uses identical IP/switch/gw
@@ -198,9 +200,10 @@ def remove_node():
             _xarxa.net.delNode(_xarxa.mininet_nodes[node])
             del _xarxa.mininet_nodes[node]
             del _xarxa.nodes[node]
-
-        _update_all_routes()
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
+
+        # Update routes in background — don't block the response
+        threading.Thread(target=_update_all_routes, daemon=True).start()
 
     else:
         t_local_start = time.time()

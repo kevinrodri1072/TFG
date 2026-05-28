@@ -333,27 +333,25 @@ class Xarxa:
     def _update_ospf_hot(self, node, name, props):
         """
         Inject new OSPF networks into a running ospfd WITHOUT restarting daemons.
-        Uses vtysh to update the running configuration in-place.
-        Called on existing routers when a new router is added.
-        Much faster than stop+restart (~5ms vs ~800ms per router).
+        Uses vtysh -f (file mode) — faster than multiple -c args because
+        it avoids repeated fork+exec overhead.
         """
         conf_path = f'/tmp/frr_{name}'
-        cmds = ['configure terminal', 'router ospf']
+        lines = ['configure terminal', 'router ospf']
 
-        # Add all current networks to OSPF (idempotent — duplicates are ignored)
         for intf, ip in props['ips'].items():
             if intf == 'lan':
                 continue
             base = ip.split('/')[0].rsplit('.', 1)[0]
             mask = ip.split('/')[1]
-            cmds.append(f'  network {base}.0/{mask} area 0')
+            lines.append(f' network {base}.0/{mask} area 0')
 
-        cmds += ['exit', 'end']
+        lines += ['exit', 'end']
 
-        vtysh_args = ' '.join(f'-c "{c}"' for c in cmds)
-        node.cmd(
-            f'vtysh --vty_socket {conf_path} {vtysh_args} 2>/dev/null'
-        )
+        # Write to a temp file and execute with vtysh -f (single process)
+        vtysh_file = f'{conf_path}/hot_update.vtysh'
+        node.cmd(f'printf "%s\n" {chr(39)}' + '\n'.join(lines) + f'{chr(39)} > {vtysh_file}')
+        node.cmd(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
 
     def _start_bfd(self, node, name, props):
         """
