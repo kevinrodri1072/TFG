@@ -229,37 +229,61 @@ def add_router():
 
     if is_sync and 'router_state' in data:
         # ── Twin path: apply pre-computed state from Original ──
-        # The Original has already computed all IPs and subnets.
-        # We just restore the state and build the Mininet objects.
-        switch_name       = data['switch_name']
-        router_state      = data['router_state']
-        connected_states  = data['connected_states']
+        switch_name      = data['switch_name']
+        router_state     = data['router_state']
+        connected_states = data['connected_states']
 
+        # Restore state in nodes + matrix
         _xarxa.nodes[router_name] = router_state
         _xarxa.update_matrix_multi(router_name, connected_routers)
         _xarxa.nodes[switch_name] = {'type': 'switch'}
         _xarxa.update_matrix_multi(switch_name, [router_name])
-
-        # Update neighbouring routers' state (p2p_links + ips)
         for rname, rstate in connected_states.items():
             _xarxa.nodes[rname] = rstate
 
         t_local_start = time.time()
-        new_router = _xarxa.net.addHost(router_name, ip='127.0.0.1')
-        new_switch = _xarxa.net.addSwitch(switch_name, failMode='standalone')
-        _xarxa.mininet_nodes[router_name] = new_router
-        _xarxa.mininet_nodes[switch_name] = new_switch
-        new_switch.start([])
 
-        # Build links using pre-computed IPs from router_state
-        eth_idx = 0
-        for connected_router in connected_routers:
+        # ── Try pool first (Twin also has pool) ──
+        # LAN IP is the last eth in router_state
+        n_p2p    = len(connected_routers)
+        ip_lan   = router_state['ips'].get(f'eth{n_p2p}', '10.254.0.1/24')
+        use_pool = _xarxa._router_pool_available()
+        if use_pool:
+            new_router, new_switch = _xarxa.claim_from_pool(
+                router_name, switch_name, ip_lan
+            )
+            if new_router is None:
+                use_pool = False
+
+        if not use_pool:
+            new_router = _xarxa.net.addHost(router_name, ip='127.0.0.1')
+            new_switch = _xarxa.net.addSwitch(switch_name, failMode='standalone')
+            _xarxa.mininet_nodes[router_name] = new_router
+            _xarxa.mininet_nodes[switch_name] = new_switch
+            new_switch.start([])
+            intf_eth_lan = f'{router_name}-eth{n_p2p}'
+            _xarxa.net.addLink(new_router, new_switch, intfName1=intf_eth_lan)
+            new_router.cmd(
+                f'ifconfig {intf_eth_lan} {ip_lan} ; '
+                f'ip link set {intf_eth_lan} up ; '
+                f'sysctl -w net.ipv4.ip_forward=1 ; '
+                f'ifconfig lo up'
+            )
+            sw_intf = f'{switch_name}-eth1'
+            new_switch.cmd(
+                f'ip link set {sw_intf} up ; '
+                f'ovs-vsctl add-port {switch_name} {sw_intf}'
+            )
+
+        # ── Build p2p links ──
+        # Pool: eth0=LAN already, p2p start at eth1
+        # Normal: p2p start at eth0
+        eth_base = 1 if use_pool else 0
+        for eth_idx, connected_router in enumerate(connected_routers):
             p2p_link    = router_state['p2p_links'][eth_idx]
-            intf_new    = f'{router_name}-eth{eth_idx}'
+            intf_new    = f'{router_name}-eth{eth_base + eth_idx}'
             existing_nd = _xarxa.mininet_nodes[connected_router]
-
-            # Find matching intf on existing router from connected_states
-            ex_link = next(
+            ex_link     = next(
                 l for l in connected_states[connected_router]['p2p_links']
                 if l['peer'] == router_name
             )
@@ -275,23 +299,28 @@ def add_router():
                 f'ifconfig {intf_existing} {ex_link["local_ip"]}/30 ; '
                 f'ip link set {intf_existing} up'
             )
-            eth_idx += 1
 
-        # LAN interface (last eth)
-        ip_eth1      = router_state['ips'][f'eth{eth_idx}']
-        intf_eth_lan = f'{router_name}-eth{eth_idx}'
-        _xarxa.net.addLink(new_router, new_switch, intfName1=intf_eth_lan)
-        new_router.cmd(
-            f'ifconfig {intf_eth_lan} {ip_eth1} ; '
-            f'ip link set {intf_eth_lan} up ; '
-            f'sysctl -w net.ipv4.ip_forward=1 ; '
-            f'ifconfig lo up'
-        )
+        # ── Start routing ──
+        if use_pool:
+            _xarxa._update_ospf_hot(new_router, router_name, router_state)
+            existing = {
+                n: p for n, p in _xarxa.nodes.items()
+                if p['type'] == 'router' and n != router_name
+                and n in _xarxa.mininet_nodes
+            }
+            ths = [
+                threading.Thread(
+                    target=_xarxa._update_ospf_hot,
+                    args=(_xarxa.mininet_nodes[n], n, p),
+                    daemon=True
+                )
+                for n, p in existing.items()
+            ]
+            for th in ths: th.start()
+            for th in ths: th.join()
+        else:
+            _start_routing_on_new_router(router_name)
 
-        sw_intf = f'{switch_name}-eth1'
-        new_switch.cmd(f'ip link set {sw_intf} up ; ovs-vsctl add-port {switch_name} {sw_intf}')
-
-        _start_routing_on_new_router(router_name)
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
         return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
