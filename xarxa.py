@@ -254,9 +254,10 @@ class Xarxa:
         self._start_ospf(new_router, pool_name, pool_props)
         return new_router, new_switch
 
-    def init_router_pool(self, pool_size=3):
+    def init_router_pool(self, pool_size=5):
         """
         Pre-create pool_size routers in background after network starts.
+        Creates all routers IN PARALLEL so the pool is ready faster.
         Called once from app.py after start_network().
         """
         import threading
@@ -266,10 +267,31 @@ class Xarxa:
         self._pool_target_size = pool_size
 
         def fill():
-            for _ in range(pool_size):
-                self._pool_add_one()
+            # Create all pool entries in parallel for faster warm-up
+            threads = [
+                threading.Thread(target=self._pool_add_one, daemon=True)
+                for _ in range(pool_size)
+            ]
+            for t in threads: t.start()
+            for t in threads: t.join()
+            print(f'[pool] fully warmed up ({pool_size} routers ready)')
 
         threading.Thread(target=fill, daemon=True).start()
+
+    def _pool_replenish(self):
+        """
+        Replenish pool up to target size in parallel.
+        Called after each claim — fills ALL missing slots simultaneously.
+        This way if 3 routers are claimed rapidly, all 3 replenish at once.
+        """
+        with self._router_pool_lock:
+            current = len(self._router_pool)
+            missing = max(0, self._pool_target_size - current)
+        threads = [
+            threading.Thread(target=self._pool_add_one, daemon=True)
+            for _ in range(missing)
+        ]
+        for t in threads: t.start()
 
     def _pool_add_one(self):
         """Create one pre-warmed router and add it to the pool."""
@@ -323,8 +345,8 @@ class Xarxa:
         router_node.cmd(f'ip link set {old_lan} name {new_lan} 2>/dev/null || true')
         router_node.cmd(f'ifconfig {new_lan} {lan_ip} ; ip link set {new_lan} up')
 
-        # Replenish pool in background
-        threading.Thread(target=self._pool_add_one, daemon=True).start()
+        # Replenish pool to full size in background
+        threading.Thread(target=self._pool_replenish, daemon=True).start()
 
         return router_node, switch_node
 
