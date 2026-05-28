@@ -62,36 +62,40 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
     'late update' call after parallel sync — update the most recent
     matching entry instead of appending a new one.
     """
+    updated_entry = None
+
     with sync_history_lock:
-        # Late update: t_local_ms known, network/twin already recorded
-        # t_total_real = max(t_local, t_network) since they ran in parallel
+        # Late update: t_local_ms known after parallel Mininet apply
+        # Find the most recent matching entry and update it
         if t_local_ms is not None and t_network_ms is None and t_twin_ms is None:
             for entry in reversed(sync_latency_history):
                 if entry.get('operation') == operation:
                     entry['t_local_ms'] = round(t_local_ms, 2)
-                    # Recalculate t_total as max(t_local, t_network)
+                    # t_total = max(t_local, t_network) — parallel execution
                     t_net = entry.get('t_network_ms')
                     if t_net is not None:
-                        entry['latency_ms'] = round(
-                            max(t_local_ms, t_net), 2
-                        )
-                    return
-            # No matching entry found — fall through to append
-        
-        entry = {
-            'operation':    operation,
-            't_local_ms':   round(t_local_ms,   2) if t_local_ms   is not None else None,
-            't_network_ms': round(t_network_ms, 2) if t_network_ms is not None else None,
-            't_twin_ms':    round(t_twin_ms,    2) if t_twin_ms    is not None else None,
-            'latency_ms':   round(t_network_ms, 2) if t_network_ms is not None else None,
-            'timestamp':    time.time(),
-        }
-        sync_latency_history.append(entry)
+                        entry['latency_ms'] = round(max(t_local_ms, t_net), 2)
+                    updated_entry = dict(entry)
+                    break
+            # If no match found, fall through and create new entry
 
+        if updated_entry is None:
+            entry = {
+                'operation':    operation,
+                't_local_ms':   round(t_local_ms,   2) if t_local_ms   is not None else None,
+                't_network_ms': round(t_network_ms, 2) if t_network_ms is not None else None,
+                't_twin_ms':    round(t_twin_ms,    2) if t_twin_ms    is not None else None,
+                'latency_ms':   round(t_network_ms, 2) if t_network_ms is not None else None,
+                'timestamp':    time.time(),
+            }
+            sync_latency_history.append(entry)
+            updated_entry = dict(entry)
+
+    # Push to Twin so both dashboards show identical data
     try:
         requests.post(
             f'http://{DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}/sync_metrics',
-            json=entry,
+            json=updated_entry,
             timeout=3,
         )
     except Exception as e:

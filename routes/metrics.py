@@ -389,17 +389,38 @@ def metrics_sync():
 
 @bp.route('/sync_metrics', methods=['POST'])
 def update_sync_metrics():
-    """Receive a sync timing entry pushed by the Original."""
-    data  = request.json
-    entry = {
-        'operation':    data.get('operation', 'External Update'),
-        'latency_ms':   data.get('latency_ms'),
-        't_local_ms':   data.get('t_local_ms'),
-        't_network_ms': data.get('t_network_ms'),
-        't_twin_ms':    data.get('t_twin_ms'),
-        'timestamp':    data.get('timestamp', time.time()),
-    }
+    """
+    Receive a sync timing entry pushed by the Original.
+    The Original is the source of truth — Twin mirrors its history exactly.
+    If the entry has t_local_ms but no t_network_ms, it's a late update
+    for an existing entry (parallel sync case).
+    """
+    data       = request.json
+    operation  = data.get('operation', 'External Update')
+    t_local    = data.get('t_local_ms')
+    t_network  = data.get('t_network_ms')
+    t_twin     = data.get('t_twin_ms')
+    latency    = data.get('latency_ms')
+
     with sync_history_lock:
+        # Late update: update existing entry instead of appending
+        if t_local is not None and t_network is None and t_twin is None:
+            for entry in reversed(sync_latency_history):
+                if entry.get('operation') == operation:
+                    entry['t_local_ms'] = t_local
+                    if latency is not None:
+                        entry['latency_ms'] = latency
+                    return jsonify({'ok': True})
+
+        # New entry
+        entry = {
+            'operation':    operation,
+            'latency_ms':   latency,
+            't_local_ms':   t_local,
+            't_network_ms': t_network,
+            't_twin_ms':    t_twin,
+            'timestamp':    data.get('timestamp', time.time()),
+        }
         sync_latency_history.append(entry)
     return jsonify({'ok': True})
 
