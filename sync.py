@@ -105,13 +105,12 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
 
 # ── Incremental event sync ──
 
-def _do_sync_event(endpoint, data, t_local_ms, retries=3, delay=0.5):
+def _do_sync_event(endpoint, data, t_local_holder, retries=3, delay=0.5):
     """
     POST a pre-computed event payload to the Twin's endpoint.
-    The payload always includes 'sync': True so the Twin knows not to
-    re-synchronise back (avoids infinite loops).
-    Records t_local_ms and the measured HTTP round-trip as t_network_ms.
-    t_twin_ms is returned by the Twin inside its JSON response.
+    t_local_holder is a dict {'value': None, 'ready': Event} that gets
+    filled by the caller once Mininet finishes. We wait for it (max 10s)
+    so we can record all three times in a single consistent entry.
     """
     payload = {**data, 'sync': True}
     for attempt in range(retries):
@@ -127,6 +126,13 @@ def _do_sync_event(endpoint, data, t_local_ms, retries=3, delay=0.5):
                 resp_json = response.json()
                 t_twin_ms = resp_json.get('t_local_ms', None)
                 operation = endpoint.strip('/')
+
+                # Wait for t_local_ms from the main thread (max 10s)
+                ready = t_local_holder.get('ready')
+                if ready:
+                    ready.wait(timeout=10)
+                t_local_ms = t_local_holder.get('value')
+
                 record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms)
                 return
         except Exception as e:
@@ -139,15 +145,26 @@ def _do_sync_event(endpoint, data, t_local_ms, retries=3, delay=0.5):
 def sync_event(endpoint, data, t_local_ms):
     """
     Send an incremental event to the Twin in a daemon thread.
-    The caller provides the *already-computed* payload so both sides
-    apply exactly the same values (avoids divergence from independent
-    recalculations).
+    Returns a t_local_holder dict — call set_t_local(holder, value)
+    once Mininet finishes to complete the timing entry.
+    If t_local_ms is not None, it's set immediately (legacy/sync path).
     """
+    ready  = threading.Event()
+    holder = {'value': t_local_ms, 'ready': ready}
+    if t_local_ms is not None:
+        ready.set()  # already known, no need to wait
     threading.Thread(
         target=_do_sync_event,
-        args=(endpoint, data, t_local_ms),
+        args=(endpoint, data, holder),
         daemon=True,
     ).start()
+    return holder
+
+
+def set_t_local(holder, t_local_ms):
+    """Signal that t_local_ms is now known. Called after Mininet finishes."""
+    holder['value'] = round(t_local_ms, 2)
+    holder['ready'].set()
 
 
 # ── Full snapshot sync (kept for rename_node) ──

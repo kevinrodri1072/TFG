@@ -127,22 +127,20 @@ def add_host():
     _xarxa.nodes[name] = {'type': 'host', 'ip': ip, 'gw': gw}
     _xarxa.update_matrix(name, switch)
 
-    if not is_sync:
-        # ── Send to Twin in parallel with Mininet apply ──
-        sync_event('/add_host', {
-            'name':   name,
-            'router': router,
-            'switch': switch,
-            'ip':     ip,
-            'gw':     gw,
-        }, None)
-
     # ── Apply to Mininet (parallel with Twin) ──
     t_local_start = time.time()
     new_host      = _xarxa.net.addHost(name, ip=ip)
     _xarxa.mininet_nodes[name] = new_host
     sw_node      = _xarxa.mininet_nodes[switch]
     sw_intf_name = f'{switch}-eth{len(sw_node.intfList())}'
+
+    if not is_sync:
+        # Send to Twin in parallel BEFORE addLink (all values known)
+        from sync import sync_event, set_t_local
+        holder = sync_event('/add_host', {
+            'name': name, 'router': router,
+            'switch': switch, 'ip': ip, 'gw': gw,
+        }, None)
 
     _xarxa.net.addLink(new_host, sw_node, intfName1=f'{name}-eth0', intfName2=sw_intf_name)
     new_host.cmd(
@@ -160,8 +158,7 @@ def add_host():
     ).start()
 
     if not is_sync:
-        from sync import record_sync_latency
-        record_sync_latency('add_host', t_local_ms, None, None)
+        set_t_local(holder, t_local_ms)  # signal sync thread with real t_local
         return jsonify({'ok': True})
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
@@ -179,8 +176,8 @@ def remove_node():
         return jsonify({'ok': False, 'error': f'Node {name} not found'})
 
     if not is_sync:
-        # ── Send to Twin in parallel with Mininet apply ──
-        sync_event('/remove_node', {'name': name}, None)
+        from sync import sync_event, set_t_local
+        holder = sync_event('/remove_node', {'name': name}, None)
 
     if _xarxa.nodes[name]['type'] == 'router':
         # Clean p2p_links and IPs from neighbouring routers
@@ -215,8 +212,7 @@ def remove_node():
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
-        from sync import record_sync_latency
-        record_sync_latency('remove_node', t_local_ms, None, None)
+        set_t_local(holder, t_local_ms)
         return jsonify({'ok': True})
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
@@ -400,7 +396,8 @@ def add_router():
         # Both Original and Twin apply simultaneously from this point.
         # t_total_real = max(t_local, t_network) — not their sum.
         t_parallel_start = time.time()
-        sync_event('/add_router', {
+        from sync import sync_event, set_t_local
+        holder = sync_event('/add_router', {
             'name':              router_name,
             'connected_routers': connected_routers,
             'router_state':      router_state,
@@ -477,10 +474,8 @@ def add_router():
 
         # Update sync history with real t_local_ms now that Mininet has finished
         # The sync_event already recorded the entry with None — update it
-        from sync import record_sync_latency
-        record_sync_latency('add_router', t_local_ms, None, None)
-
-        return jsonify({'ok': True, 't_parallel_start': t_parallel_start})
+        set_t_local(holder, t_local_ms)
+        return jsonify({'ok': True})
 
 
 @bp.route('/rename_node', methods=['POST'])
