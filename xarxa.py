@@ -198,7 +198,7 @@ class Xarxa:
         """
         Inject OSPF networks into a running ospfd WITHOUT restarting daemons.
         Also configures hello/dead intervals on ALL interfaces.
-        Finally, forces a reload of the OSPF configuration via SIGHUP.
+        Finally, forces a full OSPF process reload (clear ip ospf process) to pick up new config.
         """
         conf_path = f'/tmp/frr_{name}'
         vtysh_file = f'{conf_path}/hot_update.vtysh'
@@ -222,13 +222,11 @@ class Xarxa:
         with open(vtysh_file, 'w') as f:
             f.write('\n'.join(lines) + '\n')
 
-        # Apply the configuration via vtysh
+        # Apply configuration via vtysh
         node.cmd(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
-        
-        # Force OSPF to reload its configuration (SIGHUP to ospfd)
-        node.cmd(f'kill -HUP $(cat {conf_path}/ospfd.pid 2>/dev/null) 2>/dev/null')
-        # Pequeña pausa para que el proceso se estabilice
-        node.cmd('sleep 0.2')
+        # Force OSPF to reload its configuration (does NOT kill the daemon)
+        node.cmd(f'vtysh --vty_socket {conf_path} -c "clear ip ospf process" 2>/dev/null')
+        time.sleep(0.05)  # brief pause for OSPF to settle
 
     def _update_ospf_hot_pool(self, node, router_name, props):
         """
