@@ -413,10 +413,22 @@ class Xarxa:
             f'ip link set {new_sw_intf} up ; '
             f'ovs-vsctl add-port {switch_name} {new_sw_intf}'
         )
-        # Update Mininet's Intf object to reflect the renamed interface
+        # Update Mininet's Intf object AND nameToIntf dict for the switch
         for intf in switch_node.intfList():
             if intf.name == old_sw_intf:
+                switch_node.nameToIntf.pop(old_sw_intf, None)
                 intf.name = new_sw_intf
+                switch_node.nameToIntf[new_sw_intf] = intf
+                break
+
+        # Also fix the router's LAN interface in Mininet's nameToIntf
+        old_r_lan = f'{pool_name}-eth0'
+        new_r_lan = f'{router_name}-eth0'
+        for intf in router_node.intfList():
+            if intf.name == old_r_lan:
+                router_node.nameToIntf.pop(old_r_lan, None)
+                intf.name = new_r_lan
+                router_node.nameToIntf[new_r_lan] = intf
                 break
 
         # Kill pool FRR daemons reliably via their PID files.
