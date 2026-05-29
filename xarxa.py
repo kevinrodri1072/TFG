@@ -400,23 +400,32 @@ class Xarxa:
         )
 
         # ── Rename OVS bridge: __pool_swN → swN ──
-        # OVS has no rename command, so: detach port → delete old bridge →
-        # create new bridge → rename port interface → re-attach.
+        # OVS has no rename command: detach port → delete old bridge →
+        # create new bridge → re-attach port with its ORIGINAL name.
+        # We do NOT rename the switch interface (__pool_swN-eth1) — it stays
+        # with its pool name inside the new bridge. This avoids:
+        #   - naming conflict when add_host later creates swN-eth1
+        #   - KeyError in remove_node (intf.name matches nameToIntf key)
         old_sw_intf = f'{pool_switch_name}-eth1'
-        new_sw_intf = f'{switch_name}-eth1'
         switch_node.cmd(
             f'ovs-vsctl --if-exists del-port {pool_switch_name} {old_sw_intf} ; '
             f'ovs-vsctl --if-exists del-br {pool_switch_name} ; '
             f'ovs-vsctl add-br {switch_name} ; '
             f'ip link set {switch_name} up ; '
-            f'ip link set {old_sw_intf} name {new_sw_intf} 2>/dev/null ; '
-            f'ip link set {new_sw_intf} up ; '
-            f'ovs-vsctl add-port {switch_name} {new_sw_intf}'
+            f'ip link set {old_sw_intf} up ; '
+            f'ovs-vsctl add-port {switch_name} {old_sw_intf}'
         )
-        # Update Mininet's Intf object to reflect the renamed interface
-        for intf in switch_node.intfList():
-            if intf.name == old_sw_intf:
-                intf.name = new_sw_intf
+
+        # Fix the router's LAN interface in Mininet's nameToIntf.
+        # The Linux interface was already renamed above (ip link set),
+        # so nameToIntf must match for remove_node/delIntf to work.
+        old_r_lan = f'{pool_name}-eth0'
+        new_r_lan = f'{router_name}-eth0'
+        for intf in router_node.intfList():
+            if intf.name == old_r_lan:
+                router_node.nameToIntf.pop(old_r_lan, None)
+                intf.name = new_r_lan
+                router_node.nameToIntf[new_r_lan] = intf
                 break
 
         # Kill pool FRR daemons reliably via their PID files.
