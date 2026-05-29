@@ -142,8 +142,7 @@ class Xarxa:
     def _start_ospf(self, node, name, props, skip_kill=False):
         """
         Starts zebra + ospfd inside the router's network namespace.
-        skip_kill=True when daemons are guaranteed dead (e.g. pool routers)
-        to avoid the kill sleep overhead.
+        skip_kill=True skips killing old daemons (used when pool already killed them).
         """
         conf_path = f'/tmp/frr_{name}'
         os.makedirs(conf_path, exist_ok=True)
@@ -198,28 +197,35 @@ class Xarxa:
     def _update_ospf_hot(self, node, name, props):
         """
         Inject OSPF networks into a running ospfd WITHOUT restarting daemons.
-        vtysh and the conf file are written/run on the HOST (os.system), not
-        inside the node namespace, because the VTY socket lives on the host
-        filesystem and is owned by the daemon process (which may be a renamed
-        pool router running in a different namespace).
+        Also configures hello/dead intervals on ALL interfaces so new p2p
+        links match the timers on the new router (1s/4s) — without matching
+        timers, OSPF will NEVER form an adjacency.
+        Runs vtysh via node.cmd() inside the node's namespace so it connects
+        ONLY to the node's FRR daemons, not the system FRR.
         """
         conf_path  = f'/tmp/frr_{name}'
         vtysh_file = f'{conf_path}/hot_update.vtysh'
-        router_id  = props['ips'].get('eth0', '1.1.1.1/30').split('/')[0]
-        lines = ['configure terminal', 'router ospf',
-                 f' ospf router-id {router_id}',
-                 ' no network 10.254.0.0/24 area 0']
+        lines = ['configure terminal', 'router ospf']
         for intf, ip in props['ips'].items():
             if intf == 'lan':
                 continue
             base = ip.split('/')[0].rsplit('.', 1)[0]
             mask = ip.split('/')[1]
             lines.append(f' network {base}.0/{mask} area 0')
-        lines += ['exit', 'end']
-        # Write file and run vtysh on the HOST — socket is on host filesystem
+        lines.append('exit')  # exit router ospf
+        # Configure hello/dead on ALL interfaces (including new p2p ones)
+        for intf, ip in props['ips'].items():
+            if intf == 'lan':
+                continue
+            lines += [f'interface {name}-{intf}',
+                      ' ip ospf hello-interval 1',
+                      ' ip ospf dead-interval 4',
+                      'exit']
+        lines.append('end')
+        # Write file on host filesystem (shared /tmp), run vtysh INSIDE namespace
         with open(vtysh_file, 'w') as f:
             f.write('\n'.join(lines) + '\n')
-        os.system(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
+        node.cmd(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
 
     def _update_ospf_hot_pool(self, node, router_name, props):
         """
@@ -358,6 +364,7 @@ class Xarxa:
         Claim a pre-warmed router from the pool.
         - Renames pool nodes to final names
         - Renames LAN interface from __pool_rN-eth0 to router_name-eth0
+        - Renames OVS bridge from __pool_swN to swN
         - Registers in net.nameToNode and mininet_nodes
         - Replenishes pool in background
         Returns (router_node, switch_node) or (None, None) if pool empty.
@@ -366,7 +373,8 @@ class Xarxa:
         with self._router_pool_lock:
             if not self._router_pool:
                 return None, None
-            router_node, switch_node, pool_name, pool_switch_name =                 self._router_pool.pop(0)
+            router_node, switch_node, pool_name, pool_switch_name = \
+                self._router_pool.pop(0)
 
         # Rename nodes in Mininet's nameToNode
         router_node.name = router_name
@@ -391,13 +399,35 @@ class Xarxa:
             f'ifconfig lo up ; ip link set lo up'
         )
 
-        # Kill ONLY the FRR daemons by their config path — NOT by pool_name,
-        # which would also kill the node's bash shell and break node.cmd().
+        # ── Rename OVS bridge: __pool_swN → swN ──
+        # OVS has no rename command, so: detach port → delete old bridge →
+        # create new bridge → rename port interface → re-attach.
+        old_sw_intf = f'{pool_switch_name}-eth1'
+        new_sw_intf = f'{switch_name}-eth1'
+        switch_node.cmd(
+            f'ovs-vsctl --if-exists del-port {pool_switch_name} {old_sw_intf} ; '
+            f'ovs-vsctl --if-exists del-br {pool_switch_name} ; '
+            f'ovs-vsctl add-br {switch_name} ; '
+            f'ip link set {switch_name} up ; '
+            f'ip link set {old_sw_intf} name {new_sw_intf} 2>/dev/null ; '
+            f'ip link set {new_sw_intf} up ; '
+            f'ovs-vsctl add-port {switch_name} {new_sw_intf}'
+        )
+        # Update Mininet's Intf object to reflect the renamed interface
+        for intf in switch_node.intfList():
+            if intf.name == old_sw_intf:
+                intf.name = new_sw_intf
+                break
+
+        # Kill pool FRR daemons reliably via their PID files.
+        # Must use router_node.cmd() to run INSIDE the node's namespace —
+        # os.system() runs on the host and may not reach the daemons.
         import os
         frr_dir = f'/tmp/frr_{pool_name}'
-        os.system(
-            f'pkill -f "config_file {frr_dir}" 2>/dev/null; '
-            f'sleep 0.05; '
+        router_node.cmd(
+            f'kill $(cat {frr_dir}/ospfd.pid 2>/dev/null) 2>/dev/null ; '
+            f'kill $(cat {frr_dir}/zebra.pid 2>/dev/null) 2>/dev/null ; '
+            f'sleep 0.1 ; '
             f'rm -rf {frr_dir}'
         )
 
