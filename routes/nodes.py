@@ -192,21 +192,32 @@ def remove_node():
                     l for l in props['p2p_links'] if l['peer'] != name
                 ]
 
-        t_local_start   = time.time()
+        t_local_start = time.time()
         nodes_to_remove = _xarxa.find_router_subnet(name)
         nodes_to_remove.append(name)
         for node in nodes_to_remove:
             _xarxa.remove_from_matrix(node)
-            _xarxa.net.delNode(_xarxa.mininet_nodes[node])
+            nd = _xarxa.mininet_nodes[node]
+            # Limpiar comandos pendientes antes de borrar
+            if nd.waiting:
+                nd.sendInt()
+                nd.waitOutput()
+                time.sleep(0.2)
+            _xarxa.net.delNode(nd)
             del _xarxa.mininet_nodes[node]
             del _xarxa.nodes[node]
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
         threading.Thread(target=_update_all_routes, daemon=True).start()
 
-    else:
+    else:  # host
         t_local_start = time.time()
+        node = _xarxa.mininet_nodes[name]
+        if node.waiting:
+            node.sendInt()
+            node.waitOutput()
+            time.sleep(0.2)
         _xarxa.remove_from_matrix(name)
-        _xarxa.net.delNode(_xarxa.mininet_nodes[name])
+        _xarxa.net.delNode(node)
         del _xarxa.mininet_nodes[name]
         del _xarxa.nodes[name]
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
@@ -215,7 +226,6 @@ def remove_node():
         set_t_local(holder, t_local_ms)
         return jsonify({'ok': True})
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
-
 
 @bp.route('/add_router', methods=['POST'])
 def add_router():

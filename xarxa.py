@@ -197,10 +197,13 @@ class Xarxa:
     def _update_ospf_hot(self, node, name, props):
         """
         Inject OSPF networks into a running ospfd WITHOUT restarting daemons.
-        Also configures hello/dead intervals on ALL interfaces.
-        Finally, forces a full OSPF process reload (clear ip ospf process) to pick up new config.
+        Also configures hello/dead intervals on ALL interfaces so new p2p
+        links match the timers on the new router (1s/4s) — without matching
+        timers, OSPF will NEVER form an adjacency.
+        Runs vtysh via node.cmd() inside the node's namespace so it connects
+        ONLY to the node's FRR daemons, not the system FRR.
         """
-        conf_path = f'/tmp/frr_{name}'
+        conf_path  = f'/tmp/frr_{name}'
         vtysh_file = f'{conf_path}/hot_update.vtysh'
         lines = ['configure terminal', 'router ospf']
         for intf, ip in props['ips'].items():
@@ -209,24 +212,20 @@ class Xarxa:
             base = ip.split('/')[0].rsplit('.', 1)[0]
             mask = ip.split('/')[1]
             lines.append(f' network {base}.0/{mask} area 0')
-        lines.append('exit')
+        lines.append('exit')  # exit router ospf
+        # Configure hello/dead on ALL interfaces (including new p2p ones)
         for intf, ip in props['ips'].items():
             if intf == 'lan':
                 continue
             lines += [f'interface {name}-{intf}',
-                    ' ip ospf hello-interval 1',
-                    ' ip ospf dead-interval 4',
-                    'exit']
+                      ' ip ospf hello-interval 1',
+                      ' ip ospf dead-interval 4',
+                      'exit']
         lines.append('end')
-
+        # Write file on host filesystem (shared /tmp), run vtysh INSIDE namespace
         with open(vtysh_file, 'w') as f:
             f.write('\n'.join(lines) + '\n')
-
-        # Apply configuration via vtysh
         node.cmd(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
-        # Force OSPF to reload its configuration (does NOT kill the daemon)
-        node.cmd(f'vtysh --vty_socket {conf_path} -c "clear ip ospf process" 2>/dev/null')
-        time.sleep(0.05)  # brief pause for OSPF to settle
 
     def _update_ospf_hot_pool(self, node, router_name, props):
         """

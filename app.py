@@ -178,7 +178,7 @@ if __name__ == '__main__':
     b.start()
 
     # Pre-warm router pool (3 routers ready in background)
-    xarxa.init_router_pool(pool_size=5)
+    # xarxa.init_router_pool(pool_size=5)
 
     # Start physical channel ping (runs on both Original and Twin)
     p = threading.Thread(target=_ping_twin_channel)

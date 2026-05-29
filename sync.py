@@ -33,7 +33,7 @@ import requests
 
 # ── Connection settings ──
 DIGITAL_TWIN_IP   = '10.4.39.102'   # Twin PC IP
-ORIGINAL_IP       = '10.4.39.104'   # Original PC IP
+ORIGINAL_IP       = '10.4.39.205'   # Original PC IP
 DIGITAL_TWIN_PORT = 5000
 
 # ── Sync latency history ──
