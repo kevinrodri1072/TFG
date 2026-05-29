@@ -5,7 +5,6 @@ Endpoints:
   POST /add_host      → add a host to an existing router's subnet
   POST /remove_node   → remove a host or an entire router subnet
   POST /add_router    → add a new router with its switch and p2p links
-  POST /rename_node   → rename any node (triggers a full network restart)
 
 Sync strategy
 -------------
@@ -18,19 +17,14 @@ Sync strategy
       The Original sends the fully-resolved router/switch/p2p data so the
       Twin applies exactly the same configuration without independent
       recalculation (which could diverge if states differ by even one node).
-
-  rename_node → full snapshot sync.
-      Mininet does not support renaming nodes in-place; the Twin still
-      needs a full rebuild for this operation.
 """
 
-import copy
 import threading
 import time
 
 from flask import Blueprint, jsonify, request
 
-from sync import sync_event, sync_snapshot
+from sync import sync_event
 
 _xarxa = None
 
@@ -179,6 +173,8 @@ def remove_node():
         from sync import sync_event, set_t_local
         holder = sync_event('/remove_node', {'name': name}, None)
 
+    t_local_start = time.time()
+
     if _xarxa.nodes[name]['type'] == 'router':
         # Clean p2p_links and IPs from neighbouring routers
         for rname, props in _xarxa.nodes.items():
@@ -192,34 +188,48 @@ def remove_node():
                     l for l in props['p2p_links'] if l['peer'] != name
                 ]
 
-        t_local_start = time.time()
         nodes_to_remove = _xarxa.find_router_subnet(name)
         nodes_to_remove.append(name)
+
+        # PHASE 1: Snapshot types + Mininet refs before modifying dicts
+        node_types = {n: _xarxa.nodes[n]['type'] for n in nodes_to_remove if n in _xarxa.nodes}
+        mn_nodes = {n: _xarxa.mininet_nodes[n] for n in nodes_to_remove if n in _xarxa.mininet_nodes}
+
+        # PHASE 2: Remove ALL from matrix + dicts FIRST (pure Python, safe)
         for node in nodes_to_remove:
-            _xarxa.remove_from_matrix(node)
-            nd = _xarxa.mininet_nodes[node]
-            # Limpiar comandos pendientes antes de borrar
-            if nd.waiting:
-                nd.sendInt()
-                nd.waitOutput()
-                time.sleep(0.2)
-            _xarxa.net.delNode(nd)
-            del _xarxa.mininet_nodes[node]
-            del _xarxa.nodes[node]
+            if node in _xarxa.nodes:
+                _xarxa.remove_from_matrix(node)
+                del _xarxa.nodes[node]
+            _xarxa.mininet_nodes.pop(node, None)
+
+        # PHASE 3: Delete from Mininet — hosts first, then router, then switch.
+        # Each delNode is wrapped in try/except because deleting one node
+        # can destroy veth pairs and break another node's shell.
+        ordered = (
+            [n for n in nodes_to_remove if node_types.get(n) == 'host']
+            + [n for n in nodes_to_remove if node_types.get(n) == 'router']
+            + [n for n in nodes_to_remove if node_types.get(n) == 'switch']
+        )
+        for node in ordered:
+            if node not in mn_nodes:
+                continue
+            try:
+                _xarxa.net.delNode(mn_nodes[node])
+            except Exception:
+                pass  # shell dead or already cleaned up — safe to ignore
+
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
         threading.Thread(target=_update_all_routes, daemon=True).start()
 
     else:  # host
-        t_local_start = time.time()
-        node = _xarxa.mininet_nodes[name]
-        if node.waiting:
-            node.sendInt()
-            node.waitOutput()
-            time.sleep(0.2)
         _xarxa.remove_from_matrix(name)
-        _xarxa.net.delNode(node)
-        del _xarxa.mininet_nodes[name]
+        nd = _xarxa.mininet_nodes.pop(name, None)
         del _xarxa.nodes[name]
+        if nd:
+            try:
+                _xarxa.net.delNode(nd)
+            except Exception:
+                pass
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
@@ -489,42 +499,3 @@ def add_router():
         # The sync_event already recorded the entry with None — update it
         set_t_local(holder, t_local_ms)
         return jsonify({'ok': True})
-
-
-@bp.route('/rename_node', methods=['POST'])
-def rename_node():
-    if not _xarxa.network_ready:
-        return jsonify({'ok': False, 'error': 'Network not ready'})
-
-    data     = request.json
-    old_name = data['old_name']
-    new_name = data['new_name']
-    is_sync  = data.get('sync', False)
-
-    if not new_name.replace('_', '').replace('-', '').isalnum() or new_name[0].isupper():
-        return jsonify({'ok': False,
-                        'error': 'Name must be lowercase alphanumeric (e.g. h6, router1)'})
-    if old_name not in _xarxa.nodes:
-        return jsonify({'ok': False, 'error': f'Node {old_name} not found'})
-    if new_name in _xarxa.nodes:
-        return jsonify({'ok': False, 'error': f'A node named {new_name} already exists'})
-
-    new_nodes = {(new_name if n == old_name else n): p for n, p in _xarxa.nodes.items()}
-    for props in new_nodes.values():
-        if props['type'] == 'router':
-            for link in props.get('p2p_links', []):
-                if link['peer'] == old_name:
-                    link['peer'] = new_name
-
-    matrix_copy   = copy.deepcopy(_xarxa.network_matrix)
-    t_local_start = time.time()
-    threading.Thread(
-        target=_xarxa.restart_network, args=(matrix_copy, new_nodes)
-    ).start()
-    t_local_ms = round((time.time() - t_local_start) * 1000, 2)
-
-    if not is_sync:
-        # rename_node cannot be done in-place on the Twin — full rebuild needed
-        sync_snapshot('rename_node', t_local_ms)
-        return jsonify({'ok': True})
-    return jsonify({'ok': True, 't_local_ms': t_local_ms})

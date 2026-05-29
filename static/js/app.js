@@ -222,7 +222,6 @@ var socket = io('http://localhost:5001');
                     }
                     document.getElementById('popup-buttons').style.display = 'block';
                     document.getElementById('popup-add-host').style.display = 'none';
-                    document.getElementById('popup-rename').style.display = 'none';
                     popup.style.display = 'block';
                 });
 
@@ -269,34 +268,6 @@ var socket = io('http://localhost:5001');
         function closeAddHostInput() {
             document.getElementById('popup-add-host').style.display = 'none';
             document.getElementById('popup-buttons').style.display = 'block';
-        }
-
-        function showRenameInput() {
-            document.getElementById('rename-input').value = selectedNode;
-            document.getElementById('popup-buttons').style.display = 'none';
-            document.getElementById('popup-rename').style.display = 'block';
-        }
-
-        function closeRenameInput() {
-            document.getElementById('popup-rename').style.display = 'none';
-            document.getElementById('popup-buttons').style.display = 'block';
-        }
-
-        function renameNode() {
-            var oldName = selectedNode;
-            var newName = document.getElementById('rename-input').value.trim();
-            if (!newName || newName === oldName) { closeRenameInput(); return; }
-            document.getElementById('node-popup').style.display = 'none';
-            fetch('/rename_node', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({old_name: oldName, new_name: newName})
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.ok) setTimeout(() => location.reload(), 4000);
-                else alert(data.error);
-            });
         }
 
         function addHost() {

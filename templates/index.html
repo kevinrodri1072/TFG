@@ -41,7 +41,6 @@
             <button id="btn-add-host" style="display:none" onclick="showAddHostInput()">Add Host</button>
             <button id="btn-view-routes" style="display:none" onclick="showRoutesModal()">View Routes</button>
             <button id="btn-wireshark" style="display:none" onclick="showWiresharkSelector()">📡 Wireshark</button>
-            <button onclick="showRenameInput()">Rename</button>
             <button onclick="removeSelectedNode()">Remove</button>
         </div>
         <div id="wireshark-selector" style="display:none; margin-top:8px;">
@@ -53,11 +52,6 @@
             <input type="hidden" id="host-router">
             <button onclick="addHost()">Confirm</button>
             <button onclick="closeAddHostInput()">Cancel</button>
-        </div>
-        <div id="popup-rename" style="display:none">
-            <input type="text" id="rename-input" placeholder="New name" style="width:100%; margin: 4px 0;">
-            <button onclick="renameNode()">Confirm</button>
-            <button onclick="closeRenameInput()">Cancel</button>
         </div>
     </div>
     <!-- Add router form -->
