@@ -544,7 +544,10 @@ var socket = io('http://localhost:5001');
 
         
         function refreshSyncMetrics() {
-            fetch('/metrics/sync')
+            var filter = document.getElementById('sync-op-filter');
+            var op = filter ? filter.value : '';
+            var url = '/metrics/sync' + (op ? '?op=' + encodeURIComponent(op) : '');
+            fetch(url)
                 .then(r => r.json())
                 .then(data => updateSyncDashboard(data));
         }

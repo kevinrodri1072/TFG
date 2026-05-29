@@ -227,6 +227,14 @@
                     <span class="metric-label"><span class="status-dot grey" id="sync-dot"></span>Operations tracked</span>
                     <span class="metric-value" id="sync-count">0</span>
                 </div>
+                <div style="margin-top:6px; margin-bottom:6px;">
+                    <select id="sync-op-filter" onchange="refreshSyncMetrics()" style="width:100%; padding:4px; font-size:11px; background:#2c3e50; color:#ecf0f1; border:1px solid #4a6278; border-radius:4px;">
+                        <option value="">All operations</option>
+                        <option value="add_router">add_router</option>
+                        <option value="add_host">add_host</option>
+                        <option value="remove_node">remove_node</option>
+                    </select>
+                </div>
                 <div style="margin-top:8px; font-size:11px; color:#7f8c8d; margin-bottom:3px;">🖥 Local (Original Mininet)</div>
                 <div class="metric-sub">
                     <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="sync-local-min">—</div></div>

@@ -343,8 +343,12 @@ def metrics_global():
 
 @bp.route('/metrics/sync')
 def metrics_sync():
+    op_filter = request.args.get('op', '').strip()
     with sync_history_lock:
-        history = list(sync_latency_history)
+        if op_filter:
+            history = [e for e in sync_latency_history if e.get('operation') == op_filter]
+        else:
+            history = list(sync_latency_history)
     if not history:
         return jsonify({'ok': True, 'history': [], 'stats': None})
 
