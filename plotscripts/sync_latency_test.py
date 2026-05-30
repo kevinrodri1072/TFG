@@ -219,30 +219,39 @@ def get_last_sync_entry():
 
 
 def do_operation(op):
-    """Execute one operation and return the sync metrics for it."""
+    """Execute one operation and return the sync metrics for it.
+    Returns a dict with the sync entry, or a dict with 'error' key on failure.
+    Never returns None — always returns something so the caller can continue.
+    """
     # Snapshot history length before operation
     try:
         before = requests.get(f'{ORIGINAL_URL}/metrics/sync', timeout=5).json()
         before_count = len(before.get('history', []))
-    except Exception:
-        before_count = 0
+    except Exception as e:
+        return {'error': f'metrics/sync unreachable: {e}'}
 
     # Execute operation
-    if op['type'] == 'router':
-        r = requests.post(f'{ORIGINAL_URL}/add_router',
-                          json={'name': op['name'],
-                                'connected_routers': op['connected_routers']},
-                          timeout=30)
-    else:
-        r = requests.post(f'{ORIGINAL_URL}/add_host',
-                          json={'name': op['name'], 'router': op['router']},
-                          timeout=30)
+    try:
+        if op['type'] == 'router':
+            r = requests.post(f'{ORIGINAL_URL}/add_router',
+                              json={'name': op['name'],
+                                    'connected_routers': op['connected_routers']},
+                              timeout=30)
+        else:
+            r = requests.post(f'{ORIGINAL_URL}/add_host',
+                              json={'name': op['name'], 'router': op['router']},
+                              timeout=30)
+    except requests.exceptions.Timeout:
+        return {'error': 'Request timed out (>30s)'}
+    except Exception as e:
+        return {'error': f'Request failed: {e}'}
 
-    if not r.json().get('ok'):
-        return None
+    resp = r.json()
+    if not resp.get('ok'):
+        return {'error': resp.get('error', 'Server returned ok=False')}
 
-    # Wait for sync entry to appear (max 5s)
-    for _ in range(10):
+    # Wait for sync entry to appear (max 10s — increased from 5s)
+    for attempt in range(20):
         time.sleep(0.5)
         try:
             after = requests.get(f'{ORIGINAL_URL}/metrics/sync', timeout=5).json()
@@ -251,7 +260,7 @@ def do_operation(op):
                 return history[-1]  # Most recent entry = our operation
         except Exception:
             pass
-    return None
+    return {'error': 'Sync entry did not appear within 10s (t_local may be pending)'}
 
 
 def safe_stats(values):
@@ -385,6 +394,7 @@ def main():
         return
 
     rows = []
+    failures = 0
     checkpoints_iter = iter(CHECKPOINTS)
     next_checkpoint  = next(checkpoints_iter)
     print(f'🎯 First checkpoint: {next_checkpoint} nodes\n')
@@ -397,24 +407,52 @@ def main():
             print(f'  ➕ add_host   {name} → {op["router"]}...', end='', flush=True)
 
         entry = do_operation(op)
-        if entry is None:
-            print(f' ❌ Failed')
-            break
+
+        # Check for error
+        if 'error' in entry:
+            failures += 1
+            print(f' ❌ {entry["error"]}')
+            # Record failure in CSV with null latencies
+            current = count_nodes()
+            rows.append({
+                'op_type':      op['type'],
+                'op_name':      name,
+                'n_nodes':      current,
+                't_local_ms':   None,
+                't_network_ms': None,
+                't_twin_ms':    None,
+                't_total_ms':   None,
+                'error':        entry['error'],
+            })
+            # Skip OSPF wait — node likely wasn't added
+            time.sleep(0.5)
+            # Update checkpoint based on actual node count
+            current = count_nodes()
+            while next_checkpoint is not None and current >= next_checkpoint:
+                print(f'\n  📏 Checkpoint {next_checkpoint} reached ({failures} failures so far)')
+                try:
+                    next_checkpoint = next(checkpoints_iter)
+                    print(f'  🎯 Next checkpoint: {next_checkpoint} nodes\n')
+                except StopIteration:
+                    next_checkpoint = None
+            continue
 
         t_local   = entry.get('t_local_ms')
         t_network = entry.get('t_network_ms')
         t_twin    = entry.get('t_twin_ms')
-        t_total   = round(t_local + t_network, 2) if t_local and t_network else None
+        t_total   = round(max(t_local, t_network), 2) if t_local and t_network else (
+                    round(t_network, 2) if t_network else None)
 
         current = count_nodes()
         row = {
-            'op_type':     op['type'],
-            'op_name':     name,
-            'n_nodes':     current,
-            't_local_ms':  t_local,
+            'op_type':      op['type'],
+            'op_name':      name,
+            'n_nodes':      current,
+            't_local_ms':   t_local,
             't_network_ms': t_network,
-            't_twin_ms':   t_twin,
-            't_total_ms':  t_total,
+            't_twin_ms':    t_twin,
+            't_total_ms':   t_total,
+            'error':        '',
         }
         rows.append(row)
         print(f' ✅  total={t_total}ms  local={t_local}ms  net={t_network}ms  twin={t_twin}ms')
@@ -426,12 +464,13 @@ def main():
         else:
             time.sleep(0.5)
 
-        if current == next_checkpoint:
-            print(f'\n  📏 Checkpoint {next_checkpoint} reached')
+        if next_checkpoint is not None and current >= next_checkpoint:
+            print(f'\n  📏 Checkpoint {next_checkpoint} reached ({failures} failures so far)')
             try:
                 next_checkpoint = next(checkpoints_iter)
                 print(f'  🎯 Next checkpoint: {next_checkpoint} nodes\n')
             except StopIteration:
+                next_checkpoint = None
                 break
 
     # Save CSV
@@ -442,10 +481,17 @@ def main():
             writer.writerows(rows)
         print(f'\n✅ CSV saved to {CSV_FILE}')
 
-        # Generate plots
-        generate_plots(rows)
+        # Generate plots (only rows with valid data)
+        valid_rows = [r for r in rows if r['t_total_ms'] is not None]
+        if valid_rows:
+            generate_plots(valid_rows)
+        else:
+            print('⚠️  No valid rows to plot.')
 
-    print('\n🏁 Sync latency study complete!')
+    total_ops = len(rows)
+    ok_ops    = sum(1 for r in rows if not r.get('error'))
+    print(f'\n🏁 Sync latency study complete!')
+    print(f'   {ok_ops}/{total_ops} operations succeeded  |  {failures} failures')
 
 
 if __name__ == '__main__':
