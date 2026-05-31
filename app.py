@@ -10,6 +10,7 @@ import argparse
 import subprocess
 import threading
 import time
+import os
 
 import psutil
 from flask import Flask
@@ -19,8 +20,14 @@ from xarxa import Xarxa
 import sync as sync_module
 
 # ── CLI arguments ──
-parser = argparse.ArgumentParser()
-parser.add_argument('--twin', action='store_true', help='Run as Digital Twin')
+parser = argparse.ArgumentParser(description='Digital Twin Network')
+parser.add_argument('--twin',        action='store_true',  help='Run as Digital Twin')
+parser.add_argument('--twin-ip',     default='10.4.39.110', metavar='IP',
+                    help='Digital Twin PC IP (default: 10.4.39.110)')
+parser.add_argument('--original-ip', default='10.4.39.102', metavar='IP',
+                    help='Original PC IP     (default: 10.4.39.102)')
+parser.add_argument('--twin-port',   default=5000, type=int, metavar='PORT',
+                    help='Digital Twin port  (default: 5000)')
 args, _ = parser.parse_known_args()
 IS_TWIN = args.twin
 
@@ -91,6 +98,23 @@ def _ping_twin_channel():
         time.sleep(5)
 
 
+def _read_net_dev(pid):
+    """
+    Read /proc/{pid}/net/dev directly from the host filesystem.
+    Returns the file content as a string, or None on error.
+
+    This avoids mn_node.cmd() entirely — no shell interaction, no thread-safety
+    issues, no competition with Mininet operations. Each Mininet node runs in
+    its own network namespace; /proc/{pid}/net/dev reflects that namespace's
+    interfaces without any subprocess overhead.
+    """
+    try:
+        with open(f'/proc/{pid}/net/dev', 'r') as f:
+            return f.read()
+    except OSError:
+        return None
+
+
 def _broadcast_metrics(xarxa):
     """Push CPU/RAM and link traffic via WebSocket every 500ms."""
     link_tick = 0
@@ -109,17 +133,21 @@ def _broadcast_metrics(xarxa):
             if link_tick >= 2 and xarxa.network_ready:
                 link_tick = 0
                 links = {}
-                # Snapshot to avoid dict-changed-during-iteration errors
-                nodes_snap = dict(xarxa.nodes)
+                # Snapshot to avoid dict-changed-during-iteration errors.
+                # No topology_lock needed — stale metrics for one tick are fine.
+                nodes_snap    = dict(xarxa.nodes)
+                mn_nodes_snap = dict(xarxa.mininet_nodes)
                 for name, props in nodes_snap.items():
                     if props['type'] not in ('router', 'host'):
                         continue
-                    mn_node = xarxa.mininet_nodes.get(name)
-                    if not mn_node or mn_node.shell is None or mn_node.waiting:
+                    mn_node = mn_nodes_snap.get(name)
+                    if not mn_node:
                         continue
-                    try:
-                        raw = mn_node.cmd('cat /proc/net/dev')
-                    except Exception:
+                    pid = getattr(mn_node, 'pid', None)
+                    if not pid:
+                        continue
+                    raw = _read_net_dev(pid)
+                    if not raw:
                         continue
                     for line in raw.strip().split('\n')[2:]:
                         parts = line.split(':')
@@ -129,7 +157,8 @@ def _broadcast_metrics(xarxa):
                         if intf == 'lo':
                             continue
                         values = parts[1].split()
-                        # Mininet names interfaces as "r1-eth0" — strip node prefix
+                        if len(values) < 9:
+                            continue
                         intf_short = intf[len(name)+1:] if intf.startswith(name + '-') else intf
                         links[f'{name}-{intf_short}'] = {
                             'node':     name,
@@ -157,7 +186,27 @@ if __name__ == '__main__':
 
     xarxa = Xarxa()
 
-    sync_module.init_sync(xarxa)
+    # Kill any leftover FRR daemons from previous runs.
+    # mn -c kills Mininet bash shells but NOT FRR daemons. Stale daemons
+    # keep their namespace alive and hold PID file locks, preventing new
+    # daemons from starting (causing the "Could not lock pid_file" error).
+    import glob, shutil
+    for frr_dir in glob.glob('/tmp/frr_*'):
+        for pidfile in ['zebra.pid', 'ospfd.pid', 'ldpd.pid', 'bfdd.pid']:
+            pidpath = f'{frr_dir}/{pidfile}'
+            if os.path.exists(pidpath):
+                try:
+                    with open(pidpath) as _pf:
+                        _pid = int(_pf.read().strip())
+                    os.kill(_pid, 9)  # SIGKILL — no grace period needed
+                except Exception:
+                    pass
+        shutil.rmtree(frr_dir, ignore_errors=True)
+
+    sync_module.init_sync(xarxa,
+                       twin_ip=args.twin_ip,
+                       original_ip=args.original_ip,
+                       twin_port=args.twin_port)
 
     init_topology(xarxa, IS_TWIN)
     init_nodes(xarxa)
@@ -177,8 +226,13 @@ if __name__ == '__main__':
     b.daemon = True
     b.start()
 
-    # Pre-warm router pool (3 routers ready in background)
-    # xarxa.init_router_pool(pool_size=5)
+    # Pre-warm router pool — wait for network_ready before creating pool nodes.
+    # A fixed sleep(3) is fragile; polling network_ready is robust on any HW.
+    def _start_pool_when_ready():
+        while not xarxa.network_ready:
+            time.sleep(0.5)
+        xarxa.init_router_pool(pool_size=5)
+    threading.Thread(target=_start_pool_when_ready, daemon=True).start()
 
     # Start physical channel ping (runs on both Original and Twin)
     p = threading.Thread(target=_ping_twin_channel)

@@ -11,6 +11,7 @@ Endpoints:
 
 import os
 import subprocess
+import threading
 
 from flask import Blueprint, jsonify, request
 
@@ -43,10 +44,27 @@ def set_routing_mode():
 
     is_sync = request.json.get('sync', False)
     _xarxa.routing_mode = mode
-    for name, props in _xarxa.nodes.items():
-        if props['type'] == 'router' and name in _xarxa.mininet_nodes:
-            _xarxa._stop_routing(_xarxa.mininet_nodes[name], name)
-            _xarxa._apply_routing(_xarxa.mininet_nodes[name], name, props)
+
+    # Snapshot routers before starting threads to avoid dict-changed-during-iteration.
+    routers = [
+        (name, props, _xarxa.mininet_nodes[name])
+        for name, props in _xarxa.nodes.items()
+        if props['type'] == 'router' and name in _xarxa.mininet_nodes
+    ]
+
+    def _restart_one(name, props, node):
+        """Stop + restart routing on a single router (sequential per node)."""
+        _xarxa._stop_routing(node, name)
+        _xarxa._apply_routing(node, name, props)
+
+    # Run one thread per router — each node has its own shell so this is safe.
+    # With N routers this runs in ~max(per-router time) instead of N × per-router.
+    threads = [
+        threading.Thread(target=_restart_one, args=(n, p, nd), daemon=True)
+        for n, p, nd in routers
+    ]
+    for t in threads: t.start()
+    for t in threads: t.join()
 
     if not is_sync:
         sync_event('/set_routing_mode', {'mode': mode}, 0)

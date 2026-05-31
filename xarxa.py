@@ -60,6 +60,15 @@ class Xarxa:
         self.routing_mode = 'ospf'  # 'ospf', 'ospf_bfd', 'mpls', 'mpls_bfd', 'manual'
         self._restart_lock = threading.Lock()
         self._restart_pending = [None]
+        # ── Topology lock ──────────────────────────────────────────────────────
+        # RLock (reentrant) protects all mutations of self.nodes,
+        # self.network_matrix and self.mininet_nodes.
+        # Must be held during: validation checks, Python-state writes, and the
+        # Mininet addLink/addHost that reads intfList() — so two concurrent
+        # add_host calls on the same switch cannot compute the same intf name.
+        # Long Mininet operations (FRR start, delNode) run outside the lock
+        # so they do not block reads or other topology queries.
+        self.topology_lock = threading.RLock()
 
     #  ROUTING PROTOCOLS
 
@@ -117,10 +126,10 @@ class Xarxa:
             ldp_lines.append(f'    interface {name}-{intf}')
         ldp_lines += ['  exit-address-family', '!', 'line vty', '!']
 
-        node.cmd(f'rm -f {conf_path}/ldpd.conf')
-        for line in ldp_lines:
-            node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/ldpd.conf')
-        node.cmd(f'chmod 644 {conf_path}/ldpd.conf')
+        os.makedirs(conf_path, exist_ok=True)
+        with open(f'{conf_path}/ldpd.conf', 'w') as f:
+            f.write('\n'.join(ldp_lines) + '\n')
+        os.chmod(f'{conf_path}/ldpd.conf', 0o644)
 
     def _kill_daemons(self, node, name, daemons):
         """Kills the specified FRRouting daemons for a given router."""
@@ -198,22 +207,27 @@ class Xarxa:
         """
         Inject OSPF networks into a running ospfd WITHOUT restarting daemons.
         Also configures hello/dead intervals on ALL interfaces so new p2p
-        links match the timers on the new router (1s/4s) — without matching
-        timers, OSPF will NEVER form an adjacency.
+        links match the timers on the new router (1s/4s).
+
+        ORDER IS CRITICAL:
+        Interface timers must be configured BEFORE the network statement.
+        When ospfd first starts OSPF on a new interface (triggered by the
+        network statement), it reads the current dead-interval to set the
+        Wait Timer. If hello/dead are configured AFTER the network statement,
+        ospfd uses the FRR default (hello=10s, dead=40s) → Wait Timer = 40s.
+        Configuring timers FIRST ensures Wait Timer = 4s → convergence in ~6s.
+
         Runs vtysh via node.cmd() inside the node's namespace so it connects
         ONLY to the node's FRR daemons, not the system FRR.
         """
         conf_path  = f'/tmp/frr_{name}'
         vtysh_file = f'{conf_path}/hot_update.vtysh'
-        lines = ['configure terminal', 'router ospf']
-        for intf, ip in props['ips'].items():
-            if intf == 'lan':
-                continue
-            base = ip.split('/')[0].rsplit('.', 1)[0]
-            mask = ip.split('/')[1]
-            lines.append(f' network {base}.0/{mask} area 0')
-        lines.append('exit')  # exit router ospf
-        # Configure hello/dead on ALL interfaces (including new p2p ones)
+        lines = ['configure terminal']
+
+        # STEP 1: Configure hello/dead on ALL interfaces FIRST.
+        # For interfaces already in OSPF (established neighbours), this is a
+        # no-op for the Wait Timer (already expired). For NEW interfaces, it
+        # sets the timers before ospfd starts OSPF on them (step 2).
         for intf, ip in props['ips'].items():
             if intf == 'lan':
                 continue
@@ -221,31 +235,11 @@ class Xarxa:
                       ' ip ospf hello-interval 1',
                       ' ip ospf dead-interval 4',
                       'exit']
-        lines.append('end')
-        # Write file on host filesystem (shared /tmp), run vtysh INSIDE namespace
-        with open(vtysh_file, 'w') as f:
-            f.write('\n'.join(lines) + '\n')
-        node.cmd(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
 
-    def _update_ospf_hot_pool(self, node, router_name, props):
-        """
-        Hot-update OSPF on a freshly claimed pool router.
-        The daemons still run under the pool name/socket path stored in
-        node._pool_frr_path. We inject the real networks and router-id,
-        then rename the interface inside the running OSPF config.
-        Finally rename the FRR dir so future hot-updates use the real name.
-        """
-        pool_path = getattr(node, '_pool_frr_path', None)
-        if not pool_path:
-            # Fallback: just do a normal hot update
-            self._update_ospf_hot(node, router_name, props)
-            return
-
-        router_id = props['ips'].get('eth0', '1.1.1.1/30').split('/')[0]
-        vtysh_file = f'{pool_path}/pool_claim.vtysh'
-        lines = ['configure terminal', 'router ospf',
-                 f' ospf router-id {router_id}',
-                 ' no network 10.254.0.0/24 area 0']
+        # STEP 2: Update network statements.
+        # Adding a new network causes ospfd to start OSPF on the matching
+        # interface — at this point it reads the timers set in step 1.
+        lines.append('router ospf')
         for intf, ip in props['ips'].items():
             if intf == 'lan':
                 continue
@@ -256,14 +250,7 @@ class Xarxa:
 
         with open(vtysh_file, 'w') as f:
             f.write('\n'.join(lines) + '\n')
-        os.system(f'vtysh --vty_socket {pool_path} -f {vtysh_file} 2>/dev/null')
-
-        # Rename the FRR dir to the real router name so future _update_ospf_hot
-        # calls find the socket. Use os.rename (atomic, no nesting issue).
-        real_path = f'/tmp/frr_{router_name}'
-        if not os.path.exists(real_path):
-            os.rename(pool_path, real_path)
-        node._pool_frr_path = None
+        node.cmd(f'vtysh --vty_socket {conf_path} -f {vtysh_file} 2>/dev/null')
 
     # ── Router pool ──────────────────────────────────────────────────────────
 
@@ -440,9 +427,11 @@ class Xarxa:
             f'rm -rf {frr_dir}'
         )
 
-        # Replenish pool to full size in background
-        threading.Thread(target=self._pool_replenish, daemon=True).start()
-
+        # NOTE: _pool_replenish is NOT started here.
+        # It must be started by the caller (add_router Phase 3) AFTER all
+        # Mininet net.addLink / net.addHost calls complete. Starting it here
+        # causes concurrent net operations that corrupt Mininet's internal
+        # state, putting zebra in a different namespace than the interfaces.
         return router_node, switch_node
 
     def _router_pool_available(self):
@@ -461,11 +450,11 @@ class Xarxa:
         conf_path = f'/tmp/frr_{name}'
 
         # bfdd config
-        node.cmd(f'rm -f {conf_path}/bfdd.conf')
         bfd_lines = [f'hostname {name}', 'log syslog informational', '!', 'line vty', '!']
-        for line in bfd_lines:
-            node.cmd(f'printf "%s\\n" "{line}" >> {conf_path}/bfdd.conf')
-        node.cmd(f'chmod 644 {conf_path}/bfdd.conf')
+        os.makedirs(conf_path, exist_ok=True)
+        with open(f'{conf_path}/bfdd.conf', 'w') as f:
+            f.write('\n'.join(bfd_lines) + '\n')
+        os.chmod(f'{conf_path}/bfdd.conf', 0o644)
 
         # Kill previous bfdd
         node.cmd(f'pkill -f "bfdd.*{name}" 2>/dev/null')
@@ -719,12 +708,17 @@ class Xarxa:
         return None
 
     def get_all_host_subnets(self):
-        """Returns list of all host subnets (eth1 subnets of all routers)."""
+        """Returns list of all /24 host subnets for all routers.
+        Uses the 'lan' key which is always present regardless of whether
+        the router was created from the pool (eth0=LAN) or not (ethN=LAN).
+        """
         subnets = []
         for name, props in self.nodes.items():
             if props['type'] == 'router':
-                ip_eth1 = props['ips']['eth1'].split('/')[0]
-                base = ip_eth1.rsplit('.', 1)[0]
+                lan_ip = props['ips'].get('lan', '')
+                if not lan_ip:
+                    continue
+                base = lan_ip.split('/')[0].rsplit('.', 1)[0]
                 subnets.append({'subnet': f'{base}.0/24', 'router': name})
         return subnets
 

@@ -31,9 +31,9 @@ from collections import deque
 
 import requests
 
-# ── Connection settings ──
-DIGITAL_TWIN_IP   = '10.4.39.110'   # Twin PC IP
-ORIGINAL_IP       = '10.4.39.102'   # Original PC IP
+# ── Connection settings (overridden by init_sync via CLI args) ──
+DIGITAL_TWIN_IP   = '10.4.39.110'
+ORIGINAL_IP       = '10.4.39.102'
 DIGITAL_TWIN_PORT = 5000
 
 # ── Sync latency history ──
@@ -45,10 +45,20 @@ sync_history_lock    = threading.Lock()
 _xarxa = None
 
 
-def init_sync(xarxa_instance):
-    """Give sync.py a reference to the live Xarxa object."""
-    global _xarxa
+def init_sync(xarxa_instance, twin_ip=None, original_ip=None, twin_port=None):
+    """
+    Give sync.py a reference to the live Xarxa object and configure IPs.
+    IPs default to the module-level constants if not provided.
+    """
+    global _xarxa, DIGITAL_TWIN_IP, ORIGINAL_IP, DIGITAL_TWIN_PORT
     _xarxa = xarxa_instance
+    if twin_ip:
+        DIGITAL_TWIN_IP = twin_ip
+    if original_ip:
+        ORIGINAL_IP = original_ip
+    if twin_port is not None:
+        DIGITAL_TWIN_PORT = twin_port
+    print(f'[sync] Original={ORIGINAL_IP}  Twin={DIGITAL_TWIN_IP}:{DIGITAL_TWIN_PORT}')
 
 
 # ── Latency recording ──

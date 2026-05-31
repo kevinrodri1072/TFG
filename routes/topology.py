@@ -83,13 +83,17 @@ def topology():
             for host in hosts:
                 links.append({'from': router, 'to': host})
 
-    return jsonify({'nodes': _xarxa.nodes, 'links': links})
+    return jsonify({'nodes': nodes_snap, 'links': links})
 
 
 @bp.route('/matrix')
 def matrix():
-    names = list(_xarxa.nodes.keys())
-    return jsonify({'names': names, 'matrix': _xarxa.network_matrix})
+    # Snapshot both together so names and matrix are always consistent
+    names  = list(_xarxa.nodes.keys())
+    matrix = [row[:] for row in _xarxa.network_matrix]
+    if len(matrix) != len(names):
+        return jsonify({'names': [], 'matrix': []})
+    return jsonify({'names': names, 'matrix': matrix})
 
 
 @bp.route('/export')

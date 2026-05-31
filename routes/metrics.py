@@ -450,12 +450,14 @@ def metrics_traffic():
         return jsonify({'ok': False, 'error': 'Switches not supported'})
 
     mn_node = _xarxa.mininet_nodes[node]
-    if mn_node.shell is None or mn_node.waiting:
-        return jsonify({'ok': False, 'error': 'Node shell busy'})
+    pid = getattr(mn_node, 'pid', None)
+    if not pid:
+        return jsonify({'ok': False, 'error': 'Node PID unavailable'})
     try:
-        raw = mn_node.cmd('cat /proc/net/dev')
-    except Exception:
-        return jsonify({'ok': False, 'error': 'Node shell error'})
+        with open(f'/proc/{pid}/net/dev', 'r') as fh:
+            raw = fh.read()
+    except OSError:
+        return jsonify({'ok': False, 'error': 'Node namespace unreadable'})
 
     interfaces = {}
     for line in raw.strip().split('\n')[2:]:
@@ -485,11 +487,13 @@ def metrics_link_traffic():
         if props['type'] != 'router':
             continue
         mn_node = _xarxa.mininet_nodes[name]
-        if mn_node.shell is None or mn_node.waiting:
+        pid = getattr(mn_node, 'pid', None)
+        if not pid:
             continue
         try:
-            raw = mn_node.cmd('cat /proc/net/dev')
-        except Exception:
+            with open(f'/proc/{pid}/net/dev', 'r') as fh:
+                raw = fh.read()
+        except OSError:
             continue
         for line in raw.strip().split('\n')[2:]:
             parts = line.split(':')
