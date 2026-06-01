@@ -72,8 +72,10 @@ def get_twin_statuses():
 
 
 def _is_twin_active(ip):
+    """Return True only if Twin is connected or diverged — not offline or disconnected."""
     with _twin_status_lock:
-        return TWIN_STATUS.get(ip, {}).get('status', 'connected') != 'disconnected'
+        status = TWIN_STATUS.get(ip, {}).get('status', 'connected')
+        return status in ('connected', 'diverged')
 
 
 def register_twin(ip, port=5000):
@@ -103,11 +105,11 @@ def _start_heartbeat_checker():
     in the last HEARTBEAT_TIMEOUT seconds.
     Only runs on the Original (is_twin=False).
     """
-    HEARTBEAT_TIMEOUT = 25  # seconds — Twin sends every 10s, so 2.5 missed = offline
+    HEARTBEAT_TIMEOUT = 8   # seconds — Twin sends every 3s, so ~2.5 missed = offline
 
     def _check():
         while True:
-            time.sleep(10)
+            time.sleep(3)
             now = time.time()
             with _twin_status_lock:
                 for ip, s in TWIN_STATUS.items():
@@ -191,9 +193,9 @@ def init_sync(xarxa_instance, twins=None, original_ip=None, twin_port=None,
     twins_str = ', '.join(f'{t["ip"]}:{t["port"]}' for t in TWINS)
     print(f'[sync] Original={ORIGINAL_IP}  Twins=[{twins_str}]')
 
-    # Start heartbeat checker (Original only — Twin does not call init_sync with twins)
-    if twins or twin_ip:
-        _start_heartbeat_checker()
+    # Start heartbeat checker always — harmless on Twin (TWIN_STATUS stays empty).
+    # Must not depend on --twins being set: Twins can register dynamically later.
+    _start_heartbeat_checker()
 
 
 
@@ -459,7 +461,7 @@ def start_twin_heartbeat():
         send_heartbeat()
         # Then send periodic heartbeats
         while True:
-            time.sleep(10)
+            time.sleep(3)
             send_heartbeat()
     threading.Thread(target=_loop, daemon=True).start()
     print(f'[sync] Twin heartbeat started → {ORIGINAL_IP}:5000')
