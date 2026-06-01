@@ -173,8 +173,6 @@ FIXED_SEQUENCE = [
     {'type': 'host',   'name': 'h105', 'router': 'r32'},
 ]
 
-
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def wait_for_network():
@@ -187,14 +185,11 @@ def wait_for_network():
         time.sleep(1)
     return False
 
-
 def count_nodes():
     r = requests.get(f'{ORIGINAL_URL}/topology', timeout=10).json()
     return sum(1 for n, p in r['nodes'].items() if p['type'] != 'switch')
 
-
 def get_last_sync_entry():
-    """Get the most recent sync entry from /metrics/sync history."""
     try:
         data = requests.get(f'{ORIGINAL_URL}/metrics/sync', timeout=5).json()
         history = data.get('history', [])
@@ -202,20 +197,13 @@ def get_last_sync_entry():
     except Exception:
         return None
 
-
 def do_operation(op):
-    """Execute one operation and return the sync metrics for it.
-    Returns a dict with the sync entry, or a dict with 'error' key on failure.
-    Never returns None — always returns something so the caller can continue.
-    """
-    # Snapshot history length before operation
     try:
         before = requests.get(f'{ORIGINAL_URL}/metrics/sync', timeout=5).json()
         before_count = len(before.get('history', []))
     except Exception as e:
         return {'error': f'metrics/sync unreachable: {e}'}
 
-    # Execute operation
     try:
         if op['type'] == 'router':
             r = requests.post(f'{ORIGINAL_URL}/add_router',
@@ -235,18 +223,16 @@ def do_operation(op):
     if not resp.get('ok'):
         return {'error': resp.get('error', 'Server returned ok=False')}
 
-    # Wait for sync entry to appear (max 10s — increased from 5s)
     for attempt in range(20):
         time.sleep(0.5)
         try:
             after = requests.get(f'{ORIGINAL_URL}/metrics/sync', timeout=5).json()
             history = after.get('history', [])
             if len(history) > before_count:
-                return history[-1]  # Most recent entry = our operation
+                return history[-1]
         except Exception:
             pass
     return {'error': 'Sync entry did not appear within 10s (t_local may be pending)'}
-
 
 def safe_stats(values):
     values = [v for v in values if v is not None]
@@ -254,106 +240,84 @@ def safe_stats(values):
         return None, None, None
     return round(min(values), 2), round(statistics.mean(values), 2), round(max(values), 2)
 
-
-def jitter_of(values):
-    values = [v for v in values if v is not None]
-    if len(values) < 2:
-        return 0.0
-    diffs = [abs(values[i] - values[i-1]) for i in range(1, len(values))]
-    return round(sum(diffs) / len(diffs), 2)
-
-
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
 def generate_plots(rows):
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(16, 11))
     fig.suptitle(
-        'Digital Twin Network — Sync Latency Study\n'
-        '(t_total = t_local + t_network)',
-        fontsize=14, fontweight='bold'
+        'Digital Twin Network — Sync Latency Performance Study\n'
+        'Separated Analysis by Operation Type (Host vs Router)',
+        fontsize=16, fontweight='bold'
     )
 
-    checkpoints = sorted(set(r['n_nodes'] for r in rows))
+    # Separar los datos por tipo de operación desde el inicio
+    hosts_data = sorted([r for r in rows if r['op_type'] == 'host'], key=lambda x: x['n_nodes'])
+    routers_data = sorted([r for r in rows if r['op_type'] == 'router'], key=lambda x: x['n_nodes'])
 
-    def vals_at(cp, key, op_type=None):
-        return [r[key] for r in rows
-                if r['n_nodes'] == cp
-                and r[key] is not None
-                and (op_type is None or r['op_type'] == op_type)]
-
-    # ── Plot 1: t_total min/avg/max per checkpoint ──
+    # ── GRÁFICA 1: Evolución de Latencia Total (Separada) ──
     ax = axes[0][0]
-    avgs = [safe_stats(vals_at(cp, 't_total_ms'))[1] for cp in checkpoints]
-    mins = [safe_stats(vals_at(cp, 't_total_ms'))[0] for cp in checkpoints]
-    maxs = [safe_stats(vals_at(cp, 't_total_ms'))[2] for cp in checkpoints]
-    ax.plot(checkpoints, avgs, 'o-', color='#2980b9', linewidth=2, label='avg')
-    ax.fill_between(checkpoints, mins, maxs, alpha=0.2, color='#2980b9', label='min–max')
-    ax.set_title('Total sync latency (t_total)', fontweight='bold')
-    ax.set_xlabel('Network size (hosts + routers)')
+    if hosts_data:
+        ax.plot([r['n_nodes'] for r in hosts_data], [r['t_total_ms'] for r in hosts_data], 
+                'o-', color='#27ae60', linewidth=2, label='add_host latency')
+    if routers_data:
+        ax.plot([r['n_nodes'] for r in routers_data], [r['t_total_ms'] for r in routers_data], 
+                's-', color='#e74c3c', linewidth=2, label='add_router latency')
+    ax.set_title('Sync Latency Evolution Trend', fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (Total nodes)')
     ax.set_ylabel('t_total (ms)')
-    ax.set_xticks(checkpoints)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── Plot 2: stacked bars — component breakdown ──
+    # ── GRÁFICA 2: Jitter Real por Tipo de Operación ──
     ax = axes[0][1]
-    w = 3
-    x = np.array(checkpoints)
-    local_avgs   = [safe_stats(vals_at(cp, 't_local_ms'))[1]   or 0 for cp in checkpoints]
-    network_avgs = [safe_stats(vals_at(cp, 't_network_ms'))[1] or 0 for cp in checkpoints]
-    twin_avgs    = [safe_stats(vals_at(cp, 't_twin_ms'))[1]    or 0 for cp in checkpoints]
-    # overhead = t_network - t_twin (network transport time)
-    overhead_avgs = [max(0, n - t) for n, t in zip(network_avgs, twin_avgs)]
+    if len(hosts_data) > 1:
+        h_nodes = [r['n_nodes'] for r in hosts_data][1:]
+        h_tot = [r['t_total_ms'] for r in hosts_data]
+        h_jitter = [abs(h_tot[i] - h_tot[i-1]) for i in range(1, len(h_tot))]
+        ax.plot(h_nodes, h_jitter, 'o--', color='#27ae60', alpha=0.7, label='Host Jitter')
+    
+    if len(routers_data) > 1:
+        r_nodes = [r['n_nodes'] for r in routers_data][1:]
+        r_tot = [r['t_total_ms'] for r in routers_data]
+        r_jitter = [abs(r_tot[i] - r_tot[i-1]) for i in range(1, len(r_tot))]
+        ax.plot(r_nodes, r_jitter, 's--', color='#e74c3c', alpha=0.7, label='Router Jitter')
+        
+    ax.set_title('Isolated Sync Latency Jitter', fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (Total nodes)')
+    ax.set_ylabel('Jitter |Δt| (ms)')
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
 
-    ax.bar(x, local_avgs,    width=w, label='t_local (Original Mininet)', color='#3498db')
-    ax.bar(x, overhead_avgs, width=w, bottom=local_avgs, label='t_network overhead', color='#e67e22')
-    ax.bar(x, twin_avgs,     width=w,
-           bottom=[l + o for l, o in zip(local_avgs, overhead_avgs)],
-           label='t_twin (Twin Mininet)', color='#27ae60')
-    ax.set_title('Latency component breakdown (avg)', fontweight='bold')
-    ax.set_xlabel('Network size (hosts + routers)')
-    ax.set_ylabel('Time (ms)')
-    ax.set_xticks(checkpoints)
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis='y')
-
-    # ── Plot 3: add_host vs add_router ──
+    # ── GRÁFICA 3: Desglose de Componentes para ADD_HOST ──
     ax = axes[1][0]
-    for op_type, color, label in [
-        ('add_host',   '#27ae60', 'add_host'),
-        ('add_router', '#e74c3c', 'add_router'),
-    ]:
-        avgs = [safe_stats(vals_at(cp, 't_total_ms', op_type))[1] for cp in checkpoints]
-        valid_cp = [cp for cp, a in zip(checkpoints, avgs) if a is not None]
-        valid_avg = [a for a in avgs if a is not None]
-        if valid_avg:
-            ax.plot(valid_cp, valid_avg, 'o-', color=color, linewidth=2, label=label)
-    ax.set_title('add_host vs add_router latency', fontweight='bold')
-    ax.set_xlabel('Network size (hosts + routers)')
-    ax.set_ylabel('t_total (ms)')
-    ax.set_xticks(checkpoints)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    if hosts_data:
+        h_x = [r['n_nodes'] for r in hosts_data]
+        ax.plot(h_x, [r['t_local_ms'] for r in hosts_data], '-', color='#3498db', label='t_local (Original)')
+        ax.plot(h_x, [r['t_network_ms'] for r in hosts_data], '-', color='#e67e22', label='t_network RTT')
+        ax.plot(h_x, [r['t_twin_ms'] for r in hosts_data], '-', color='#9b59b6', label='t_twin (Shadow)')
+    ax.set_title('Component Breakdown: add_host', fontweight='bold', fontsize=12, color='#27ae60')
+    ax.set_xlabel('Network size (Total nodes)')
+    ax.set_ylabel('Time (ms)')
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── Plot 4: jitter per component ──
+    # ── GRÁFICA 4: Desglose de Componentes para ADD_ROUTER ──
     ax = axes[1][1]
-    jitter_total   = [jitter_of(vals_at(cp, 't_total_ms'))   for cp in checkpoints]
-    jitter_network = [jitter_of(vals_at(cp, 't_network_ms')) for cp in checkpoints]
-    jitter_twin    = [jitter_of(vals_at(cp, 't_twin_ms'))    for cp in checkpoints]
-    ax.plot(checkpoints, jitter_total,   'o-', color='#2980b9', linewidth=2, label='jitter t_total')
-    ax.plot(checkpoints, jitter_network, 's--', color='#e67e22', linewidth=2, label='jitter t_network')
-    ax.plot(checkpoints, jitter_twin,    '^--', color='#27ae60', linewidth=2, label='jitter t_twin')
-    ax.set_title('Sync latency jitter per component', fontweight='bold')
-    ax.set_xlabel('Network size (hosts + routers)')
-    ax.set_ylabel('Jitter (ms)')
-    ax.set_xticks(checkpoints)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    if routers_data:
+        r_x = [r['n_nodes'] for r in routers_data]
+        ax.plot(r_x, [r['t_local_ms'] for r in routers_data], '-', color='#3498db', label='t_local (Original)')
+        ax.plot(r_x, [r['t_network_ms'] for r in routers_data], '-', color='#e67e22', label='t_network RTT')
+        ax.plot(r_x, [r['t_twin_ms'] for r in routers_data], '-', color='#9b59b6', label='t_twin (Shadow)')
+    ax.set_title('Component Breakdown: add_router', fontweight='bold', fontsize=12, color='#e74c3c')
+    ax.set_xlabel('Network size (Total nodes)')
+    ax.set_ylabel('Time (ms)')
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
 
     plt.tight_layout()
+    plt.subplots_adjust(top=0.90)
     plt.savefig(PLOT_FILE, dpi=150, bbox_inches='tight')
-    print(f'✅ Plot saved to {PLOT_FILE}')
-
+    print(f' Plot saved to {PLOT_FILE}')
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -365,16 +329,16 @@ def main():
     print(f'  Plot: {PLOT_FILE}')
     print('=' * 60)
 
-    print('\n⏳ Waiting for network...')
+    print('\n Waiting for network...')
     if not wait_for_network():
-        print('❌ Network not available.')
+        print(' Network not available.')
         return
-    print('✅ Network ready!')
+    print(' Network ready!')
 
     current = count_nodes()
-    print(f'\n📊 Initial nodes: {current}')
+    print(f'\n Initial nodes: {current}')
     if current != 7:
-        print(f'⚠️  Expected 7 nodes (h1-h5, r1, r2) but found {current}.')
+        print(f'  Expected 7 nodes (h1-h5, r1, r2) but found {current}.')
         print('   Reset the network and retry.')
         return
 
@@ -382,29 +346,26 @@ def main():
     failures = 0
     checkpoints_iter = iter(CHECKPOINTS)
     next_checkpoint  = next(checkpoints_iter)
-    print(f'🎯 First checkpoint: {next_checkpoint} nodes\n')
+    print(f' First checkpoint: {next_checkpoint} nodes\n')
 
-    MAX_NODES = 128  # stop as soon as we reach this many non-switch nodes
+    MAX_NODES = 128
 
     for op in FIXED_SEQUENCE:
-        # Hard stop: never execute an operation that would push us past the limit
         if count_nodes() >= MAX_NODES:
-            print(f'\n  🛑 Reached {MAX_NODES} nodes — stopping sequence.')
+            print(f'\n   Reached {MAX_NODES} nodes — stopping sequence.')
             break
 
         name = op['name']
         if op['type'] == 'router':
-            print(f'  ➕ add_router {name} → {op["connected_routers"]}...', end='', flush=True)
+            print(f'   add_router {name} -> {op["connected_routers"]}...', end='', flush=True)
         else:
-            print(f'  ➕ add_host   {name} → {op["router"]}...', end='', flush=True)
+            print(f'   add_host   {name} -> {op["router"]}...', end='', flush=True)
 
         entry = do_operation(op)
 
-        # Check for error
         if 'error' in entry:
             failures += 1
-            print(f' ❌ {entry["error"]}')
-            # Record failure in CSV with null latencies
+            print(f'  {entry["error"]}')
             current = count_nodes()
             rows.append({
                 'op_type':      op['type'],
@@ -416,15 +377,13 @@ def main():
                 't_total_ms':   None,
                 'error':        entry['error'],
             })
-            # Skip OSPF wait — node likely wasn't added
             time.sleep(0.5)
-            # Update checkpoint based on actual node count
             current = count_nodes()
             while next_checkpoint is not None and current >= next_checkpoint:
-                print(f'\n  📏 Checkpoint {next_checkpoint} reached ({failures} failures so far)')
+                print(f'\n   Checkpoint {next_checkpoint} reached ({failures} failures so far)')
                 try:
                     next_checkpoint = next(checkpoints_iter)
-                    print(f'  🎯 Next checkpoint: {next_checkpoint} nodes\n')
+                    print(f'   Next checkpoint: {next_checkpoint} nodes\n')
                 except StopIteration:
                     next_checkpoint = None
             continue
@@ -447,44 +406,40 @@ def main():
             'error':        '',
         }
         rows.append(row)
-        print(f' ✅  total={t_total}ms  local={t_local}ms  net={t_network}ms  twin={t_twin}ms')
+        print(f'   total={t_total}ms  local={t_local}ms  net={t_network}ms  twin={t_twin}ms')
 
-        # Wait for OSPF convergence after router operations
         if op['type'] == 'router':
-            print(f'     ⏳ Waiting for OSPF convergence (5s)...')
+            print(f'      Waiting for OSPF convergence (5s)...')
             time.sleep(5)
         else:
             time.sleep(0.5)
 
         if next_checkpoint is not None and current >= next_checkpoint:
-            print(f'\n  📏 Checkpoint {next_checkpoint} reached ({failures} failures so far)')
+            print(f'\n   Checkpoint {next_checkpoint} reached ({failures} failures so far)')
             try:
                 next_checkpoint = next(checkpoints_iter)
-                print(f'  🎯 Next checkpoint: {next_checkpoint} nodes\n')
+                print(f'   Next checkpoint: {next_checkpoint} nodes\n')
             except StopIteration:
                 next_checkpoint = None
                 break
 
-    # Save CSV
     if rows:
         with open(CSV_FILE, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=rows[0].keys())
             writer.writeheader()
             writer.writerows(rows)
-        print(f'\n✅ CSV saved to {CSV_FILE}')
+        print(f'\n CSV saved to {CSV_FILE}')
 
-        # Generate plots (only rows with valid data)
         valid_rows = [r for r in rows if r['t_total_ms'] is not None]
         if valid_rows:
             generate_plots(valid_rows)
         else:
-            print('⚠️  No valid rows to plot.')
+            print('  No valid rows to plot.')
 
     total_ops = len(rows)
     ok_ops    = sum(1 for r in rows if not r.get('error'))
-    print(f'\n🏁 Sync latency study complete!')
+    print(f'\n Sync latency study complete!')
     print(f'   {ok_ops}/{total_ops} operations succeeded  |  {failures} failures')
-
 
 if __name__ == '__main__':
     main()

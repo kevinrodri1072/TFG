@@ -29,12 +29,12 @@ import requests
 # Sobreescrita per init_sync() amb els arguments CLI de app.py
 # ─────────────────────────────────────────────────────────────────────────────
 # TWINS: llista de dicts {ip, port} — un per cada PC Twin
-TWINS       = [{'ip': '10.4.39.110', 'port': 5000}]
-ORIGINAL_IP = '10.4.39.102'  # IP de l'Original — usada pels Twins per fer ping de tornada
+TWINS       = [{'ip': '10.4.39.102', 'port': 5000}]
+ORIGINAL_IP = '10.4.39.104'  # IP de l'Original — usada pels Twins per fer ping de tornada
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HISTORIAL DE LATÈNCIES
-# deque amb capacitat màxima de 50 entrades (les més antigues es descarten)
+# deque amb capacitat màxima de 400 entrades (les més antigues es descarten)
 # sync_history_lock protegeix l'accés concurrent des de múltiples threads
 # ─────────────────────────────────────────────────────────────────────────────
 sync_latency_history = deque(maxlen=400)

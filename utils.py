@@ -153,7 +153,6 @@ def safe_stats(values):
 def jitter_of(values):
     """
     Calcula el jitter com la mitjana de les diferències absolutes consecutives.
-    Exemple: [10, 12, 9, 11] → |12-10| + |9-12| + |11-9| / 3 = 2.33ms
     Ignora valors None.
     """
     values = [v for v in values if v is not None]
