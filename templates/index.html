@@ -15,17 +15,45 @@
         <button onclick="showMatrix()">View Matrix</button>
         <button onclick="showIPDashboard()">IP Dashboard</button>
         <button id="btn-xrfs" onclick="window.open('/xrfs', '_blank')" style="display:none;">XRFs</button>
-        <button id="btn-propose-host" onclick="showProposeModal('add_host')"
-                style="display:none; background:#8e44ad; color:#fff; border:none;
-                       padding:5px 12px; border-radius:4px; cursor:pointer; font-size:12px;
-                       margin-left:4px;">
-            📤 Propose Host
-        </button>
-        <button id="btn-propose-router" onclick="showProposeModal('add_router')"
-                style="display:none; background:#8e44ad; color:#fff; border:none;
-                       padding:5px 12px; border-radius:4px; cursor:pointer; font-size:12px;
-                       margin-left:4px;">
-            📤 Propose Router
+
+        <!-- Twin only: single Propose dropdown -->
+        <div id="btn-propose-wrap" style="display:none; position:relative; display:none; margin-left:4px;">
+            <button onclick="toggleProposeDD()"
+                    style="background:#8e44ad;color:#fff;border:none;padding:5px 12px;
+                           border-radius:4px;cursor:pointer;font-size:12px;">
+                📤 Propose ▾
+            </button>
+            <div id="propose-dd" style="display:none;position:absolute;top:100%;left:0;
+                                        background:#1a2a3a;border:1px solid #8e44ad;
+                                        border-radius:4px;z-index:200;min-width:160px;
+                                        box-shadow:0 4px 12px rgba(0,0,0,0.5);">
+                <div onclick="closeProposeDD();showProposeModal('add_host')"
+                     style="padding:8px 12px;cursor:pointer;font-size:12px;color:#ecf0f1;"
+                     onmouseover="this.style.background='#2c3e50'" onmouseout="this.style.background=''">
+                    💻 Propose Add Host
+                </div>
+                <div onclick="closeProposeDD();showProposeModal('add_router')"
+                     style="padding:8px 12px;cursor:pointer;font-size:12px;color:#ecf0f1;"
+                     onmouseover="this.style.background='#2c3e50'" onmouseout="this.style.background=''">
+                    🔀 Propose Add Router
+                </div>
+                <div onclick="closeProposeDD();showProposeModal('remove_node')"
+                     style="padding:8px 12px;cursor:pointer;font-size:12px;color:#ecf0f1;border-top:1px solid #2c3e50;"
+                     onmouseover="this.style.background='#2c3e50'" onmouseout="this.style.background=''">
+                    🗑 Propose Remove Node
+                </div>
+            </div>
+        </div>
+
+        <!-- Original only: Proposals button with badge -->
+        <button id="btn-proposals" onclick="showProposalsModal()"
+                style="display:none;position:relative;background:#2c3e50;color:#ecf0f1;
+                       border:1px solid #34495e;padding:5px 12px;border-radius:4px;
+                       cursor:pointer;font-size:12px;margin-left:4px;">
+            📥 Proposals
+            <span id="proposals-toolbar-badge"
+                  style="display:none;background:#e74c3c;color:#fff;border-radius:10px;
+                         font-size:10px;padding:1px 5px;margin-left:4px;">0</span>
         </button>
         <button onclick="saveNetwork()">Save Network</button>
         <button onclick="document.getElementById('load-input').click()">Load Network</button>
@@ -310,43 +338,46 @@
             </div>
 
 
-            <!-- ── Proposals panel (Original only, injected by JS) ── -->
-            <div class="metrics-section" id="proposals-section" style="display:none;">
-                <h3><i class="fa fa-inbox"></i> Twin Proposals
-                    <span id="proposals-badge" style="
-                        background:#e74c3c; color:#fff; border-radius:10px;
-                        font-size:10px; padding:1px 6px; margin-left:6px;
-                        display:none;">0</span>
+            <!-- ── Twins panel (Original only) ── -->
+            <div class="metrics-section" id="twins-panel" style="display:none;">
+                <h3><i class="fa fa-sitemap"></i> Connected Twins
+                    <span id="twins-count-badge"
+                          style="background:#2980b9;color:#fff;border-radius:10px;
+                                 font-size:10px;padding:1px 6px;margin-left:6px;">0</span>
                 </h3>
-
-                <!-- Twin Status -->
-                <div style="margin-bottom:8px;">
-                    <div style="font-size:11px; color:#3498db; text-transform:uppercase;
-                                 letter-spacing:0.5px; margin-bottom:4px;">
-                        <i class="fa fa-sitemap"></i> Twin Status
-                    </div>
-                    <div id="twin-status-list" style="font-size:11px;"></div>
-                </div>
-
-                <!-- Pending proposals -->
-                <div>
-                    <div style="font-size:11px; color:#3498db; text-transform:uppercase;
-                                 letter-spacing:0.5px; margin-bottom:4px;">
-                        <i class="fa fa-clock-o"></i> Pending Proposals
-                    </div>
-                    <div id="proposals-list"
-                         style="max-height:220px; overflow-y:auto;"></div>
-                    <div id="proposals-empty"
-                         style="font-size:11px; color:#4a6278; padding:6px 0;">
-                        No pending proposals.
-                    </div>
-                </div>
+                <div id="twin-status-list" style="font-size:11px;"></div>
             </div>
 
         </div><!-- end metrics-panel -->
     </div><!-- end main-layout -->
 
     <script src="/static/js/app.js"></script>
+    <!-- ── Proposals modal (Original only) ── -->
+    <div id="proposals-modal" style="display:none;position:fixed;top:0;left:0;
+        width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:1000;
+        align-items:center;justify-content:center;">
+        <div style="background:#1a2a3a;border:1px solid #2980b9;border-radius:8px;
+                     padding:24px;width:520px;max-width:95vw;color:#ecf0f1;
+                     max-height:85vh;display:flex;flex-direction:column;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <div style="font-size:15px;font-weight:bold;">
+                    📥 Twin Proposals
+                    <span id="proposals-modal-badge" style="background:#e74c3c;color:#fff;
+                          border-radius:10px;font-size:11px;padding:2px 7px;margin-left:8px;
+                          display:none;">0</span>
+                </div>
+                <button onclick="closeProposalsModal()"
+                        style="background:none;border:none;color:#95a5a6;font-size:18px;cursor:pointer;">✕</button>
+            </div>
+            <div style="overflow-y:auto;flex:1;">
+                <div id="proposals-modal-list"></div>
+                <div id="proposals-modal-empty" style="color:#4a6278;font-size:12px;padding:12px 0;">
+                    No pending proposals.
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- ── Propose to Original modal (Twin only) ── -->
     <div id="propose-modal" style="
         display:none; position:fixed; top:0; left:0; width:100%; height:100%;
@@ -382,6 +413,15 @@
                 <div style="margin-bottom:12px;">
                     <label style="font-size:12px; color:#95a5a6;">Connect to router(s)</label><br>
                     <select id="propose-router-connected" multiple size="4"
+                            style="width:100%; background:#0d1f2d; border:1px solid #2980b9;
+                                    color:#ecf0f1; padding:6px; border-radius:4px; margin-top:4px;">
+                    </select>
+                </div>
+            </div>
+            <div id="propose-form-remove" style="display:none;">
+                <div style="margin-bottom:12px;">
+                    <label style="font-size:12px; color:#95a5a6;">Node to remove</label><br>
+                    <select id="propose-remove-node"
                             style="width:100%; background:#0d1f2d; border:1px solid #2980b9;
                                     color:#ecf0f1; padding:6px; border-radius:4px; margin-top:4px;">
                     </select>
