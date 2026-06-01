@@ -1224,17 +1224,31 @@ var socket = io('http://localhost:5001');
                     var wrap = document.getElementById('btn-propose-wrap');
                     if (wrap) wrap.style.display = 'inline-block';
                 } else {
-                    // Original: show Proposals toolbar button + Twins panel
+                    // Original: show Proposals btn + Twins toolbar indicator
                     var btnP = document.getElementById('btn-proposals');
                     if (btnP) btnP.style.display = 'inline-block';
-                    var twins = document.getElementById('twins-panel');
-                    if (twins) twins.style.display = 'block';
+                    var tw = document.getElementById('twins-toolbar-wrap');
+                    if (tw) tw.style.display = 'inline-block';
                     refreshProposals();
                     setInterval(refreshProposals, 3000);
                     refreshTwinStatus();
                     setInterval(refreshTwinStatus, 5000);
                 }
             });
+
+        // ── Twins dropdown (Original toolbar) ──
+        function toggleTwinsDD() {
+            var dd = document.getElementById('twins-dd');
+            if (!dd) return;
+            dd.style.display = dd.style.display === 'block' ? 'none' : 'block';
+        }
+        document.addEventListener('click', function(e) {
+            var wrap = document.getElementById('twins-toolbar-wrap');
+            if (wrap && !wrap.contains(e.target)) {
+                var dd = document.getElementById('twins-dd');
+                if (dd) dd.style.display = 'none';
+            }
+        });
 
         // ── Propose dropdown (Twin) ──
         function toggleProposeDD() {

@@ -55,6 +55,25 @@
                   style="display:none;background:#e74c3c;color:#fff;border-radius:10px;
                          font-size:10px;padding:1px 5px;margin-left:4px;">0</span>
         </button>
+        <!-- Original only: Twins status indicator in toolbar -->
+        <div id="twins-toolbar-wrap" style="display:none;position:relative;display:none;margin-left:4px;">
+            <button onclick="toggleTwinsDD()"
+                    style="background:#1a3a5c;color:#ecf0f1;border:1px solid #2980b9;
+                           padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;">
+                🖧 Twins
+                <span id="twins-count-badge"
+                      style="background:#2980b9;color:#fff;border-radius:10px;
+                             font-size:10px;padding:1px 5px;margin-left:4px;">0</span>
+            </button>
+            <!-- Dropdown with twin statuses -->
+            <div id="twins-dd" style="display:none;position:absolute;top:100%;left:0;
+                                       background:#1a2a3a;border:1px solid #2980b9;
+                                       border-radius:4px;z-index:200;min-width:280px;
+                                       box-shadow:0 4px 16px rgba(0,0,0,0.6);padding:8px;">
+                <div id="twin-status-list" style="font-size:11px;"></div>
+            </div>
+        </div>
+
         <button onclick="saveNetwork()">Save Network</button>
         <button onclick="document.getElementById('load-input').click()">Load Network</button>
         <input type="file" id="load-input" accept=".mat" style="display:none" onchange="loadNetwork(this)">
@@ -338,15 +357,7 @@
             </div>
 
 
-            <!-- ── Twins panel (Original only) ── -->
-            <div class="metrics-section" id="twins-panel" style="display:none;">
-                <h3><i class="fa fa-sitemap"></i> Connected Twins
-                    <span id="twins-count-badge"
-                          style="background:#2980b9;color:#fff;border-radius:10px;
-                                 font-size:10px;padding:1px 6px;margin-left:6px;">0</span>
-                </h3>
-                <div id="twin-status-list" style="font-size:11px;"></div>
-            </div>
+
 
         </div><!-- end metrics-panel -->
     </div><!-- end main-layout -->

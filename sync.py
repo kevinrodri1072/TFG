@@ -146,6 +146,12 @@ def init_sync(xarxa_instance, twins=None, original_ip=None, twin_port=None,
     twins_str = ', '.join(f'{t["ip"]}:{t["port"]}' for t in TWINS)
     print(f'[sync] Original={ORIGINAL_IP}  Twins=[{twins_str}]')
 
+    # Pre-populate TWIN_STATUS so the dashboard shows all Twins immediately,
+    # not only after they first contact the Original via /propose.
+    with _twin_status_lock:
+        for twin in TWINS:
+            _init_twin(twin['ip'])
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REGISTRE DE LATÈNCIES
