@@ -37,7 +37,7 @@ ORIGINAL_IP = '10.4.39.102'  # IP de l'Original — usada pels Twins per fer pin
 # deque amb capacitat màxima de 50 entrades (les més antigues es descarten)
 # sync_history_lock protegeix l'accés concurrent des de múltiples threads
 # ─────────────────────────────────────────────────────────────────────────────
-sync_latency_history = deque(maxlen=50)
+sync_latency_history = deque(maxlen=400)
 sync_history_lock    = threading.Lock()
 
 # Referència a l'objecte Xarxa, injectada per app.py a l'arrencada
