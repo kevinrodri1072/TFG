@@ -257,6 +257,42 @@ def proposal_status(proposal_id):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# ENDPOINTS — REGISTRATION & HEARTBEAT (called by Twins, received by Original)
+# ═══════════════════════════════════════════════════════════════════════
+
+@bp.route('/twin/register', methods=['POST'])
+def twin_register():
+    """
+    Called by a Twin when it starts.
+    Works even if the Twin IP was not in the Original's --twins list.
+    """
+    if _IS_TWIN:
+        return jsonify({'ok': False, 'error': 'Only available on Original'})
+    data      = request.json or {}
+    twin_ip   = data.get('ip') or request.remote_addr
+    twin_port = int(data.get('port', 5000))
+    from sync import register_twin
+    register_twin(twin_ip, twin_port)
+    print(f'[proposals] Twin registered: {twin_ip}:{twin_port}')
+    return jsonify({'ok': True})
+
+
+@bp.route('/twin/heartbeat', methods=['POST'])
+def twin_heartbeat():
+    """
+    Periodic heartbeat (every 10s). Updates last_seen, restores 'offline' → 'connected'.
+    """
+    if _IS_TWIN:
+        return jsonify({'ok': False, 'error': 'Only available on Original'})
+    data      = request.json or {}
+    twin_ip   = data.get('ip') or request.remote_addr
+    twin_port = int(data.get('port', 5000))
+    from sync import register_twin
+    register_twin(twin_ip, twin_port)
+    return jsonify({'ok': True})
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # ENDPOINT — TWIN SIDE
 # ═══════════════════════════════════════════════════════════════════════
 

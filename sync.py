@@ -76,6 +76,51 @@ def _is_twin_active(ip):
         return TWIN_STATUS.get(ip, {}).get('status', 'connected') != 'disconnected'
 
 
+def register_twin(ip, port=5000):
+    """
+    Dynamically register a Twin that has contacted the Original.
+    Called when a Twin sends POST /twin/register or POST /twin/heartbeat.
+    If the Twin's IP is not in the TWINS list yet, add it so future
+    sync events reach it.
+    """
+    with _twin_status_lock:
+        _init_twin(ip)
+        TWIN_STATUS[ip]['last_seen'] = round(time.time(), 2)
+        TWIN_STATUS[ip]['port']      = port
+        if TWIN_STATUS[ip]['status'] in ('offline', 'unknown'):
+            TWIN_STATUS[ip]['status'] = 'connected'
+
+    # Dynamically add to TWINS if not already present (e.g. Twin started
+    # with --twin-ip but was not listed in the Original's --twins argument)
+    if not any(t['ip'] == ip for t in TWINS):
+        TWINS.append({'ip': ip, 'port': port})
+        print(f'[sync] New Twin auto-registered: {ip}:{port}')
+
+
+def _start_heartbeat_checker():
+    """
+    Background thread: marks a Twin as 'offline' if no heartbeat received
+    in the last HEARTBEAT_TIMEOUT seconds.
+    Only runs on the Original (is_twin=False).
+    """
+    HEARTBEAT_TIMEOUT = 25  # seconds — Twin sends every 10s, so 2.5 missed = offline
+
+    def _check():
+        while True:
+            time.sleep(10)
+            now = time.time()
+            with _twin_status_lock:
+                for ip, s in TWIN_STATUS.items():
+                    last = s.get('last_seen')
+                    if last and (now - last) > HEARTBEAT_TIMEOUT:
+                        if s['status'] not in ('offline', 'disconnected'):
+                            s['status'] = 'offline'
+                            print(f'[sync] Twin {ip} marked offline (no heartbeat)')
+
+    t = threading.Thread(target=_check, daemon=True)
+    t.start()
+
+
 def resync_one_twin(xarxa, twin):
     """Send full snapshot to a single Twin to restore Original state."""
     try:
@@ -146,11 +191,11 @@ def init_sync(xarxa_instance, twins=None, original_ip=None, twin_port=None,
     twins_str = ', '.join(f'{t["ip"]}:{t["port"]}' for t in TWINS)
     print(f'[sync] Original={ORIGINAL_IP}  Twins=[{twins_str}]')
 
-    # Pre-populate TWIN_STATUS so the dashboard shows all Twins immediately,
-    # not only after they first contact the Original via /propose.
-    with _twin_status_lock:
-        for twin in TWINS:
-            _init_twin(twin['ip'])
+    # Start heartbeat checker (Original only — Twin does not call init_sync with twins)
+    if twins or twin_ip:
+        _start_heartbeat_checker()
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -381,6 +426,43 @@ def sync_snapshot(operation, t_local_ms):
         args=(operation, t_local_ms),
         daemon=True,
     ).start()
+
+
+def send_heartbeat():
+    """
+    Called by the Twin every 10s to tell the Original it is still alive.
+    Also used as the initial registration message.
+    """
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        own_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        own_ip = '127.0.0.1'
+
+    try:
+        requests.post(
+            f'http://{ORIGINAL_IP}:5000/twin/heartbeat',
+            json={'ip': own_ip, 'port': 5000},
+            timeout=5,
+        )
+    except Exception as e:
+        pass  # Original may not be reachable yet — heartbeat will retry
+
+
+def start_twin_heartbeat():
+    """Start the heartbeat loop in a daemon thread (Twin side)."""
+    def _loop():
+        # Send registration immediately on start
+        send_heartbeat()
+        # Then send periodic heartbeats
+        while True:
+            time.sleep(10)
+            send_heartbeat()
+    threading.Thread(target=_loop, daemon=True).start()
+    print(f'[sync] Twin heartbeat started → {ORIGINAL_IP}:5000')
 
 
 # Àlies per compatibilitat enrere (usat per topology.py /load_network)

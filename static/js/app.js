@@ -1426,17 +1426,23 @@ var socket = io('http://localhost:5001');
             var badge = document.getElementById('twins-count-badge');
             if (!list) return;
             var ips = Object.keys(statuses);
-            if (badge) badge.textContent = ips.length;
+            // Badge: count only connected/diverged (not offline/disconnected)
+            var activeCount = ips.filter(ip => ['connected','diverged'].includes(statuses[ip].status)).length;
+            if (badge) badge.textContent = ips.length + ' (' + activeCount + ' active)';
             if (ips.length === 0) {
-                list.innerHTML = '<span style="color:#4a6278;font-size:11px;">No twins seen yet.</span>';
+                list.innerHTML = '<span style="color:#4a6278;font-size:11px;">No twins registered yet.</span>';
                 return;
             }
             list.innerHTML = ips.map(function(ip) {
                 var s = statuses[ip];
+                // Color by status
                 var color = s.status === 'connected'    ? '#27ae60'
                           : s.status === 'diverged'     ? '#f39c12'
-                          :                               '#e74c3c';
+                          : s.status === 'offline'      ? '#95a5a6'
+                          :                               '#e74c3c';  // disconnected
                 var policyLabel = s.policy === 'disconnect' ? 'on error: disconnect' : 'on error: resync';
+
+                // Resync button: shown when diverged, offline or disconnected
                 var resyncBtn = (s.status !== 'connected')
                     ? `<button onclick="twinAction('${ip}','resync')"
                                title="Send full snapshot to restore Original state"
@@ -1444,28 +1450,40 @@ var socket = io('http://localhost:5001');
                                       padding:2px 6px;border-radius:3px;cursor:pointer;margin-right:3px;">
                           🔄 Resync</button>`
                     : '';
+
+                // Main action button
                 var mainBtn = s.status === 'disconnected'
                     ? `<button onclick="twinAction('${ip}','reconnect')"
+                               title="Re-enable sync to this Twin"
                                style="font-size:10px;background:#27ae60;color:#fff;border:none;
                                       padding:2px 6px;border-radius:3px;cursor:pointer;">
                           Reconnect</button>`
+                    : s.status === 'offline'
+                    ? `<span style="font-size:10px;color:#95a5a6;font-style:italic;">no heartbeat</span>`
                     : `<button onclick="twinAction('${ip}','disconnect')"
                                title="Stop sending changes to this Twin"
                                style="font-size:10px;background:#e74c3c;color:#fff;border:none;
                                       padding:2px 6px;border-radius:3px;cursor:pointer;">
                           Disconnect</button>`;
+
+                // Last seen
+                var lastSeen = s.last_seen
+                    ? new Date(s.last_seen * 1000).toLocaleTimeString()
+                    : 'never';
+
                 return `<div style="padding:5px 0;border-bottom:1px solid #1a2a3a;">
                     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">
                         <div>
                             <span style="color:${color};font-size:13px;">●</span>
                             <span style="color:#ecf0f1;font-size:11px;margin-left:3px;">${ip}</span>
                             <span style="color:${color};font-size:10px;margin-left:4px;">${s.status}</span>
+                            <span style="color:#4a6278;font-size:10px;margin-left:4px;">· ${lastSeen}</span>
                         </div>
-                        <div style="display:flex;gap:3px;">${resyncBtn}${mainBtn}</div>
+                        <div style="display:flex;gap:3px;align-items:center;">${resyncBtn}${mainBtn}</div>
                     </div>
                     <div style="color:#4a6278;font-size:10px;cursor:pointer;"
                          onclick="togglePolicy('${ip}','${s.policy}')"
-                         title="Click to toggle policy">⚙ ${policyLabel}</div>
+                         title="Click to toggle divergence policy">⚙ ${policyLabel}</div>
                 </div>`;
             }).join('');
         }

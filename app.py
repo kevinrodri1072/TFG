@@ -320,7 +320,16 @@ if __name__ == '__main__':
         xarxa.init_router_pool(pool_size=5)   # crea 5 routers pre-escalfats en paral·lel
     threading.Thread(target=_start_pool_when_ready, daemon=True).start()
 
-    # 9. Arrenca el ping del canal físic entre PCs (Original ↔ Twins)
+    # 9. Twin: register with Original and start heartbeat
+    if IS_TWIN:
+        def _start_twin_registration():
+            while not xarxa.network_ready:
+                time.sleep(0.5)
+            from sync import start_twin_heartbeat
+            start_twin_heartbeat()
+        threading.Thread(target=_start_twin_registration, daemon=True).start()
+
+    # 10. Arrenca el ping del canal físic entre PCs (Original ↔ Twins)
     p = threading.Thread(target=_ping_twin_channel)
     p.daemon = True
     p.start()
