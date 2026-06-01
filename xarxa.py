@@ -135,7 +135,7 @@ class Xarxa:
         """Kills the specified FRRouting daemons for a given router."""
         for daemon in daemons:
             node.cmd(f'pkill -f "{daemon}.*{name}" 2>/dev/null')
-        node.cmd('sleep 0.05')
+        node.cmd('sleep 0.02')  # SIGTERM kills within ms; 20ms is safe
 
     def _launch_daemon(self, node, name, binary, conf_path):
         """Launches an FRRouting daemon in background mode."""
@@ -163,7 +163,7 @@ class Xarxa:
             self._kill_daemons(node, name, ['zebra', 'ospfd'])
 
         self._launch_daemon(node, name, ZEBRA, conf_path)
-        node.cmd('sleep 0.05')
+        node.cmd('sleep 0.02')  # zebra binds socket in <10ms; 20ms is safe
         self._launch_daemon(node, name, OSPFD, conf_path)
 
     def _start_mpls(self, node, name, props):
@@ -190,9 +190,9 @@ class Xarxa:
         self._kill_daemons(node, name, ['zebra', 'ospfd', 'ldpd'])
 
         self._launch_daemon(node, name, ZEBRA, conf_path)
-        node.cmd('sleep 0.05')
+        node.cmd('sleep 0.02')  # zebra socket ready in <10ms
         self._launch_daemon(node, name, OSPFD, conf_path)
-        node.cmd('sleep 0.1')
+        node.cmd('sleep 0.05')  # ospfd needs a moment before ldpd
         self._launch_daemon(node, name, LDPD, conf_path)
 
     def _stop_routing(self, node, name):
@@ -201,7 +201,7 @@ class Xarxa:
         node.cmd(f'pkill -f "ldpd.*{name}" 2>/dev/null')
         node.cmd(f'pkill -f "bfdd.*{name}" 2>/dev/null')
         node.cmd(f'pkill -f "zebra.*{name}" 2>/dev/null')
-        node.cmd('sleep 0.1')
+        node.cmd('sleep 0.05')  # wait for daemons to exit after SIGTERM
 
     def _update_ospf_hot(self, node, name, props):
         """
@@ -421,9 +421,9 @@ class Xarxa:
         import os
         frr_dir = f'/tmp/frr_{pool_name}'
         router_node.cmd(
-            f'kill $(cat {frr_dir}/ospfd.pid 2>/dev/null) 2>/dev/null ; '
-            f'kill $(cat {frr_dir}/zebra.pid 2>/dev/null) 2>/dev/null ; '
-            f'sleep 0.1 ; '
+            f'kill -9 $(cat {frr_dir}/ospfd.pid 2>/dev/null) 2>/dev/null ; '
+            f'kill -9 $(cat {frr_dir}/zebra.pid 2>/dev/null) 2>/dev/null ; '
+            f'sleep 0.02 ; '  # SIGKILL is immediate; 20ms for kernel cleanup
             f'rm -rf {frr_dir}'
         )
 
@@ -458,7 +458,7 @@ class Xarxa:
 
         # Kill previous bfdd
         node.cmd(f'pkill -f "bfdd.*{name}" 2>/dev/null')
-        node.cmd('sleep 0.1')
+        node.cmd('sleep 0.05')  # wait for bfdd to exit
 
         # Start bfdd
         node.cmd(
@@ -468,7 +468,7 @@ class Xarxa:
             f'--vty_socket {conf_path}/ '
             f'> {conf_path}/bfdd.log 2>&1'
         )
-        node.cmd('sleep 0.1')
+        node.cmd('sleep 0.05')  # bfdd binds socket in <20ms
 
         # Enable BFD on all OSPF interfaces via vtysh
         for intf, ip in props['ips'].items():
