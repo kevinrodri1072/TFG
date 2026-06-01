@@ -74,14 +74,16 @@ from routes.nodes    import bp as nodes_bp,    init_blueprint as init_nodes
 from routes.metrics  import bp as metrics_bp,  init_blueprint as init_metrics
 from routes.routing  import bp as routing_bp,  init_blueprint as init_routing
 from routes.xrfs     import bp as xrfs_bp,     init_blueprint as init_xrfs
-from routes.chaos    import bp as chaos_bp,    init_blueprint as init_chaos
+from routes.chaos     import bp as chaos_bp,     init_blueprint as init_chaos
+from routes.proposals import bp as proposals_bp, init_blueprint as init_proposals
 
 app.register_blueprint(topology_bp)   # GET /topology, /matrix, /export, POST /load_network
 app.register_blueprint(nodes_bp)      # POST /add_host, /add_router, /remove_node
 app.register_blueprint(metrics_bp)    # GET /metrics/ping, /metrics/sync, /ip_dashboard...
 app.register_blueprint(routing_bp)    # GET/POST /get_routing_mode, /set_routing_mode, /router_routes
 app.register_blueprint(xrfs_bp)       # XRF microservices (Kubernetes, només al Twin)
-app.register_blueprint(chaos_bp)      # POST /chaos/cut_link, /chaos/restore_link
+app.register_blueprint(chaos_bp)
+app.register_blueprint(proposals_bp)      # POST /chaos/cut_link, /chaos/restore_link
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -281,6 +283,7 @@ if __name__ == '__main__':
         shutil.rmtree(frr_dir, ignore_errors=True)   # esborra el directori sencer
 
     # 4. Inicialitza el mòdul de sincronització amb les IPs dels Twins i de l'Original
+    sync_module._xarxa = xarxa  # allow resync_one_twin to access network state
     sync_module.init_sync(xarxa,
                           twins=args.twins,
                           twin_ip=args.twin_ip,
@@ -294,6 +297,7 @@ if __name__ == '__main__':
     init_routing(xarxa)
     init_xrfs(IS_TWIN, socketio)
     init_chaos(xarxa, socketio)
+    init_proposals(xarxa, IS_TWIN)
 
     # 6. Arrenca Mininet en un thread de background
     #    (start_network() és bloquejant: crea nodes, links, arrenca OSPF)

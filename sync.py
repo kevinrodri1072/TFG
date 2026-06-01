@@ -32,6 +32,70 @@ import requests
 TWINS       = [{'ip': '10.4.39.102', 'port': 5000}]
 ORIGINAL_IP = '10.4.39.104'  # IP de l'Original — usada pels Twins per fer ping de tornada
 
+# ── Twin state tracking ───────────────────────────────────────────────────
+# {ip: {status, policy, last_seen, diverged_at}}
+# status : 'connected' | 'diverged' | 'disconnected'
+# policy : 'resync' (default) | 'disconnect'
+TWIN_STATUS       = {}
+_twin_status_lock = threading.Lock()
+
+
+def _init_twin(ip):
+    if ip not in TWIN_STATUS:
+        TWIN_STATUS[ip] = {'status': 'connected', 'policy': 'resync',
+                            'last_seen': None, 'diverged_at': None}
+
+
+def _touch_twin(ip):
+    with _twin_status_lock:
+        _init_twin(ip)
+        TWIN_STATUS[ip]['last_seen'] = round(time.time(), 2)
+
+
+def set_twin_status(ip, status):
+    with _twin_status_lock:
+        _init_twin(ip)
+        TWIN_STATUS[ip]['status'] = status
+        if status == 'diverged':
+            TWIN_STATUS[ip]['diverged_at'] = round(time.time(), 2)
+
+
+def set_twin_policy(ip, policy):
+    with _twin_status_lock:
+        _init_twin(ip)
+        TWIN_STATUS[ip]['policy'] = policy
+
+
+def get_twin_statuses():
+    with _twin_status_lock:
+        return {ip: dict(s) for ip, s in TWIN_STATUS.items()}
+
+
+def _is_twin_active(ip):
+    with _twin_status_lock:
+        return TWIN_STATUS.get(ip, {}).get('status', 'connected') != 'disconnected'
+
+
+def resync_one_twin(xarxa, twin):
+    """Send full snapshot to a single Twin to restore Original state."""
+    try:
+        serializable_matrix = [
+            [cell if isinstance(cell, str) else int(cell) for cell in row]
+            for row in xarxa.network_matrix
+        ]
+        r = requests.post(
+            f'http://{twin["ip"]}:{twin["port"]}/load_network',
+            json={'matrix': serializable_matrix, 'nodes': xarxa.nodes, 'sync': True},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            print(f'[sync] Resync OK → {twin["ip"]}')
+            set_twin_status(twin['ip'], 'connected')
+        else:
+            print(f'[sync] Resync failed → {twin["ip"]}: HTTP {r.status_code}')
+    except Exception as e:
+        print(f'[sync] Resync error → {twin["ip"]}: {e}')
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HISTORIAL DE LATÈNCIES
 # deque amb capacitat màxima de 400 entrades (les més antigues es descarten)
@@ -168,6 +232,14 @@ def _do_sync_to_one_twin(twin, endpoint, payload, retries=3, delay=0.5):
             if attempt < retries - 1:
                 time.sleep(delay)
     print(f'[sync_event] {endpoint} → {twin["ip"]} failed after {retries} attempts')
+    set_twin_status(twin['ip'], 'diverged')
+    policy = TWIN_STATUS.get(twin['ip'], {}).get('policy', 'resync')
+    if policy == 'resync' and _xarxa is not None:
+        print(f'[sync] Divergence policy=resync → resyncing {twin["ip"]}')
+        threading.Thread(target=resync_one_twin, args=(_xarxa, twin), daemon=True).start()
+    elif policy == 'disconnect':
+        print(f'[sync] Divergence policy=disconnect → disconnecting {twin["ip"]}')
+        set_twin_status(twin['ip'], 'disconnected')
     return None, None
 
 
@@ -188,6 +260,11 @@ def _do_sync_to_all_twins(endpoint, data, t_local_holder):
     lock     = threading.Lock()
 
     def send_to(idx, twin):
+        if not _is_twin_active(twin['ip']):
+            print(f'[sync] Skipping disconnected Twin {twin["ip"]}')
+            with lock:
+                results[idx] = (None, None)
+            return
         net_ms, twin_ms = _do_sync_to_one_twin(twin, endpoint, payload)
         with lock:
             results[idx] = (net_ms, twin_ms)

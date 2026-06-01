@@ -15,6 +15,18 @@
         <button onclick="showMatrix()">View Matrix</button>
         <button onclick="showIPDashboard()">IP Dashboard</button>
         <button id="btn-xrfs" onclick="window.open('/xrfs', '_blank')" style="display:none;">XRFs</button>
+        <button id="btn-propose-host" onclick="showProposeModal('add_host')"
+                style="display:none; background:#8e44ad; color:#fff; border:none;
+                       padding:5px 12px; border-radius:4px; cursor:pointer; font-size:12px;
+                       margin-left:4px;">
+            📤 Propose Host
+        </button>
+        <button id="btn-propose-router" onclick="showProposeModal('add_router')"
+                style="display:none; background:#8e44ad; color:#fff; border:none;
+                       padding:5px 12px; border-radius:4px; cursor:pointer; font-size:12px;
+                       margin-left:4px;">
+            📤 Propose Router
+        </button>
         <button onclick="saveNetwork()">Save Network</button>
         <button onclick="document.getElementById('load-input').click()">Load Network</button>
         <input type="file" id="load-input" accept=".mat" style="display:none" onchange="loadNetwork(this)">
@@ -297,9 +309,100 @@
                 <div style="font-size:10px; color:#4a6278; margin-top:3px; font-family:monospace;" id="channel-cmd">ping -c 3 -i 0.2 · every 5s</div>
             </div>
 
+
+            <!-- ── Proposals panel (Original only, injected by JS) ── -->
+            <div class="metrics-section" id="proposals-section" style="display:none;">
+                <h3><i class="fa fa-inbox"></i> Twin Proposals
+                    <span id="proposals-badge" style="
+                        background:#e74c3c; color:#fff; border-radius:10px;
+                        font-size:10px; padding:1px 6px; margin-left:6px;
+                        display:none;">0</span>
+                </h3>
+
+                <!-- Twin Status -->
+                <div style="margin-bottom:8px;">
+                    <div style="font-size:11px; color:#3498db; text-transform:uppercase;
+                                 letter-spacing:0.5px; margin-bottom:4px;">
+                        <i class="fa fa-sitemap"></i> Twin Status
+                    </div>
+                    <div id="twin-status-list" style="font-size:11px;"></div>
+                </div>
+
+                <!-- Pending proposals -->
+                <div>
+                    <div style="font-size:11px; color:#3498db; text-transform:uppercase;
+                                 letter-spacing:0.5px; margin-bottom:4px;">
+                        <i class="fa fa-clock-o"></i> Pending Proposals
+                    </div>
+                    <div id="proposals-list"
+                         style="max-height:220px; overflow-y:auto;"></div>
+                    <div id="proposals-empty"
+                         style="font-size:11px; color:#4a6278; padding:6px 0;">
+                        No pending proposals.
+                    </div>
+                </div>
+            </div>
+
         </div><!-- end metrics-panel -->
     </div><!-- end main-layout -->
 
     <script src="/static/js/app.js"></script>
+    <!-- ── Propose to Original modal (Twin only) ── -->
+    <div id="propose-modal" style="
+        display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+        background:rgba(0,0,0,0.7); z-index:1000; align-items:center;
+        justify-content:center;">
+        <div style="background:#1a2a3a; border:1px solid #2980b9; border-radius:8px;
+                     padding:24px; min-width:300px; max-width:400px; color:#ecf0f1;">
+            <div style="font-size:14px; font-weight:bold; margin-bottom:16px;">
+                📤 Propose to Original
+            </div>
+            <div id="propose-form-host" style="display:none;">
+                <div style="margin-bottom:8px;">
+                    <label style="font-size:12px; color:#95a5a6;">Host name</label><br>
+                    <input id="propose-host-name" type="text" placeholder="e.g. h10"
+                           style="width:100%; background:#0d1f2d; border:1px solid #2980b9;
+                                   color:#ecf0f1; padding:6px; border-radius:4px; margin-top:4px;">
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label style="font-size:12px; color:#95a5a6;">Router</label><br>
+                    <select id="propose-host-router"
+                            style="width:100%; background:#0d1f2d; border:1px solid #2980b9;
+                                    color:#ecf0f1; padding:6px; border-radius:4px; margin-top:4px;">
+                    </select>
+                </div>
+            </div>
+            <div id="propose-form-router" style="display:none;">
+                <div style="margin-bottom:8px;">
+                    <label style="font-size:12px; color:#95a5a6;">Router name</label><br>
+                    <input id="propose-router-name" type="text" placeholder="e.g. r5"
+                           style="width:100%; background:#0d1f2d; border:1px solid #2980b9;
+                                   color:#ecf0f1; padding:6px; border-radius:4px; margin-top:4px;">
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label style="font-size:12px; color:#95a5a6;">Connect to router(s)</label><br>
+                    <select id="propose-router-connected" multiple size="4"
+                            style="width:100%; background:#0d1f2d; border:1px solid #2980b9;
+                                    color:#ecf0f1; padding:6px; border-radius:4px; margin-top:4px;">
+                    </select>
+                </div>
+            </div>
+            <div id="propose-status" style="font-size:11px; color:#f39c12;
+                                               margin-bottom:10px; display:none;"></div>
+            <div style="display:flex; gap:8px;">
+                <button onclick="submitProposal()"
+                        style="flex:1; background:#2980b9; color:#fff; border:none;
+                                padding:8px; border-radius:4px; cursor:pointer;">
+                    Send Proposal
+                </button>
+                <button onclick="closeProposeModal()"
+                        style="flex:1; background:#2c3e50; color:#ecf0f1; border:none;
+                                padding:8px; border-radius:4px; cursor:pointer;">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>
