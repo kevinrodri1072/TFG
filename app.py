@@ -20,14 +20,26 @@ from xarxa import Xarxa
 import sync as sync_module
 
 # ── CLI arguments ──
-parser = argparse.ArgumentParser(description='Digital Twin Network')
-parser.add_argument('--twin',        action='store_true',  help='Run as Digital Twin')
-parser.add_argument('--twin-ip',     default='10.4.39.110', metavar='IP',
-                    help='Digital Twin PC IP (default: 10.4.39.110)')
+parser = argparse.ArgumentParser(
+    description='Digital Twin Network',
+    formatter_class=argparse.RawTextHelpFormatter,
+)
+parser.add_argument('--twin', action='store_true',
+                    help='Run this instance as a Digital Twin')
+parser.add_argument('--twins', nargs='+', metavar='IP[:PORT]',
+                    help=(
+                        'IPs of ALL Twin PCs (space-separated).\n'
+                        'Examples:\n'
+                        '  --twins 10.4.39.110              (one twin, default port 5000)\n'
+                        '  --twins 10.4.39.110 10.4.39.120  (two twins)\n'
+                        '  --twins 10.4.39.110:5000 10.4.39.120:5001  (custom ports)\n'
+                    ))
+parser.add_argument('--twin-ip', default=None, metavar='IP',
+                    help='Single Twin IP — shortcut for --twins with one IP (legacy)')
 parser.add_argument('--original-ip', default='10.4.39.102', metavar='IP',
-                    help='Original PC IP     (default: 10.4.39.102)')
-parser.add_argument('--twin-port',   default=5000, type=int, metavar='PORT',
-                    help='Digital Twin port  (default: 5000)')
+                    help='IP of the Original PC (default: 10.4.39.102)')
+parser.add_argument('--twin-port', default=5000, type=int, metavar='PORT',
+                    help='Default port for all Twins (default: 5000)')
 args, _ = parser.parse_known_args()
 IS_TWIN = args.twin
 
@@ -59,42 +71,64 @@ app.register_blueprint(chaos_bp)
 
 # ── WebSocket metrics broadcast ──
 
+def _ping_one_target(target_ip):
+    """Ping a single IP and return the WebSocket payload dict."""
+    from utils import parse_ping
+    try:
+        result = subprocess.run(
+            ['ping', '-c', '3', '-i', '0.2', target_ip],
+            capture_output=True, text=True, timeout=10
+        )
+        latency, jitter = parse_ping(result.stdout)
+        return {
+            'latency_min': latency['min'],
+            'latency_avg': latency['avg'],
+            'latency_max': latency['max'],
+            'jitter':      jitter,
+            'reachable':   latency['avg'] is not None,
+            'target':      target_ip,
+        }
+    except Exception:
+        return {
+            'latency_min': None, 'latency_avg': None,
+            'latency_max': None, 'jitter': None,
+            'reachable': False, 'target': target_ip,
+        }
+
+
 def _ping_twin_channel():
     """
-    Ping the peer PC every 5s and emit results via WebSocket.
-    - Original pings the Twin IP
-    - Twin pings the Original IP
-    Both show the physical channel latency on their dashboard.
+    Ping peer PCs every 5s and emit results via WebSocket.
+    - Original: pings ALL Twins (one emit per Twin, tagged by IP).
+    - Twin: pings the Original.
+    Shows physical channel latency for each link in the dashboard.
     """
-    from sync import DIGITAL_TWIN_IP, ORIGINAL_IP
-    from utils import parse_ping
-
-    target_ip = DIGITAL_TWIN_IP if not IS_TWIN else ORIGINAL_IP
+    from sync import TWINS, ORIGINAL_IP
 
     # Wait for WebSocket to be ready before first ping
     time.sleep(2)
     while True:
-        try:
-            result = subprocess.run(
-                ['ping', '-c', '3', '-i', '0.2', target_ip],
-                capture_output=True, text=True, timeout=10
-            )
-            latency, jitter = parse_ping(result.stdout)
-            socketio.emit('twin_channel_ping', {
-                'latency_min': latency['min'],
-                'latency_avg': latency['avg'],
-                'latency_max': latency['max'],
-                'jitter':      jitter,
-                'reachable':   latency['avg'] is not None,
-                'target':      target_ip,
-            })
-        except Exception:
-            socketio.emit('twin_channel_ping', {
-                'latency_min': None, 'latency_avg': None,
-                'latency_max': None, 'jitter': None,
-                'reachable': False,
-                'target':    target_ip,
-            })
+        if IS_TWIN:
+            # Twin pings the Original only
+            payload = _ping_one_target(ORIGINAL_IP)
+            socketio.emit('twin_channel_ping', payload)
+        else:
+            # Original pings ALL Twins in parallel
+            results = [None] * len(TWINS)
+
+            def _do_ping(idx, twin):
+                results[idx] = _ping_one_target(twin['ip'])
+
+            threads = [
+                threading.Thread(target=_do_ping, args=(i, t), daemon=True)
+                for i, t in enumerate(TWINS)
+            ]
+            for th in threads: th.start()
+            for th in threads: th.join()
+
+            for payload in results:
+                if payload:
+                    socketio.emit('twin_channel_ping', payload)
         time.sleep(5)
 
 
@@ -204,6 +238,7 @@ if __name__ == '__main__':
         shutil.rmtree(frr_dir, ignore_errors=True)
 
     sync_module.init_sync(xarxa,
+                       twins=args.twins,
                        twin_ip=args.twin_ip,
                        original_ip=args.original_ip,
                        twin_port=args.twin_port)
