@@ -333,7 +333,7 @@ class Xarxa:
             self._pool_counter += 1
             idx = self._pool_counter
         pool_name        = f'__pool_r{idx}'
-        pool_switch_name = f'__pool_sw{idx}'
+        pool_switch_name = f'__pool_s{idx}'   # max 15 chars: __pool_s99-eth1 = 14 ✓
         try:
             router_node, switch_node = self._pool_create_entry(
                 pool_name, pool_switch_name
@@ -351,7 +351,7 @@ class Xarxa:
         Claim a pre-warmed router from the pool.
         - Renames pool nodes to final names
         - Renames LAN interface from __pool_rN-eth0 to router_name-eth0
-        - Renames OVS bridge from __pool_swN to swN
+        - Renames OVS bridge from __pool_sN to swN
         - Registers in net.nameToNode and mininet_nodes
         - Replenishes pool in background
         Returns (router_node, switch_node) or (None, None) if pool empty.
@@ -386,10 +386,10 @@ class Xarxa:
             f'ifconfig lo up ; ip link set lo up'
         )
 
-        # ── Rename OVS bridge: __pool_swN → swN ──
+        # ── Rename OVS bridge: __pool_sN → swN ──
         # OVS has no rename command: detach port → delete old bridge →
         # create new bridge → re-attach port with its ORIGINAL name.
-        # We do NOT rename the switch interface (__pool_swN-eth1) — it stays
+        # We do NOT rename the switch interface (__pool_sN-eth1) — it stays
         # with its pool name inside the new bridge. This avoids:
         #   - naming conflict when add_host later creates swN-eth1
         #   - KeyError in remove_node (intf.name matches nameToIntf key)

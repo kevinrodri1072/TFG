@@ -28,6 +28,22 @@ from sync import sync_event
 
 _xarxa = None
 
+# ─────────────────────────────────────────────────────────────────────────────
+# nodes.py — Operacions de modificació de topologia en temps real
+#
+# Endpoints:
+#   POST /add_host    → afegeix un host a la subxarxa d'un router
+#   POST /remove_node → elimina un host o un router complet
+#   POST /add_router  → afegeix un router nou (amb switch i links p2p)
+#   POST /load_network→ reconstrueix la xarxa des d'un snapshot complet
+#
+# PATRÓ COMÚ: Original path vs Twin path
+#   - Original: calcula tot, sincronitza al Twin, aplica a Mininet
+#   - Twin:     rep l'estat pre-calculat, aplica directament sense calcular
+#
+# CONCURRÈNCIA: topology_lock (RLock) protegeix les mutacions de l'estat Python.
+# Les operacions lentes de Mininet (addLink, FRR) corren FORA del lock.
+# ─────────────────────────────────────────────────────────────────────────────
 bp = Blueprint('nodes', __name__)
 
 
@@ -98,6 +114,21 @@ def _update_all_routes():
 # ── Routes ──
 
 @bp.route('/add_host', methods=['POST'])
+# ─────────────────────────────────────────────────────────────────────────
+# ADD HOST
+# Afegeix un host nou a la subxarxa d'un router existent.
+#
+# Dins topology_lock:
+#   - Valida nom únic i existència del router
+#   - Calcula IP (find_next_ip) i switch corresponent
+#   - Actualitza nodes + matriu
+#   - addHost + addLink (dins lock per evitar nom d'intf duplicat)
+#
+# Fora del lock:
+#   - ifconfig + default gateway
+#   - ovs-vsctl add-port (usa os.system, no sw_node.cmd, perquè OVS corre
+#     al host, no dins del namespace; evita assert self.waiting)
+# ─────────────────────────────────────────────────────────────────────────
 def add_host():
     if not _xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
@@ -166,6 +197,22 @@ def add_host():
 
 
 @bp.route('/remove_node', methods=['POST'])
+# ─────────────────────────────────────────────────────────────────────────
+# REMOVE NODE
+# Elimina un host o un router complet (hosts + switch).
+#
+# 3 FASES per evitar crashes en cascada:
+#   Fase 1 (dins lock): snapshot de tipus i refs Mininet
+#   Fase 2 (dins lock): elimina TOTS els dicts Python atòmicament
+#                       (nodes, network_matrix, mininet_nodes)
+#   Fase 3 (fora lock): delNode per ordre hosts→router→switch,
+#                       cada un amb try/except independent
+#
+# Per qué l'ordre i el try/except?
+#   Quan Mininet elimina un switch, destrueix els veth pairs dels hosts.
+#   Això pot matar el shell del router → OSError al pròxim delNode.
+#   try/except per node evita que un error aturi la resta.
+# ─────────────────────────────────────────────────────────────────────────
 def remove_node():
     if not _xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
@@ -251,6 +298,34 @@ def remove_node():
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
 @bp.route('/add_router', methods=['POST'])
+# ─────────────────────────────────────────────────────────────────────────
+# ADD ROUTER — l'endpoint més complex del projecte
+#
+# TÉ DOS PATHS:
+#   1. Twin path (is_sync=True): rep l'estat pre-calculat de l'Original
+#      i l'aplica directament a Mininet sense cap càlcul.
+#   2. Original path (is_sync=False): 3 fases:
+#
+# FASE 1 (dins topology_lock) — càlcul pur Python:
+#   - Número de switch, subxarxa LAN, subnets p2p per cada connexió
+#   - Construeix router_state i connected_states_update (estats actualitzats
+#     dels routers veïns amb la nova interfície p2p)
+#   - Escriu a _xarxa.nodes i a la matriu d'adjacència
+#   - use_pool i eth_base calculats aquí (eth_base=1 si pool, 0 si no)
+#
+# FASE 2 — envia event al Twin via sync_event() en thread background
+#   (corre en paral·lel amb la Fase 3)
+#
+# FASE 3 (fora del lock) — aplica a Mininet:
+#   - claim_from_pool() o addHost()+addSwitch() si pool buit
+#   - addLink per cada connexió p2p
+#   - ifconfig per configurar les IPs
+#   - _apply_routing() arrenca OSPF al nou router
+#   - _update_ospf_hot() en threads background per als routers existents
+#   - AL FINAL: _pool_replenish() — no abans! Mininet no és thread-safe
+#
+# t_total = max(t_local, t_network) — Fase 2 i 3 corren en paral·lel
+# ─────────────────────────────────────────────────────────────────────────
 def add_router():
     if not _xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})

@@ -1,16 +1,15 @@
 """
-app.py — Application entry point.
+app.py — Punt d'entrada de l'aplicació Digital Twin Network.
 
-Two servers run simultaneously:
-  - Port 5000: Flask HTTP server (threaded=True) for all API endpoints
-  - Port 5001: Flask-SocketIO server for real-time WebSocket metrics
+Arrenca DOS servidors simultàniament:
+  - Port 5000: Flask HTTP (API REST) — gestiona totes les peticions de topologia
+  - Port 5001: Flask-SocketIO (WebSocket) — emet mètriques en temps real al navegador
 """
 
 import argparse
 import subprocess
 import threading
 import time
-import os
 
 import psutil
 from flask import Flask
@@ -19,41 +18,57 @@ from flask_socketio import SocketIO
 from xarxa import Xarxa
 import sync as sync_module
 
-# ── CLI arguments ──
+# ─────────────────────────────────────────────────────────────────────────────
+# ARGUMENTS DE LÍNIA DE COMANDES
+# Permet configurar el rol (original/twin) i les IPs sense tocar el codi.
+# Exemples d'ús:
+#   Original amb un twin:    sudo python3 app.py --twins 10.4.39.110
+#   Original amb dos twins:  sudo python3 app.py --twins 10.4.39.110 10.4.39.120
+#   Twin:                    sudo python3 app.py --twin --original-ip 10.4.39.102
+# ─────────────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(
     description='Digital Twin Network',
     formatter_class=argparse.RawTextHelpFormatter,
 )
 parser.add_argument('--twin', action='store_true',
-                    help='Run this instance as a Digital Twin')
+                    help='Executa aquesta instància com a Digital Twin')
 parser.add_argument('--twins', nargs='+', metavar='IP[:PORT]',
                     help=(
-                        'IPs of ALL Twin PCs (space-separated).\n'
-                        'Examples:\n'
-                        '  --twins 10.4.39.110              (one twin, default port 5000)\n'
-                        '  --twins 10.4.39.110 10.4.39.120  (two twins)\n'
-                        '  --twins 10.4.39.110:5000 10.4.39.120:5001  (custom ports)\n'
+                        'IPs de TOTS els PCs Twin (separades per espai).\n'
+                        'Exemples:\n'
+                        '  --twins 10.4.39.110              (un twin, port 5000 per defecte)\n'
+                        '  --twins 10.4.39.110 10.4.39.120  (dos twins)\n'
+                        '  --twins 10.4.39.110:5000 10.4.39.120:5001  (ports personalitzats)\n'
                     ))
 parser.add_argument('--twin-ip', default=None, metavar='IP',
-                    help='Single Twin IP — shortcut for --twins with one IP (legacy)')
+                    help='IP d\'un sol Twin — drecera per a --twins (compatibilitat enrere)')
 parser.add_argument('--original-ip', default='10.4.39.102', metavar='IP',
-                    help='IP of the Original PC (default: 10.4.39.102)')
+                    help='IP del PC Original (default: 10.4.39.102)')
 parser.add_argument('--twin-port', default=5000, type=int, metavar='PORT',
-                    help='Default port for all Twins (default: 5000)')
+                    help='Port per defecte de tots els Twins (default: 5000)')
 args, _ = parser.parse_known_args()
-IS_TWIN = args.twin
+IS_TWIN = args.twin   # True si aquesta instància és el Twin, False si és l'Original
 
-# ── Two Flask apps ──
-# Main app: handles all HTTP API endpoints (port 5000)
+# ─────────────────────────────────────────────────────────────────────────────
+# DOS SERVIDORS FLASK SEPARATS
+# Es necessiten dos perquè WebSockets i HTTP no conviuen bé al mateix port.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Servidor principal: atén TOTES les peticions HTTP de l'API (port 5000)
 app = Flask(__name__)
-app.config['PROPAGATE_EXCEPTIONS'] = True
+app.config['PROPAGATE_EXCEPTIONS'] = True  # propaga errors a Flask per poder veure-les
 
-# SocketIO app: handles WebSocket metrics only (port 5001)
+# Servidor de mètriques: NOMÉS WebSockets per al dashboard (port 5001)
 metrics_app = Flask('metrics_ws')
-socketio    = SocketIO(metrics_app, cors_allowed_origins='*',
-                       async_mode='threading')
+socketio    = SocketIO(metrics_app, cors_allowed_origins='*', async_mode='threading')
 
-# ── Register Blueprints on main app ──
+# ─────────────────────────────────────────────────────────────────────────────
+# BLUEPRINTS
+# Un Blueprint és un grup d'endpoints Flask agrupats per funcionalitat.
+# Cada fitxer de routes/ és un blueprint independent.
+# init_blueprint() li injecta la referència a l'objecte Xarxa (la xarxa Mininet)
+# perquè cada endpoint pugui operar sobre ella.
+# ─────────────────────────────────────────────────────────────────────────────
 from routes.topology import bp as topology_bp, init_blueprint as init_topology
 from routes.nodes    import bp as nodes_bp,    init_blueprint as init_nodes
 from routes.metrics  import bp as metrics_bp,  init_blueprint as init_metrics
@@ -61,20 +76,26 @@ from routes.routing  import bp as routing_bp,  init_blueprint as init_routing
 from routes.xrfs     import bp as xrfs_bp,     init_blueprint as init_xrfs
 from routes.chaos    import bp as chaos_bp,    init_blueprint as init_chaos
 
-app.register_blueprint(topology_bp)
-app.register_blueprint(nodes_bp)
-app.register_blueprint(metrics_bp)
-app.register_blueprint(routing_bp)
-app.register_blueprint(xrfs_bp)
-app.register_blueprint(chaos_bp)
+app.register_blueprint(topology_bp)   # GET /topology, /matrix, /export, POST /load_network
+app.register_blueprint(nodes_bp)      # POST /add_host, /add_router, /remove_node
+app.register_blueprint(metrics_bp)    # GET /metrics/ping, /metrics/sync, /ip_dashboard...
+app.register_blueprint(routing_bp)    # GET/POST /get_routing_mode, /set_routing_mode, /router_routes
+app.register_blueprint(xrfs_bp)       # XRF microservices (Kubernetes, només al Twin)
+app.register_blueprint(chaos_bp)      # POST /chaos/cut_link, /chaos/restore_link
 
 
-# ── WebSocket metrics broadcast ──
+# ─────────────────────────────────────────────────────────────────────────────
+# FUNCIONS DE MÈTRIQUES EN TEMPS REAL
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _ping_one_target(target_ip):
-    """Ping a single IP and return the WebSocket payload dict."""
+    """
+    Fa un ping real a una IP i retorna un dict amb min/avg/max/jitter.
+    S'usa per mesurar la latència del canal físic entre PCs de laboratori.
+    """
     from utils import parse_ping
     try:
+        # -c 3: tres paquets | -i 0.2: interval de 200ms entre paquets
         result = subprocess.run(
             ['ping', '-c', '3', '-i', '0.2', target_ip],
             capture_output=True, text=True, timeout=10
@@ -85,10 +106,11 @@ def _ping_one_target(target_ip):
             'latency_avg': latency['avg'],
             'latency_max': latency['max'],
             'jitter':      jitter,
-            'reachable':   latency['avg'] is not None,
+            'reachable':   latency['avg'] is not None,  # False si els paquets es perden
             'target':      target_ip,
         }
     except Exception:
+        # Si el ping falla (timeout, host unreachable), retorna tot a None
         return {
             'latency_min': None, 'latency_avg': None,
             'latency_max': None, 'jitter': None,
@@ -98,22 +120,23 @@ def _ping_one_target(target_ip):
 
 def _ping_twin_channel():
     """
-    Ping peer PCs every 5s and emit results via WebSocket.
-    - Original: pings ALL Twins (one emit per Twin, tagged by IP).
-    - Twin: pings the Original.
-    Shows physical channel latency for each link in the dashboard.
+    Thread en background que cada 5 segons fa ping al(s) peer(s) i emet el
+    resultat via WebSocket ('twin_channel_ping') al dashboard del navegador.
+
+    Comportament:
+    - Original: pinga TOTS els Twins en paral·lel (un event per Twin, identificat per IP)
+    - Twin:     pinga l'Original (un sol event)
     """
     from sync import TWINS, ORIGINAL_IP
 
-    # Wait for WebSocket to be ready before first ping
-    time.sleep(2)
+    time.sleep(2)   # espera que el servidor WebSocket estigui llest
     while True:
         if IS_TWIN:
-            # Twin pings the Original only
+            # El Twin pinga l'Original per mostrar la latència del canal cap a ell
             payload = _ping_one_target(ORIGINAL_IP)
             socketio.emit('twin_channel_ping', payload)
         else:
-            # Original pings ALL Twins in parallel
+            # L'Original pinga tots els Twins simultàniament (threads en paral·lel)
             results = [None] * len(TWINS)
 
             def _do_ping(idx, twin):
@@ -126,34 +149,47 @@ def _ping_twin_channel():
             for th in threads: th.start()
             for th in threads: th.join()
 
+            # Emet un event per cada Twin (el JS identifica cada canal per la IP)
             for payload in results:
                 if payload:
                     socketio.emit('twin_channel_ping', payload)
-        time.sleep(5)
+        time.sleep(5)   # freqüència del ping: cada 5 segons
 
 
 def _read_net_dev(pid):
     """
-    Read /proc/{pid}/net/dev directly from the host filesystem.
-    Returns the file content as a string, or None on error.
+    Llegeix /proc/{pid}/net/dev directament del filesystem del host.
 
-    This avoids mn_node.cmd() entirely — no shell interaction, no thread-safety
-    issues, no competition with Mininet operations. Each Mininet node runs in
-    its own network namespace; /proc/{pid}/net/dev reflects that namespace's
-    interfaces without any subprocess overhead.
+    Cada node Mininet corre en el seu propi network namespace de Linux.
+    /proc/{PID}/net/dev conté les estadístiques de les interfícies d'aquell
+    namespace (bytes tx/rx, paquets) sense necessitat d'obrir un shell.
+
+    Avantatge vs node.cmd('cat /proc/net/dev'):
+    - No bloqueja el shell del node (no hi ha concurrència)
+    - ~0.1ms per lectura vs ~3ms amb shell
+    - Thread-safe: no usa pipe del bash
     """
     try:
         with open(f'/proc/{pid}/net/dev', 'r') as f:
             return f.read()
     except OSError:
-        return None
+        return None   # el node ha mort o el PID ja no existeix
 
 
 def _broadcast_metrics(xarxa):
-    """Push CPU/RAM and link traffic via WebSocket every 500ms."""
+    """
+    Thread en background que cada 500ms:
+    1. Emet CPU i RAM via WebSocket ('metrics_system')
+    2. Cada segon (tick >= 2), llegeix estadístiques de tràfic de tots els nodes
+       i emet ('metrics_link_traffic') amb rx/tx bytes per interfície
+
+    No usa topology_lock: les mètriques obsoletes d'un tick no fan mal.
+    Usa snapshots dels dicts per evitar "dict changed size during iteration".
+    """
     link_tick = 0
     while True:
         try:
+            # ── CPU i RAM del sistema host ──
             cpu = psutil.cpu_percent(interval=None)
             ram = psutil.virtual_memory()
             socketio.emit('metrics_system', {
@@ -163,12 +199,12 @@ def _broadcast_metrics(xarxa):
                 'ram_total_mb': round(ram.total / 1024 / 1024, 1),
             })
 
+            # ── Tràfic de xarxa (cada segon, no cada 500ms) ──
             link_tick += 1
             if link_tick >= 2 and xarxa.network_ready:
                 link_tick = 0
                 links = {}
-                # Snapshot to avoid dict-changed-during-iteration errors.
-                # No topology_lock needed — stale metrics for one tick are fine.
+                # Snapshot per evitar errors si la topologia canvia mentre iterem
                 nodes_snap    = dict(xarxa.nodes)
                 mn_nodes_snap = dict(xarxa.mininet_nodes)
                 for name, props in nodes_snap.items():
@@ -180,51 +216,58 @@ def _broadcast_metrics(xarxa):
                     pid = getattr(mn_node, 'pid', None)
                     if not pid:
                         continue
-                    raw = _read_net_dev(pid)
+                    raw = _read_net_dev(pid)   # llegeix del filesystem sense shell
                     if not raw:
                         continue
+                    # Parseja el format de /proc/net/dev (salta les 2 línies de capçalera)
                     for line in raw.strip().split('\n')[2:]:
                         parts = line.split(':')
                         if len(parts) < 2:
                             continue
                         intf = parts[0].strip()
                         if intf == 'lo':
-                            continue
+                            continue   # ignora loopback
                         values = parts[1].split()
                         if len(values) < 9:
                             continue
+                        # Mininet nombra les interfícies com "r1-eth0" → strip del prefix del node
                         intf_short = intf[len(name)+1:] if intf.startswith(name + '-') else intf
                         links[f'{name}-{intf_short}'] = {
                             'node':     name,
                             'intf':     intf_short,
-                            'rx_bytes': int(values[0]),
-                            'tx_bytes': int(values[8]),
+                            'rx_bytes': int(values[0]),   # columna 1 = bytes rebuts
+                            'tx_bytes': int(values[8]),   # columna 9 = bytes enviats
                         }
                 socketio.emit('metrics_link_traffic', {'links': links})
 
         except Exception as e:
             print(f'[broadcast] error: {e}')
 
-        time.sleep(0.5)
+        time.sleep(0.5)   # freqüència del broadcast: cada 500ms
 
 
 def _run_socketio_server():
-    """Run the SocketIO server on port 5001 in a background thread."""
+    """Arrenca el servidor SocketIO al port 5001 en un thread de background."""
     socketio.run(metrics_app, host='0.0.0.0', port=5001, debug=False,
                  use_reloader=False, allow_unsafe_werkzeug=True)
 
 
-# ── Entry point ──
+# ─────────────────────────────────────────────────────────────────────────────
+# PUNT D'ENTRADA PRINCIPAL
+# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
+    # 1. Neteja restes de sessions Mininet anteriors
     subprocess.run(['mn', '-c'], capture_output=True)
 
+    # 2. Crea l'objecte Xarxa (inicialitza estructures de dades, no arrenca res encara)
     xarxa = Xarxa()
 
-    # Kill any leftover FRR daemons from previous runs.
-    # mn -c kills Mininet bash shells but NOT FRR daemons. Stale daemons
-    # keep their namespace alive and hold PID file locks, preventing new
-    # daemons from starting (causing the "Could not lock pid_file" error).
-    import glob, shutil
+    # 3. Mata daemons FRR antics de runs anteriors.
+    #    PROBLEMA: mn -c mata els bash shells de Mininet però NO els daemons FRR
+    #    (zebra, ospfd). Si deixen fitxers PID bloquejats a /tmp/frr_*/,
+    #    els nous daemons no poden arrencar ("Could not lock pid_file").
+    #    SOLUCIÓ: SIGKILL tots els daemons vius i esborra els directoris.
+    import glob, shutil, os
     for frr_dir in glob.glob('/tmp/frr_*'):
         for pidfile in ['zebra.pid', 'ospfd.pid', 'ldpd.pid', 'bfdd.pid']:
             pidpath = f'{frr_dir}/{pidfile}'
@@ -232,17 +275,19 @@ if __name__ == '__main__':
                 try:
                     with open(pidpath) as _pf:
                         _pid = int(_pf.read().strip())
-                    os.kill(_pid, 9)  # SIGKILL — no grace period needed
+                    os.kill(_pid, 9)   # SIGKILL — no grace period, mor immediatament
                 except Exception:
-                    pass
-        shutil.rmtree(frr_dir, ignore_errors=True)
+                    pass   # PID ja mort o fitxer corrupte → ignora
+        shutil.rmtree(frr_dir, ignore_errors=True)   # esborra el directori sencer
 
+    # 4. Inicialitza el mòdul de sincronització amb les IPs dels Twins i de l'Original
     sync_module.init_sync(xarxa,
-                       twins=args.twins,
-                       twin_ip=args.twin_ip,
-                       original_ip=args.original_ip,
-                       twin_port=args.twin_port)
+                          twins=args.twins,
+                          twin_ip=args.twin_ip,
+                          original_ip=args.original_ip,
+                          twin_port=args.twin_port)
 
+    # 5. Inicialitza tots els blueprints amb la referència a la xarxa
     init_topology(xarxa, IS_TWIN)
     init_nodes(xarxa)
     init_metrics(xarxa, socketio)
@@ -250,36 +295,40 @@ if __name__ == '__main__':
     init_xrfs(IS_TWIN, socketio)
     init_chaos(xarxa, socketio)
 
-    # Start Mininet
+    # 6. Arrenca Mininet en un thread de background
+    #    (start_network() és bloquejant: crea nodes, links, arrenca OSPF)
     t = threading.Thread(target=xarxa.start_network)
     t.daemon = True
     t.start()
-    time.sleep(3)
+    time.sleep(3)   # espera que Mininet estigui llest (OVS, FRR, etc.)
 
-    # Start WebSocket metrics broadcast thread
+    # 7. Arrenca el broadcast de mètriques (CPU, RAM, tràfic) via WebSocket
     b = threading.Thread(target=_broadcast_metrics, args=(xarxa,))
     b.daemon = True
     b.start()
 
-    # Pre-warm router pool — wait for network_ready before creating pool nodes.
-    # A fixed sleep(3) is fragile; polling network_ready is robust on any HW.
+    # 8. Pre-escalfa el pool de routers quan la xarxa estigui llesta.
+    #    Usa polling de network_ready en lloc d'un sleep fix perquè en HW lent
+    #    la xarxa pot trigar més de 3s i un sleep fix fallaria.
     def _start_pool_when_ready():
         while not xarxa.network_ready:
             time.sleep(0.5)
-        xarxa.init_router_pool(pool_size=5)
+        xarxa.init_router_pool(pool_size=5)   # crea 5 routers pre-escalfats en paral·lel
     threading.Thread(target=_start_pool_when_ready, daemon=True).start()
 
-    # Start physical channel ping (runs on both Original and Twin)
+    # 9. Arrenca el ping del canal físic entre PCs (Original ↔ Twins)
     p = threading.Thread(target=_ping_twin_channel)
     p.daemon = True
     p.start()
 
-    # Start SocketIO server on port 5001 in background thread
+    # 10. Arrenca el servidor SocketIO al port 5001 en background
     s = threading.Thread(target=_run_socketio_server)
     s.daemon = True
     s.start()
 
-    # Start main HTTP server on port 5000 (threaded for concurrency)
+    # 11. Arrenca el servidor HTTP Flask al port 5000 (threaded=True per atendre
+    #     múltiples requests simultànies — imprescindible quan l'Original i el Twin
+    #     processen operacions concurrents)
     print(' * HTTP server running on port 5000')
     print(' * WebSocket server running on port 5001')
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

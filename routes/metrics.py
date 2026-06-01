@@ -35,6 +35,22 @@ _xarxa           = None
 _metrics_running = False
 _socketio        = None   # injected by app.py after SocketIO is created
 
+# ─────────────────────────────────────────────────────────────────────────────
+# metrics.py — Endpoints de mesura de la xarxa i del sistema
+#
+# Endpoints:
+#   GET  /metrics/system      → CPU + RAM del host
+#   GET  /metrics/ping        → ping configurable entre dos hosts (count, size, interval)
+#   GET  /metrics/ping_fast   → ping d'un sol paquet (per al gràfic en viu)
+#   GET  /metrics/internal    → ping complet + iperf entre dos hosts
+#   GET  /metrics/global      → Global Scan: pings entre TOTS els parells de hosts
+#   GET  /metrics/sync        → historial de latències de sincronització + estadístiques
+#   POST /sync_metrics        → rep mètriques de sync enviades per l'Original (al Twin)
+#   GET  /metrics/hosts       → llista de noms dels nodes host
+#   GET  /metrics/traffic     → comptadors rx/tx d'un node (via /proc/pid/net/dev)
+#   GET  /metrics/link_traffic→ comptadors rx/tx de tots els routers
+#   GET  /ip_dashboard        → IPs i subnets de tots els nodes (per "IP Dashboard")
+# ─────────────────────────────────────────────────────────────────────────────
 bp = Blueprint('metrics', __name__)
 
 
@@ -47,6 +63,8 @@ def init_blueprint(xarxa_instance, socketio_instance=None):
 # ── Routes ──
 
 @bp.route('/metrics/system')
+# Retorna CPU i RAM actuals del host via psutil.
+# interval=0.3: mesura el CPU durant 300ms per un valor més precís.
 def metrics_system():
     cpu = psutil.cpu_percent(interval=0.3)
     ram = psutil.virtual_memory()
@@ -60,6 +78,9 @@ def metrics_system():
 
 
 @bp.route('/metrics/ping')
+# Fa un ping entre dos hosts de la xarxa Mininet.
+# Usa get_ping_lock(src) per evitar pings concurrents al mateix shell bash.
+# Paràmetres via query string: src, dst, count (pkts), size (bytes), interval (s).
 def metrics_ping():
     """Ping measurement between two hosts with configurable options."""
     if not _xarxa.network_ready:
@@ -97,6 +118,9 @@ def metrics_ping():
 
 
 @bp.route('/metrics/ping_fast')
+# Ping d'un sol paquet per al gràfic d'historial en temps real del dashboard.
+# Usa acquire(blocking=False): si el node ja està fent ping, retorna busy=True
+# en lloc de bloquejar, perquè el gràfic no s'aturi esperant.
 def metrics_ping_fast():
     """Single-packet ping for the live dashboard graph."""
     if not _xarxa.network_ready:
@@ -121,6 +145,8 @@ def metrics_ping_fast():
 
 
 @bp.route('/metrics/internal')
+# Mesura completa: ping (10 paquets) + iperf entre dos hosts.
+# _metrics_running evita mesures concurrents (iperf ocupa el node destinació).
 def metrics_internal():
     """Full ping + iperf measurement between two hosts."""
     global _metrics_running
@@ -183,6 +209,11 @@ def _build_iperf_cmd(protocol, duration, parallel, bandwidth, reverse):
 
 
 @bp.route('/metrics/global')
+# Global Scan: fa ping (i opcionalment iperf) entre TOTS els parells de hosts.
+# mode=fast → ping only (~3s)
+# mode=full → ping + iperf, paral·lelitzat per grups (~15s)
+# Emet events de progrés via WebSocket ('latency_matrix_progress') perquè
+# el navegador pugui mostrar una barra de progrés en temps real.
 def metrics_global():
     """
     Global Scan — ping (and optionally iperf) all host pairs.
@@ -342,6 +373,10 @@ def metrics_global():
 
 
 @bp.route('/metrics/sync')
+# Retorna l'historial de latències de sincronització Digital Twin.
+# op_filter: filtra per tipus d'operació (add_router, add_host, remove_node...).
+# t_total = max(t_local, t_network) — execució paral·lela, no suma.
+# Calcula estadístiques (min/avg/max/jitter) per a cada component de latència.
 def metrics_sync():
     op_filter = request.args.get('op', '').strip()
     with sync_history_lock:
@@ -395,6 +430,10 @@ def metrics_sync():
 
 
 @bp.route('/sync_metrics', methods=['POST'])
+# Rep una entrada de mètriques de sync enviada per l'Original.
+# El Twin la guarda al seu historial per mostrar-la al seu dashboard.
+# Si és una actualització tardana (t_local conegut, t_network=None), actualitza
+# l'entrada existent en lloc d'afegir-ne una de nova.
 def update_sync_metrics():
     """
     Receive a sync timing entry pushed by the Original.
@@ -439,6 +478,10 @@ def metrics_hosts():
 
 
 @bp.route('/metrics/traffic')
+# Retorna estadístiques de tràfic d'un node (rx/tx bytes i paquets per interfície).
+# Llegeix directament de /proc/{pid}/net/dev sense obrir cap shell.
+# Cada node Mininet té el seu propi network namespace → /proc/{pid}/net/dev
+# mostra NOMÉS les interfícies d'aquell namespace.
 def metrics_traffic():
     if not _xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
@@ -515,6 +558,9 @@ def metrics_link_traffic():
 
 
 @bp.route('/ip_dashboard')
+# Retorna totes les IPs de la xarxa organitzades de dues formes:
+#   flat:    llista plana ordenada per tipus (routers primer, hosts després)
+#   subnets: agrupada per subxarxa (útil per veure quins nodes estan a cada segment)
 def ip_dashboard():
     flat    = []
     subnets = {}

@@ -27,6 +27,21 @@ _IS_TWIN  = False
 TYPE_TO_NUM = {0: 0, 'host': 1, 'router': 2, 'switch': 3}
 NUM_TO_TYPE = {0: 0, 1: 'host', 2: 'router', 3: 'switch'}
 
+# ─────────────────────────────────────────────────────────────────────────────
+# topology.py — Endpoints de lectura i gestió de la topologia
+#
+# Endpoints:
+#   GET  /topology     → topologia completa (nodes + links) per al dashboard vis.js
+#   GET  /matrix       → matriu d'adjacència NxN (per "View Matrix")
+#   GET  /export       → exporta estat complet en JSON (per "Save Network")
+#   POST /load_network → carrega un estat des de JSON (per "Load Network")
+#
+# SNAPSHOT CONSISTENT:
+#   /topology fa un snapshot de _xarxa.nodes abans de calcular els links.
+#   D'aquesta manera, si un remove_node concurrent modifica nodes mentre
+#   calculem els links, usem el mateix snapshot per a tots dos — no hi ha
+#   inconsistències entre la llista de nodes i la llista de links.
+# ─────────────────────────────────────────────────────────────────────────────
 bp = Blueprint('topology', __name__)
 
 
@@ -44,6 +59,9 @@ def index():
 
 
 @bp.route('/topology')
+# Retorna la topologia completa per al dashboard.
+# Genera la llista de links recorrent la matriu d'adjacència.
+# Usa nodes_snap per garantir que nodes i links siguin consistents.
 def topology():
     # Snapshot to avoid race conditions with pool/remove operations
     nodes_snap = dict(_xarxa.nodes)
@@ -87,6 +105,8 @@ def topology():
 
 
 @bp.route('/matrix')
+# Retorna la matriu d'adjacència per al popup "View Matrix".
+# Snapshot atòmic de names + matrix per evitar inconsistències de mides.
 def matrix():
     # Snapshot both together so names and matrix are always consistent
     names  = list(_xarxa.nodes.keys())
@@ -120,6 +140,9 @@ def export():
 
 
 @bp.route('/load_network', methods=['POST'])
+# Carrega un estat complet des de JSON i reconstrueix la xarxa.
+# Si és una sincronització del Twin (sync=True), aplica directament.
+# Si és l'usuari (sync=False), fa restart_network() i sincronitza al Twin.
 def load_network():
     if request.is_json:
         data       = request.get_json()

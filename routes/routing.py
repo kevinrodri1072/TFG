@@ -19,6 +19,23 @@ from sync import sync_event
 
 _xarxa = None
 
+# ─────────────────────────────────────────────────────────────────────────────
+# routing.py — Gestió del protocol de routing
+#
+# Endpoints:
+#   GET  /get_routing_mode → mode actual (ospf/ospf_bfd/mpls/mpls_bfd/manual)
+#   POST /set_routing_mode → canvia el protocol a tots els routers
+#   GET  /router_routes    → taula de rutes kernel d'un router (ip route show)
+#   POST /router_routes    → afegeix o elimina una ruta estàtica
+#   POST /open_wireshark   → obre Wireshark capturant una interfície
+#
+# MODES DE ROUTING:
+#   ospf      → OSPF (zebra + ospfd)         ← mode per defecte
+#   ospf_bfd  → OSPF + BFD (detecció ràpida de fallades en ms)
+#   mpls      → MPLS (zebra + ospfd + ldpd)
+#   mpls_bfd  → MPLS + BFD
+#   manual    → rutes estàtiques (ip route add), sense daemons FRR
+# ─────────────────────────────────────────────────────────────────────────────
 bp = Blueprint('routing', __name__)
 
 VALID_MODES = ('ospf', 'ospf_bfd', 'mpls', 'mpls_bfd', 'manual')
@@ -37,6 +54,12 @@ def get_routing_mode():
 
 
 @bp.route('/set_routing_mode', methods=['POST'])
+# Canvia el mode de routing a TOTS els routers.
+# Para els daemons actuals (_stop_routing) i arrenca els nous (_apply_routing).
+#
+# PARAL·LELITZACIÓ: un thread per router, tots corren simultàniament.
+# Cada node té el seu propi shell bash → no hi ha concurrència al node.cmd().
+# Amb N routers: temps = max(per-router) en lloc de N × per-router.
 def set_routing_mode():
     mode = request.json.get('mode')
     if mode not in VALID_MODES:
@@ -72,6 +95,8 @@ def set_routing_mode():
 
 
 @bp.route('/router_routes')
+# Retorna la taula de rutes del kernel d'un router via "ip route show".
+# Inclou rutes OSPF apreses, rutes directament connectades i rutes estàtiques.
 def get_router_routes():
     router = request.args.get('router')
     if not router or router not in _xarxa.nodes:
@@ -96,6 +121,9 @@ def get_router_routes():
 
 
 @bp.route('/router_routes', methods=['POST'])
+# Afegeix (action='add') o elimina (action='delete') una ruta estàtica.
+# Usa 'ip route replace' per add (idempotent) i 'ip route del' per delete.
+# Actualitza _xarxa.nodes[router]['routes'] per mantenir l'estat Python consistent.
 def modify_router_route():
     data   = request.json
     router = data.get('router')
@@ -140,6 +168,9 @@ def modify_router_route():
 
 
 @bp.route('/open_wireshark', methods=['POST'])
+# Obre Wireshark capturant una interfície d'un node Mininet.
+# Usa mnexec per entrar al namespace del node i tcpdump per capturar.
+# Fa streaming via pipe al Wireshark del desktop (DISPLAY necessari).
 def open_wireshark():
     data = request.json
     node = data.get('node')

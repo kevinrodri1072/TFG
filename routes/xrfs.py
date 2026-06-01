@@ -13,6 +13,24 @@ from flask import Blueprint, jsonify, request
 _IS_TWIN  = False
 _socketio = None
 
+# ─────────────────────────────────────────────────────────────────────────────
+# xrfs.py — Microserveis XRF sobre Kubernetes (NOMÉS disponible al Twin)
+#
+# XRF (eXposure Function Router) és una funció de xarxa del core 5G que
+# enruta peticions entre NFs (Network Functions). En aquest TFG es simula
+# com un microservei Kubernetes al Twin.
+#
+# RESTRICCIÓ: tots els endpoints retornen error si IS_TWIN=False.
+# El Twin té minikube/kubectl configurat; l'Original no.
+#
+# Endpoints:
+#   GET  /xrfs              → llista de XRFs desplegades
+#   POST /deploy_xrf        → desplega una nova XRF (kubectl apply)
+#   DELETE /delete_xrf      → elimina una XRF (kubectl delete)
+#   GET  /xrf_status        → estat dels pods XRF
+#   POST /xrf_route         → crea una ruta XRF
+#   GET  /xrf_logs          → logs d'una XRF
+# ─────────────────────────────────────────────────────────────────────────────
 bp = Blueprint('xrfs', __name__)
 
 # ── Job store for async XRF results ──

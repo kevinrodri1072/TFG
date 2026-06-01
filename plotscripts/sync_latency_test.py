@@ -171,23 +171,8 @@ FIXED_SEQUENCE = [
     {'type': 'host',   'name': 'h104', 'router': 'r31'},
     {'type': 'router', 'name': 'r32',  'connected_routers': ['r30', 'r28']},
     {'type': 'host',   'name': 'h105', 'router': 'r32'},
-    {'type': 'host',   'name': 'h106', 'router': 'r32'},
-    {'type': 'host',   'name': 'h107', 'router': 'r31'},
-    {'type': 'host',   'name': 'h108', 'router': 'r32'},
-    {'type': 'host',   'name': 'h109', 'router': 'r1'},
-    {'type': 'host',   'name': 'h110', 'router': 'r2'},
-    {'type': 'host',   'name': 'h111', 'router': 'r3'},
-    {'type': 'host',   'name': 'h112', 'router': 'r4'},
-    {'type': 'host',   'name': 'h113', 'router': 'r5'},
-    {'type': 'host',   'name': 'h114', 'router': 'r6'},
-    {'type': 'host',   'name': 'h115', 'router': 'r7'},
-    {'type': 'host',   'name': 'h116', 'router': 'r8'},
-    {'type': 'host',   'name': 'h117', 'router': 'r9'},
-    {'type': 'host',   'name': 'h118', 'router': 'r10'},
-    {'type': 'host',   'name': 'h119', 'router': 'r11'},
-    {'type': 'host',   'name': 'h120', 'router': 'r12'},
-    {'type': 'host',   'name': 'h121', 'router': 'r31'},
 ]
+
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -399,7 +384,14 @@ def main():
     next_checkpoint  = next(checkpoints_iter)
     print(f'🎯 First checkpoint: {next_checkpoint} nodes\n')
 
+    MAX_NODES = 128  # stop as soon as we reach this many non-switch nodes
+
     for op in FIXED_SEQUENCE:
+        # Hard stop: never execute an operation that would push us past the limit
+        if count_nodes() >= MAX_NODES:
+            print(f'\n  🛑 Reached {MAX_NODES} nodes — stopping sequence.')
+            break
+
         name = op['name']
         if op['type'] == 'router':
             print(f'  ➕ add_router {name} → {op["connected_routers"]}...', end='', flush=True)
