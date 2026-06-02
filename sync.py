@@ -32,8 +32,6 @@ from collections import deque
 import psutil
 import requests
 
-# Creem una sessió global persistent per eliminar la latència del handshake TCP
-_sync_session = requests.Session()
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURACIÓ DE CONNEXIÓ
 # Sobreescrita per init_sync() amb els arguments CLI de app.py
@@ -291,8 +289,7 @@ def _do_sync_to_one_twin(twin, endpoint, payload, retries=3, delay=0.5):
     for attempt in range(retries):
         try:
             t_start  = time.time()
-            # Substituïm requests.post per _sync_session.post
-            response = _sync_session.post(
+            response = requests.post(
                 f'http://{twin["ip"]}:{twin["port"]}{endpoint}',
                 json=payload,
                 timeout=30,   # espera fins a 30s (Mininet pot ser lent)
