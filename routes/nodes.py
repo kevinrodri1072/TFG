@@ -178,16 +178,14 @@ def add_host():
                            intfName1=f'{name}-eth0', intfName2=sw_intf_name)
     # ── Outside lock: node.cmd calls don't need mutual exclusion ──
     new_host.cmd(
-        f'ifconfig {name}-eth0 {ip} ; '
-        f'ip route add default via {gw} ; '
-        f'ifconfig lo up ; '
-        f'ip link set lo up ; '
+        f'ifconfig {name}-eth0 {ip} && '
+        f'ip route add default via {gw} && '
+        f'ifconfig lo up && '
+        f'ip link set lo up && '
         f'ip link set {name}-eth0 up'
     )
+    sw_node.attach(sw_intf_name)
     sw_node.cmd(f'ip link set {sw_intf_name} up')
-    # ovs-vsctl runs on the HOST (OVS is not namespaced) — use os.system to
-    # avoid going through the switch node's bash shell (thread-safety issue).
-    os.system(f'ovs-vsctl add-port {switch} {sw_intf_name} 2>/dev/null')
     t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
