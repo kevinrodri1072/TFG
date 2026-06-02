@@ -6,16 +6,19 @@ as scalability_test.py, recording individual sync latency
 measurements for every operation.
 
 Metrics recorded per operation:
-  - op_type       : 'add_host' or 'add_router'
-  - n_nodes       : network size (hosts + routers) at time of operation
-  - t_local_ms    : time to apply change in Original Mininet
-  - t_network_ms  : HTTP round-trip Original → Twin
-  - t_twin_ms     : time to apply change in Twin Mininet
-  - t_total_ms    : t_local + t_network (real end-to-end sync latency)
+  - op_type        : 'add_host' or 'add_router'
+  - n_nodes        : network size (hosts + routers) at time of operation
+  - t_local_ms     : time to apply change in Original Mininet
+  - t_network_ms   : HTTP round-trip Original → Twin
+  - t_twin_ms      : time to apply change in Twin Mininet
+  - t_total_ms     : t_local + t_network (real end-to-end sync latency)
+  - payload_bytes  : real size of the JSON sync payload sent to the Twin
+  - throughput_bps : real transmission rate of the sync event link
+  - cpu_percent    : original host CPU utilization at registration time
 
 Generates:
-  - CSV with all individual measurements
-  - 4 plots: total latency, component breakdown, host vs router, jitter
+  - CSV with all individual measurements (including original-twin sync metrics)
+  - 6 plots: total latency, component breakdown (host/router), jitter, throughput/payload, and CPU overhead
 
 Usage:
     sudo python3 sync_latency_test.py
@@ -189,13 +192,11 @@ def count_nodes():
     r = requests.get(f'{ORIGINAL_URL}/topology', timeout=10).json()
     return sum(1 for n, p in r['nodes'].items() if p['type'] != 'switch')
 
-def get_last_sync_entry():
-    try:
-        data = requests.get(f'{ORIGINAL_URL}/metrics/sync', timeout=5).json()
-        history = data.get('history', [])
-        return history[-1] if history else None
-    except Exception:
-        return None
+def safe_stats(values):
+    values = [v for v in values if v is not None]
+    if not values:
+        return None, None, None
+    return round(min(values), 2), round(statistics.mean(values), 2), round(max(values), 2)
 
 def do_operation(op):
     try:
@@ -234,27 +235,21 @@ def do_operation(op):
             pass
     return {'error': 'Sync entry did not appear within 10s (t_local may be pending)'}
 
-def safe_stats(values):
-    values = [v for v in values if v is not None]
-    if not values:
-        return None, None, None
-    return round(min(values), 2), round(statistics.mean(values), 2), round(max(values), 2)
-
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
 def generate_plots(rows):
-    fig, axes = plt.subplots(2, 2, figsize=(16, 11))
+    # Ampliado a un grid de 3x2 para dar soporte a las nuevas metricas de red y host
+    fig, axes = plt.subplots(3, 2, figsize=(16, 16))
     fig.suptitle(
-        'Digital Twin Network — Sync Latency Performance Study\n'
-        'Separated Analysis by Operation Type (Host vs Router)',
+        'Digital Twin Network — Sync Latency & Overhead Performance Study\n'
+        'Comprehensive Analysis Including Network Link & Host Resource Metrics',
         fontsize=16, fontweight='bold'
     )
 
-    # Separar los datos por tipo de operación desde el inicio
     hosts_data = sorted([r for r in rows if r['op_type'] == 'host'], key=lambda x: x['n_nodes'])
     routers_data = sorted([r for r in rows if r['op_type'] == 'router'], key=lambda x: x['n_nodes'])
 
-    # ── GRÁFICA 1: Evolución de Latencia Total (Separada) ──
+    # ── GRÁFICA 1: Evolución de Latencia Total ──
     ax = axes[0][0]
     if hosts_data:
         ax.plot([r['n_nodes'] for r in hosts_data], [r['t_total_ms'] for r in hosts_data], 
@@ -314,8 +309,56 @@ def generate_plots(rows):
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
+    # ── NUEVA GRÁFICA 5: Rendimiento de Red (Throughput vs Payload) ──
+    ax = axes[2][0]
+    ax_twin = ax.twinx()
+    
+    h_tp_x = [r['n_nodes'] for r in hosts_data if r['throughput_bps'] is not None]
+    h_tp_y = [r['throughput_bps'] for r in hosts_data if r['throughput_bps'] is not None]
+    h_pl_y = [r['payload_bytes'] for r in hosts_data if r['payload_bytes'] is not None]
+    
+    r_tp_x = [r['n_nodes'] for r in routers_data if r['throughput_bps'] is not None]
+    r_tp_y = [r['throughput_bps'] for r in routers_data if r['throughput_bps'] is not None]
+    r_pl_y = [r['payload_bytes'] for r in routers_data if r['payload_bytes'] is not None]
+
+    if h_tp_y:
+        ax.plot(h_tp_x, h_tp_y, '-', color='#2ecc71', label='Host Throughput (bps)')
+        ax_twin.plot(h_tp_x, h_pl_y, ':', color='#27ae60', label='Host Payload (Bytes)')
+    if r_tp_y:
+        ax.plot(r_tp_x, r_tp_y, '-', color='#e74c3c', label='Router Throughput (bps)')
+        ax_twin.plot(r_tp_x, r_pl_y, ':', color='#c0392b', label='Router Payload (Bytes)')
+        
+    ax.set_title('Sync Network Overhead & Throughput Rate', fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (Total nodes)')
+    ax.set_ylabel('Throughput (bps)', color='#111111')
+    ax_twin.set_ylabel('Payload size (Bytes)', color='#444444')
+    
+    lines_l, labels_l = ax.get_legend_handles_labels()
+    lines_r, labels_r = ax_twin.get_legend_handles_labels()
+    ax.legend(lines_l + lines_r, labels_l + labels_r, loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+
+    # ── NUEVA GRÁFICA 6: Consumo de CPU del Host durante Sync ──
+    ax = axes[2][1]
+    h_cpu_x = [r['n_nodes'] for r in hosts_data if r['cpu_percent'] is not None]
+    h_cpu_y = [r['cpu_percent'] for r in hosts_data if r['cpu_percent'] is not None]
+    r_cpu_x = [r['n_nodes'] for r in routers_data if r['cpu_percent'] is not None]
+    r_cpu_y = [r['cpu_percent'] for r in routers_data if r['cpu_percent'] is not None]
+    
+    if h_cpu_y:
+        ax.plot(h_cpu_x, h_cpu_y, 'o-', color='#9b59b6', linewidth=1.5, label='Host CPU (add_host)')
+    if r_cpu_y:
+        ax.plot(r_cpu_x, r_cpu_y, 's-', color='#f1c40f', linewidth=1.5, label='Host CPU (add_router)')
+        
+    ax.set_title('Original Host CPU Utilization', fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (Total nodes)')
+    ax.set_ylabel('CPU Usage (%)')
+    ax.set_ylim(0, 105)
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+
     plt.tight_layout()
-    plt.subplots_adjust(top=0.90)
+    plt.subplots_adjust(top=0.92)
     plt.savefig(PLOT_FILE, dpi=150, bbox_inches='tight')
     print(f' Plot saved to {PLOT_FILE}')
 
@@ -368,14 +411,17 @@ def main():
             print(f'  {entry["error"]}')
             current = count_nodes()
             rows.append({
-                'op_type':      op['type'],
-                'op_name':      name,
-                'n_nodes':      current,
-                't_local_ms':   None,
-                't_network_ms': None,
-                't_twin_ms':    None,
-                't_total_ms':   None,
-                'error':        entry['error'],
+                'op_type':        op['type'],
+                'op_name':        name,
+                'n_nodes':        current,
+                't_local_ms':     None,
+                't_network_ms':   None,
+                't_twin_ms':      None,
+                't_total_ms':     None,
+                'payload_bytes':  None,
+                'throughput_bps': None,
+                'cpu_percent':    None,
+                'error':          entry['error'],
             })
             time.sleep(0.5)
             current = count_nodes()
@@ -395,18 +441,25 @@ def main():
                     round(t_network, 2) if t_network else None)
 
         current = count_nodes()
+        
+        # Mapeado extendido con las nuevas metricas extraidas del payload JSON de sync.py
         row = {
-            'op_type':      op['type'],
-            'op_name':      name,
-            'n_nodes':      current,
-            't_local_ms':   t_local,
-            't_network_ms': t_network,
-            't_twin_ms':    t_twin,
-            't_total_ms':   t_total,
-            'error':        '',
+            'op_type':        op['type'],
+            'op_name':        name,
+            'n_nodes':        current,
+            't_local_ms':     t_local,
+            't_network_ms':   t_network,
+            't_twin_ms':      t_twin,
+            't_total_ms':     t_total,
+            'payload_bytes':  entry.get('payload_bytes'),
+            'throughput_bps': entry.get('throughput_bps'),
+            'cpu_percent':    entry.get('cpu_percent'),
+            'error':          '',
         }
         rows.append(row)
-        print(f'   total={t_total}ms  local={t_local}ms  net={t_network}ms  twin={t_twin}ms')
+        
+        print(f'   total={t_total}ms  local={t_local}ms  net={t_network}ms  twin={t_twin}ms  '
+              f'payload={row["payload_bytes"]}B  rate={row["throughput_bps"]}bps  cpu={row["cpu_percent"]}%')
 
         if op['type'] == 'router':
             print(f'      Waiting for OSPF convergence (5s)...')
@@ -425,6 +478,7 @@ def main():
 
     if rows:
         with open(CSV_FILE, 'w', newline='') as f:
+            # DictWriter infiere las columnas dinamicamente a partir de las llaves de la fila 0
             writer = csv.DictWriter(f, fieldnames=rows[0].keys())
             writer.writeheader()
             writer.writerows(rows)
