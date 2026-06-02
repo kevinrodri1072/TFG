@@ -580,6 +580,50 @@ var socket = io('http://localhost:5001');
             document.getElementById('sync-jitter-twin').textContent =
                 stats.jitter_twin_ms !== null && stats.jitter_twin_ms !== undefined ? stats.jitter_twin_ms + ' ms' : '—';
 
+            // ── Throughput helpers ──
+            function fmtBytes(b) {
+                if (b === null || b === undefined) return '—';
+                return b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' KB';
+            }
+            function fmtBps(bps) {
+                if (bps === null || bps === undefined) return '—';
+                if (bps >= 1e6) return (bps / 1e6).toFixed(2) + ' Mbps';
+                if (bps >= 1e3) return (bps / 1e3).toFixed(1) + ' Kbps';
+                return bps.toFixed(0) + ' bps';
+            }
+
+            // ── Payload / msg ──
+            var pb = stats.payload_bytes;
+            document.getElementById('sync-payload-avg').textContent  = fmtBytes(pb && pb.avg);
+            document.getElementById('sync-payload-min').textContent  = fmtBytes(pb && pb.min);
+            document.getElementById('sync-payload-avg2').textContent = fmtBytes(pb && pb.avg);
+            document.getElementById('sync-payload-max').textContent  = fmtBytes(pb && pb.max);
+
+            // ── Link throughput ──
+            var thr = stats.throughput_bps;
+            document.getElementById('sync-thr-avg').textContent  = fmtBps(thr && thr.avg);
+            document.getElementById('sync-thr-min').textContent  = fmtBps(thr && thr.min);
+            document.getElementById('sync-thr-avg2').textContent = fmtBps(thr && thr.avg);
+            document.getElementById('sync-thr-max').textContent  = fmtBps(thr && thr.max);
+
+            // ── CPU during sync ──
+            var cpu = stats.cpu_at_sync;
+            document.getElementById('sync-cpu-avg').textContent  = cpu && cpu.avg !== null ? cpu.avg + '%' : '—';
+            document.getElementById('sync-cpu-min').textContent  = cpu && cpu.min !== null ? cpu.min + '%' : '—';
+            document.getElementById('sync-cpu-avg2').textContent = cpu && cpu.avg !== null ? cpu.avg + '%' : '—';
+            document.getElementById('sync-cpu-max').textContent  = cpu && cpu.max !== null ? cpu.max + '%' : '—';
+
+            // ── Ops per second ──
+            var ops = stats.ops_per_sec;
+            document.getElementById('sync-ops-capacity-avg').textContent =
+                ops && ops.capacity_avg !== null ? ops.capacity_avg + ' ops/s' : '—';
+            document.getElementById('sync-ops-capacity-max').textContent =
+                ops && ops.capacity_max !== null ? ops.capacity_max + ' ops/s' : '—';
+            document.getElementById('sync-ops-10s').textContent =
+                ops && ops.recent_10s !== null ? ops.recent_10s + ' ops/s' : '—';
+            document.getElementById('sync-ops-60s').textContent =
+                ops && ops.recent_60s !== null ? ops.recent_60s + ' ops/s' : '—';
+
             var list   = document.getElementById('sync-history-list');
             list.innerHTML = '';
             var recent = data.history.slice(-8).reverse();
@@ -591,7 +635,12 @@ var socket = io('http://localhost:5001');
                 var twin  = entry.t_twin_ms !== null && entry.t_twin_ms !== undefined ? entry.t_twin_ms : null;
                 var total = (local !== null && net !== null) ? Math.round(Math.max(local, net) * 100) / 100 : null;
                 var color = total === null ? '#aaa' : total < 150 ? '#2ecc71' : total < 500 ? '#f39c12' : '#e74c3c';
-                var detail = `local:${local ?? '?'}ms  net:${net ?? '?'}ms  twin:${twin ?? '?'}ms  total:max(local,net)=${total ?? '?'}ms`;
+                var thr   = entry.throughput_bps ? (entry.throughput_bps >= 1e6 ? (entry.throughput_bps/1e6).toFixed(2)+' Mbps' : (entry.throughput_bps/1e3).toFixed(1)+' Kbps') : null;
+                var pb    = entry.payload_bytes ? (entry.payload_bytes < 1024 ? entry.payload_bytes+' B' : (entry.payload_bytes/1024).toFixed(1)+' KB') : null;
+                var detail = `local:${local ?? '?'}ms  net:${net ?? '?'}ms  twin:${twin ?? '?'}ms  total:${total ?? '?'}ms` +
+                             (pb  ? `  payload:${pb}`  : '') +
+                             (thr ? `  thr:${thr}` : '') +
+                             (entry.cpu_percent !== null && entry.cpu_percent !== undefined ? `  cpu:${entry.cpu_percent}%` : '');
                 var display = total !== null ? total + ' ms' : (net !== null ? net + ' ms' : '?');
                 list.innerHTML += `<div class="sync-entry"><span class="sync-op">${time} · ${entry.operation}</span><span class="sync-ms" style="color:${color}" title="${detail}">${display}</span></div>`;
             });
@@ -992,7 +1041,6 @@ var socket = io('http://localhost:5001');
             document.getElementById('xrf-neighbors-params').style.display = id === 'neighbors' ? 'block' : 'none';
             document.getElementById('xrf-hops-params').style.display      = id === 'hops'      ? 'block' : 'none';
             document.getElementById('xrf-traffic-params').style.display   = id === 'traffic'   ? 'block' : 'none';
-            document.getElementById('xrf-chaos-params').style.display     = id === 'chaos'     ? 'block' : 'none';
             document.getElementById('xrf-modal-result-content').innerHTML = '';
 
             if (topologyData) {
@@ -1014,52 +1062,8 @@ var socket = io('http://localhost:5001');
                 var tsel = document.getElementById('traffic-node');
                 tsel.innerHTML = '<option value="">All nodes</option>';
                 all.forEach(n => { tsel.innerHTML += `<option value="${n}">${n}</option>`; });
-
-                // Chaos selectors
-                var cnode = document.getElementById('chaos-node');
-                cnode.innerHTML = '';
-                routers.forEach(n => { cnode.innerHTML += `<option value="${n}">${n}</option>`; });
-
-                var csrc = document.getElementById('chaos-src');
-                csrc.innerHTML = '';
-                hosts.forEach(n => { csrc.innerHTML += `<option value="${n}">${n}</option>`; });
-
-                var cdst = document.getElementById('chaos-dst');
-                cdst.innerHTML = '';
-                hosts.forEach((n, i) => { cdst.innerHTML += `<option value="${n}" ${i===1?'selected':''}>${n}</option>`; });
             }
-            if (id !== 'chaos') queryXRF(id);
-        }
-
-        function renderChaos(data) {
-            var r = data.result ? data.result : data;
-            if (!r.ok) return `<p style="color:#e74c3c;">Error: ${r.error}</p>`;
-            var recoveryColor = r.t_recovery_s < 10 ? '#27ae60' : r.t_recovery_s < 20 ? '#f39c12' : '#e74c3c';
-            var tooltipStyle = 'position:relative; display:inline-block; cursor:help; margin-left:4px; color:#95a5a6; font-size:11px;';
-            var tipStyle = 'visibility:hidden; opacity:0; background:#2c3e50; color:white; text-align:left; border-radius:6px; padding:8px 10px; position:absolute; z-index:9999; bottom:130%; left:50%; transform:translateX(-50%); width:200px; font-size:11px; line-height:1.5; transition:opacity 0.2s; pointer-events:none;';
-            return `
-                
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
-                    <div style="background:#f8f9fa; padding:12px; border-radius:6px; text-align:center;">
-                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Baseline latency<span class="chaos-tip" style="${tooltipStyle}">ℹ️<span class="chaos-tiptext" style="${tipStyle}">Normal network latency before any failure. It is the benchmark.</span></span></div>
-                        <div style="font-size:22px; font-weight:bold; color:#2c3e50;">${r.baseline_avg_ms} ms</div>
-                    </div>
-                    <div style="background:#f8f9fa; padding:12px; border-radius:6px; text-align:center;">
-                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recovery latency<span class="chaos-tip" style="${tooltipStyle}">ℹ️<span class="chaos-tiptext" style="${tipStyle}">Latency of first successful ping after recovery. May be slightly higher than baseline while OSPF stabilizes.</span></span></div>
-                        <div style="font-size:22px; font-weight:bold; color:#2c3e50;">${r.recovery_avg_ms ?? '—'} ms</div>
-                    </div>
-                    <div style="background:#fdf2f2; padding:12px; border-radius:6px; text-align:center;">
-                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Packet loss<span class="chaos-tip" style="${tooltipStyle}">ℹ️<span class="chaos-tiptext" style="${tipStyle}">Percentage of packets lost while the router was down. 100% indicates total loss of connectivity.</span></span></div>
-                        <div style="font-size:22px; font-weight:bold; color:#e74c3c;">${r.loss_pct}%</div>
-                        <div style="font-size:11px; color:#aaa;">${r.lost_packets} / ${r.total_packets} packets</div>
-                    </div>
-                    <div style="background:#f0fdf4; padding:12px; border-radius:6px; text-align:center;">
-                        <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recovery time<span class="chaos-tip" style="${tooltipStyle}">ℹ️<span class="chaos-tiptext" style="${tipStyle}">Time from when the router is back up until the first ping works. Includes OSPF reconvergence (dead-interval + renegotiation + SPF).</span></span></div>
-                        <div style="font-size:22px; font-weight:bold; color:${recoveryColor};">${r.t_recovery_s ?? '—'} s</div>
-                        <div style="font-size:11px; color:#aaa;">Router: ${r.node} | ${r.duration_s}s down</div>
-                    </div>
-                </div>
-                <div style="font-size:12px; color:#7f8c8d; text-align:center;">Ping: ${r.src} → ${r.dst}</div>`;
+            queryXRF(id);
         }
 
         function renderNeighbors(data) {
@@ -1185,11 +1189,6 @@ var socket = io('http://localhost:5001');
             } else if (id === 'traffic') {
                 var node = document.getElementById('traffic-node').value;
                 if (node) params.node = node;
-            } else if (id === 'chaos') {
-                params.node     = document.getElementById('chaos-node').value;
-                params.src      = document.getElementById('chaos-src').value;
-                params.dst      = document.getElementById('chaos-dst').value;
-                params.duration = parseInt(document.getElementById('chaos-duration').value);
             }
             document.getElementById('xrf-modal-result-content').innerHTML = '<div style="color:#7f8c8d; font-size:13px;">⏳ Loading...</div>';
             fetch('/xrf/query', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({xrf: id, params: params})})
@@ -1200,7 +1199,6 @@ var socket = io('http://localhost:5001');
                 else if (id === 'neighbors') html = renderNeighbors(data);
                 else if (id === 'hops')      html = renderHops(data);
                 else if (id === 'traffic')   html = renderTraffic(data);
-                else if (id === 'chaos')     html = renderChaos(data);
                 else if (id === 'latency_matrix') html = renderLatencyMatrix(data);
                 document.getElementById('xrf-modal-result-content').innerHTML = html;
             });

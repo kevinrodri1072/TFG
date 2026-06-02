@@ -1,18 +1,6 @@
 var socket = io('http://localhost:5001');
 
 // ── WebSocket: latency matrix progress ──
-socket.on('chaos_progress', function(d) {
-    var wrap = document.getElementById('chaos-progress-wrap');
-    var bar  = document.getElementById('chaos-progress-bar');
-    var msg  = document.getElementById('chaos-progress-msg');
-    var pct  = document.getElementById('chaos-progress-pct');
-    if (!wrap) return;
-    wrap.style.display = 'block';
-    if (bar) { bar.style.width = d.percent + '%'; bar.style.background = d.percent < 100 ? '#e74c3c' : '#27ae60'; }
-    if (msg) msg.textContent = d.msg;
-    if (pct) pct.textContent = d.percent + '%';
-});
-
 socket.on('latency_matrix_progress', function(d) {
     var bar  = document.getElementById('latency-progress-bar');
     var msg  = document.getElementById('latency-progress-msg');
@@ -30,7 +18,7 @@ socket.on('latency_matrix_progress', function(d) {
  * xrfs.js — Standalone XRF page logic.
  *
  * Manages the XRF list (deploy / undeploy / query) and renders
- * results for each XRF type (neighbors, hops, traffic, chaos, latency_matrix).
+ * results for each XRF type (neighbors, hops, traffic, latency_matrix).
  */
 
 var xrfData      = {};
@@ -118,7 +106,6 @@ function showXRFResult(id) {
     document.getElementById('xrf-hops-params').style.display      = id === 'hops'      ? 'block' : 'none';
     document.getElementById('xrf-traffic-params').style.display   = id === 'traffic'   ? 'block' : 'none';
     if (id === 'traffic') { setTimeout(startTrafficLive, 100); }
-    document.getElementById('xrf-chaos-params').style.display          = id === 'chaos'          ? 'block' : 'none';
     document.getElementById('xrf-latency-matrix-params').style.display = id === 'latency_matrix' ? 'block' : 'none';
     document.getElementById('xrf-result-content').innerHTML = '';
 
@@ -143,54 +130,12 @@ function showXRFResult(id) {
         all.forEach(function(n) { tsel.innerHTML += '<option value="' + n + '">' + n + '</option>'; });
         // Auto-select first node
         if (all.length > 0) tsel.value = all[0];
-
-        var cnode = document.getElementById('chaos-node');
-        cnode.innerHTML = '';
-        routers.forEach(function(n) { cnode.innerHTML += '<option value="' + n + '">' + n + '</option>'; });
-
-        var csrc = document.getElementById('chaos-src');
-        csrc.innerHTML = '';
-        hosts.forEach(function(n) { csrc.innerHTML += '<option value="' + n + '">' + n + '</option>'; });
-
-        var cdst = document.getElementById('chaos-dst');
-        cdst.innerHTML = '';
-        hosts.forEach(function(n, i) { cdst.innerHTML += '<option value="' + n + '"' + (i===1?' selected':'') + '>' + n + '</option>'; });
     }
     // User must click Run/Query manually — no auto-trigger
 }
 
 
 // ── Render functions ──
-
-function renderChaos(data) {
-    var r = data.result ? data.result : data;
-    if (!r.ok) return '<p style="color:#e74c3c;">Error: ' + r.error + '</p>';
-    var recoveryColor = r.t_recovery_s < 10 ? '#27ae60' : r.t_recovery_s < 20 ? '#f39c12' : '#e74c3c';
-    var tooltipStyle = 'position:relative; display:inline-block; cursor:help; margin-left:4px; color:#95a5a6; font-size:11px;';
-    var tipStyle = 'visibility:hidden; opacity:0; background:#2c3e50; color:white; text-align:left; border-radius:6px; padding:8px 10px; position:absolute; z-index:9999; bottom:130%; left:50%; transform:translateX(-50%); width:200px; font-size:11px; line-height:1.5; transition:opacity 0.2s; pointer-events:none;';
-    return '' +
-        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">' +
-        '  <div style="background:#f8f9fa; padding:12px; border-radius:6px; text-align:center;">' +
-        '    <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Baseline latency<span class="chaos-tip" style="' + tooltipStyle + '">ℹ️<span class="chaos-tiptext" style="' + tipStyle + '">Normal network latency before any failure. It is the benchmark.</span></span></div>' +
-        '    <div style="font-size:22px; font-weight:bold; color:#2c3e50;">' + r.baseline_avg_ms + ' ms</div>' +
-        '  </div>' +
-        '  <div style="background:#f8f9fa; padding:12px; border-radius:6px; text-align:center;">' +
-        '    <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recovery latency<span class="chaos-tip" style="' + tooltipStyle + '">ℹ️<span class="chaos-tiptext" style="' + tipStyle + '">Latency of first successful ping after recovery. May be slightly higher than baseline while OSPF stabilizes.</span></span></div>' +
-        '    <div style="font-size:22px; font-weight:bold; color:#2c3e50;">' + (r.recovery_avg_ms != null ? r.recovery_avg_ms : '—') + ' ms</div>' +
-        '  </div>' +
-        '  <div style="background:#fdf2f2; padding:12px; border-radius:6px; text-align:center;">' +
-        '    <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Packet loss<span class="chaos-tip" style="' + tooltipStyle + '">ℹ️<span class="chaos-tiptext" style="' + tipStyle + '">Percentage of packets lost while the router was down. 100% indicates total loss of connectivity.</span></span></div>' +
-        '    <div style="font-size:22px; font-weight:bold; color:#e74c3c;">' + r.loss_pct + '%</div>' +
-        '    <div style="font-size:11px; color:#aaa;">' + r.lost_packets + ' / ' + r.total_packets + ' packets</div>' +
-        '  </div>' +
-        '  <div style="background:#f0fdf4; padding:12px; border-radius:6px; text-align:center;">' +
-        '    <div style="font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recovery time<span class="chaos-tip" style="' + tooltipStyle + '">ℹ️<span class="chaos-tiptext" style="' + tipStyle + '">Time from when the router is back up until the first ping works. Includes OSPF reconvergence (dead-interval + renegotiation + SPF).</span></span></div>' +
-        '    <div style="font-size:22px; font-weight:bold; color:' + recoveryColor + ';">' + (r.t_recovery_s != null ? r.t_recovery_s : '—') + ' s</div>' +
-        '    <div style="font-size:11px; color:#aaa;">Router: ' + r.node + ' | ' + r.duration_s + 's down</div>' +
-        '  </div>' +
-        '</div>' +
-        '<div style="font-size:12px; color:#7f8c8d; text-align:center;">Ping: ' + r.src + ' → ' + r.dst + '</div>';
-}
 
 function renderNeighbors(data) {
     var neighbors = data.result ? data.result.neighbors : data.neighbors;
@@ -645,31 +590,6 @@ function queryXRF(id) {
         var max_hops = document.getElementById('hops-max').value;
         if (dst) params.dst = dst;
         else if (max_hops) params.max_hops = parseInt(max_hops);
-    } else if (id === 'chaos') {
-        params.node     = document.getElementById('chaos-node').value;
-        params.src      = document.getElementById('chaos-src').value;
-        params.dst      = document.getElementById('chaos-dst').value;
-        params.duration = parseInt(document.getElementById('chaos-duration').value);
-        // Reset progress bar
-        var cwrap = document.getElementById('chaos-progress-wrap');
-        var cbar  = document.getElementById('chaos-progress-bar');
-        var cmsg  = document.getElementById('chaos-progress-msg');
-        var cpct  = document.getElementById('chaos-progress-pct');
-        if (cwrap) cwrap.style.display = 'block';
-        if (cbar)  { cbar.style.width = '0%'; cbar.style.background = '#e74c3c'; }
-        if (cmsg)  cmsg.textContent = 'Starting...';
-        if (cpct)  cpct.textContent = '0%';
-
-        // Validate src and dst are on different subnets
-        if (topologyData) {
-            var srcProps = topologyData.nodes[params.src];
-            var dstProps = topologyData.nodes[params.dst];
-            if (srcProps && dstProps && srcProps.gw === dstProps.gw) {
-                document.getElementById('xrf-result-content').innerHTML =
-                    '<p style="color:#e74c3c;">⚠️ Source and destination are on the same subnet. Traffic does not pass through the router, so the experiment would not be meaningful. Choose hosts from different subnets (e.g. h1 → h3).</p>';
-                return;
-            }
-        }
     } else if (id === 'latency_matrix') {
         params.mode       = document.getElementById('latency-mode').value;
         params.ping_count = document.getElementById('lm-ping-count') ? document.getElementById('lm-ping-count').value : 5;
@@ -737,12 +657,7 @@ function pollXRFResult(xrf_id, job_id) {
         var wrap = document.getElementById('latency-progress-wrap');
         if (wrap) wrap.style.display = 'none';
         var html = '';
-        if (xrf_id === 'chaos') {
-            html = renderChaos(data);
-            var cwrap = document.getElementById('chaos-progress-wrap');
-            if (cwrap) cwrap.style.display = 'none';
-        }
-        else if (xrf_id === 'latency_matrix') html = renderLatencyMatrix(data);
+        if (xrf_id === 'latency_matrix') html = renderLatencyMatrix(data);
         document.getElementById('xrf-result-content').innerHTML = html;
     })
     .catch(function() {

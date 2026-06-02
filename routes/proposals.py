@@ -153,7 +153,6 @@ def approve_proposal(proposal_id):
     # Flask threaded=True handles concurrent requests so the loopback call
     # is processed in a separate thread — no deadlock.
     try:
-        endpoint = op_type.replace('_', '_')  # 'add_host' → 'add_host'
         r = _req.post(f'http://localhost:5000/{op_type}',
                       json=payload, timeout=35)
         resp = r.json()
@@ -280,7 +279,7 @@ def twin_register():
 @bp.route('/twin/heartbeat', methods=['POST'])
 def twin_heartbeat():
     """
-    Periodic heartbeat (every 10s). Updates last_seen, restores 'offline' → 'connected'.
+    Periodic heartbeat (every 3s). Updates last_seen, restores 'offline' → 'connected'.
     """
     if _IS_TWIN:
         return jsonify({'ok': False, 'error': 'Only available on Original'})

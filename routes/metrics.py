@@ -241,14 +241,6 @@ def metrics_global():
     ping_count        = int(request.args.get('ping_count', 5))
     ping_size         = int(request.args.get('ping_size', 64))
 
-    # Dynamic timeout based on iperf params
-    if mode == 'full':
-        n_pairs      = len(hosts) * (len(hosts) - 1) // 2 if 'hosts' in dir() else 20
-        est_time     = n_pairs * iperf_iterations * iperf_duration * 1.5 + 30
-        iperf_timeout = int(est_time)
-    else:
-        iperf_timeout = 60
-
     hosts = [
         n for n, p in _xarxa.nodes.items()
         if p['type'] == 'host'
@@ -377,7 +369,13 @@ def metrics_global():
 # op_filter: filtra per tipus d'operació (add_router, add_host, remove_node...).
 # t_total = max(t_local, t_network) — execució paral·lela, no suma.
 # Calcula estadístiques (min/avg/max/jitter) per a cada component de latència.
+# Noves mètriques:
+#   throughput_bps  → bits/s reals del link Original→Twin per operació
+#   payload_bytes   → mida JSON de cada missatge de sync
+#   ops_per_sec     → capacitat de CPU (màx teòric) i ops reals (últims 10s)
+#   cpu_at_sync     → ús de CPU del host en el moment de cada operació
 def metrics_sync():
+    import time as _time
     op_filter = request.args.get('op', '').strip()
     with sync_history_lock:
         if op_filter:
@@ -391,13 +389,7 @@ def metrics_sync():
     t_network = [e.get('t_network_ms') for e in history]
     t_twin    = [e.get('t_twin_ms')    for e in history]
 
-    # t_total = real end-to-end latency
-    # For sequential ops: t_local + t_network
-    # For parallel ops (add_router): max(t_local, t_network)
-    # latency_ms in the entry stores the correct value when available
-    # All operations are parallel: Original and Twin apply simultaneously.
-    # t_total = max(t_local, t_network) — the system is ready when
-    # the slower of the two has finished.
+    # t_total = max(t_local, t_network) — execució paral·lela, no suma
     t_total = []
     for e in history:
         tl = e.get('t_local_ms')
@@ -405,26 +397,57 @@ def metrics_sync():
         if tl is not None and tn is not None:
             t_total.append(round(max(tl, tn), 2))
         elif tn is not None:
-            # t_local not yet recorded (late update pending)
             t_total.append(round(tn, 2))
         else:
             t_total.append(None)
+
+    # ── Throughput i payload ──
+    throughput = [e.get('throughput_bps') for e in history]
+    payload_b  = [e.get('payload_bytes')  for e in history]
+    cpu_vals   = [e.get('cpu_percent')    for e in history]
+
+    # ── Ops/s ──
+    # Capacitat teòrica: si cada operació triga avg_t_local ms, puc fer
+    # 1000/avg_t_local ops/s en sèrie (límit de CPU local)
+    t_local_valid = [t for t in t_local if t is not None and t > 0]
+    avg_t_local   = sum(t_local_valid) / len(t_local_valid) if t_local_valid else None
+    min_t_local   = min(t_local_valid) if t_local_valid else None
+    ops_capacity_avg = round(1000 / avg_t_local, 2) if avg_t_local else None
+    ops_capacity_max = round(1000 / min_t_local, 2) if min_t_local else None
+
+    # Ops/s reals: operacions registrades en els últims 10 i 60 segons
+    now = _time.time()
+    ops_10s = sum(1 for e in history if (now - e.get('timestamp', 0)) <= 10)
+    ops_60s = sum(1 for e in history if (now - e.get('timestamp', 0)) <= 60)
+    ops_per_sec_10s = round(ops_10s / 10, 2)
+    ops_per_sec_60s = round(ops_60s / 60, 2)
 
     return jsonify({
         'ok':      True,
         'history': history,
         'stats': {
-            'count':          len(history),
-            't_local':        safe_stats(t_local),
-            't_network':      safe_stats(t_network),
-            't_twin':         safe_stats(t_twin),
-            't_total':        safe_stats(t_total),
-            'avg_ms':         safe_stats(t_total)['avg'],
-            'min_ms':         safe_stats(t_total)['min'],
-            'max_ms':         safe_stats(t_total)['max'],
-            'jitter_ms':      jitter_of(t_total),
-            'jitter_net_ms':  jitter_of(t_network),
-            'jitter_twin_ms': jitter_of(t_twin),
+            'count':            len(history),
+            't_local':          safe_stats(t_local),
+            't_network':        safe_stats(t_network),
+            't_twin':           safe_stats(t_twin),
+            't_total':          safe_stats(t_total),
+            'avg_ms':           safe_stats(t_total)['avg'],
+            'min_ms':           safe_stats(t_total)['min'],
+            'max_ms':           safe_stats(t_total)['max'],
+            'jitter_ms':        jitter_of(t_total),
+            'jitter_net_ms':    jitter_of(t_network),
+            'jitter_twin_ms':   jitter_of(t_twin),
+            # ── Throughput / Payload ──
+            'throughput_bps':   safe_stats(throughput),   # min/avg/max bits/s
+            'payload_bytes':    safe_stats(payload_b),    # min/avg/max bytes per missatge
+            # ── CPU / Ops per segon ──
+            'cpu_at_sync':      safe_stats(cpu_vals),     # CPU% durant les operacions
+            'ops_per_sec': {
+                'capacity_avg': ops_capacity_avg,  # ops/s teòriques (1000/avg_t_local)
+                'capacity_max': ops_capacity_max,  # ops/s teòriques (1000/min_t_local)
+                'recent_10s':   ops_per_sec_10s,   # ops/s reals últims 10s
+                'recent_60s':   ops_per_sec_60s,   # ops/s reals últims 60s
+            },
         },
     })
 
@@ -441,12 +464,15 @@ def update_sync_metrics():
     If the entry has t_local_ms but no t_network_ms, it's a late update
     for an existing entry (parallel sync case).
     """
-    data       = request.json
-    operation  = data.get('operation', 'External Update')
-    t_local    = data.get('t_local_ms')
-    t_network  = data.get('t_network_ms')
-    t_twin     = data.get('t_twin_ms')
-    latency    = data.get('latency_ms')
+    data          = request.json
+    operation     = data.get('operation', 'External Update')
+    t_local       = data.get('t_local_ms')
+    t_network     = data.get('t_network_ms')
+    t_twin        = data.get('t_twin_ms')
+    latency       = data.get('latency_ms')
+    payload_bytes = data.get('payload_bytes')
+    throughput    = data.get('throughput_bps')
+    cpu_pct       = data.get('cpu_percent')
 
     with sync_history_lock:
         # Late update: update existing entry instead of appending
@@ -458,14 +484,17 @@ def update_sync_metrics():
                         entry['latency_ms'] = latency
                     return jsonify({'ok': True})
 
-        # New entry
+        # New entry — mirror all fields from Original
         entry = {
-            'operation':    operation,
-            'latency_ms':   latency,
-            't_local_ms':   t_local,
-            't_network_ms': t_network,
-            't_twin_ms':    t_twin,
-            'timestamp':    data.get('timestamp', time.time()),
+            'operation':      operation,
+            'latency_ms':     latency,
+            't_local_ms':     t_local,
+            't_network_ms':   t_network,
+            't_twin_ms':      t_twin,
+            'payload_bytes':  payload_bytes,
+            'throughput_bps': throughput,
+            'cpu_percent':    cpu_pct,
+            'timestamp':      data.get('timestamp', time.time()),
         }
         sync_latency_history.append(entry)
     return jsonify({'ok': True})

@@ -280,6 +280,3 @@
 .routing-dd-item:last-child { border-bottom:none; }
 .routing-dd-item:hover { background:#2c3e50; }
 .routing-dd-item.active { background:#2980b9; }
-
-/* Chaos tooltips */
-.chaos-tip:hover .chaos-tiptext { visibility:visible !important; opacity:1 !important; }

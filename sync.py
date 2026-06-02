@@ -12,16 +12,24 @@ TWINS és una llista de dicts {ip, port}. Tots els events s'envien a TOTS els Tw
 en paral·lel (un thread per Twin). La latència es mesura com el màxim de tots.
 
 MESURA DE LATÈNCIES:
-  t_local_ms  = temps que triga l'Original a aplicar el canvi a Mininet
-  t_network_ms = temps HTTP total (anada + procés Twin + tornada) — el màxim dels Twins
-  t_twin_ms    = temps que triga el Twin a aplicar el canvi — el màxim dels Twins
-  t_total      = max(t_local, t_network)  — execució paral·lela, no suma
+  t_local_ms   = temps que triga l'Original a aplicar el canvi a Mininet
+  t_network_ms = temps HTTP total (anada + proces Twin + tornada) - el maxim dels Twins
+  t_twin_ms    = temps que triga el Twin a aplicar el canvi - el maxim dels Twins
+  t_total      = max(t_local, t_network)  - execucio paral-lela, no suma
+
+MESURA DE THROUGHPUT I CPU:
+  payload_bytes   = mida del JSON enviat al Twin per cada operacio
+  throughput_bps  = payload_bytes x 8 / (t_network_ms / 1000)  - bits/s reals del link
+  cpu_percent     = us de CPU del host en el moment de registrar l'operacio
+  ops_per_sec     = capacitat de CPU: 1000 / t_local_ms (ops/s en serie) + recent (ultims 10s)
 """
 
+import json
 import threading
 import time
 from collections import deque
 
+import psutil
 import requests
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,7 +212,8 @@ def init_sync(xarxa_instance, twins=None, original_ip=None, twin_port=None,
 # REGISTRE DE LATÈNCIES
 # ─────────────────────────────────────────────────────────────────────────────
 
-def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
+def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms,
+                         payload_bytes=None):
     """
     Guarda una entrada de latència a l'historial i la replica a tots els Twins
     perquè els seus dashboards mostrin les mateixes dades que l'Original.
@@ -214,7 +223,17 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
     2. Actualització tardana: t_local_ms disponible però t_network_ms=None.
        Passa quan el thread de sync ha acabat però Mininet local encara no.
        En aquest cas s'actualitza l'última entrada coincident en lloc d'afegir-ne una.
+
+    payload_bytes : mida en bytes del JSON enviat al Twin (per calcular throughput)
     """
+    # Throughput del link: bits transferits / temps de xarxa
+    throughput_bps = None
+    if payload_bytes and t_network_ms and t_network_ms > 0:
+        throughput_bps = round(payload_bytes * 8 / (t_network_ms / 1000), 2)
+
+    # CPU en el moment de registrar (non-blocking: usa la mesura anterior del SO)
+    cpu_percent = psutil.cpu_percent(interval=None)
+
     updated_entry = None
 
     with sync_history_lock:
@@ -233,11 +252,14 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms):
         # Cas 1: entrada nova
         if updated_entry is None:
             entry = {
-                'operation':    operation,
-                't_local_ms':   round(t_local_ms,   2) if t_local_ms   is not None else None,
-                't_network_ms': round(t_network_ms, 2) if t_network_ms is not None else None,
-                't_twin_ms':    round(t_twin_ms,    2) if t_twin_ms    is not None else None,
-                'timestamp':    time.time(),
+                'operation':      operation,
+                't_local_ms':     round(t_local_ms,   2) if t_local_ms   is not None else None,
+                't_network_ms':   round(t_network_ms, 2) if t_network_ms is not None else None,
+                't_twin_ms':      round(t_twin_ms,    2) if t_twin_ms    is not None else None,
+                'payload_bytes':  payload_bytes,
+                'throughput_bps': throughput_bps,
+                'cpu_percent':    round(cpu_percent, 1) if cpu_percent is not None else None,
+                'timestamp':      time.time(),
             }
             sync_latency_history.append(entry)
             updated_entry = dict(entry)
@@ -308,9 +330,10 @@ def _do_sync_to_all_twins(endpoint, data, t_local_holder):
     Espera que el thread principal senyali t_local_ms (via t_local_holder)
     per poder registrar tots els temps en una sola entrada consistent.
     """
-    payload  = {**data, 'sync': True}   # afegeix flag 'sync:True' perquè el Twin ho sàpiga
-    results  = [None] * len(TWINS)       # resultats indexats per posició a TWINS
-    lock     = threading.Lock()
+    payload      = {**data, 'sync': True}   # afegeix flag 'sync:True' perquè el Twin ho sàpiga
+    payload_bytes = len(json.dumps(payload).encode('utf-8'))  # mida real del missatge JSON
+    results      = [None] * len(TWINS)       # resultats indexats per posició a TWINS
+    lock         = threading.Lock()
 
     def send_to(idx, twin):
         if not _is_twin_active(twin['ip']):
@@ -344,7 +367,8 @@ def _do_sync_to_all_twins(endpoint, data, t_local_holder):
     t_local_ms = t_local_holder.get('value')
 
     operation = endpoint.strip('/')
-    record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms)
+    record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms,
+                        payload_bytes=payload_bytes)
 
 
 def sync_event(endpoint, data, t_local_ms):
@@ -401,16 +425,18 @@ def _do_sync_snapshot(operation, t_local_ms):
         for row in xarxa.network_matrix
     ]
     t_net_start = time.time()
+    snapshot_payload = {
+        'matrix': serializable_matrix,
+        'nodes':  xarxa.nodes,
+        'sync':   True,
+    }
+    payload_bytes = len(json.dumps(snapshot_payload).encode('utf-8'))
     valid_net = []
     for twin in TWINS:
         try:
             requests.post(
                 f'http://{twin["ip"]}:{twin["port"]}/load_network',
-                json={
-                    'matrix': serializable_matrix,
-                    'nodes':  xarxa.nodes,
-                    'sync':   True,
-                },
+                json=snapshot_payload,
                 timeout=10,
             )
             t_network_ms = round((time.time() - t_net_start) * 1000, 2)
@@ -418,7 +444,8 @@ def _do_sync_snapshot(operation, t_local_ms):
         except Exception as e:
             print(f'[sync_snapshot] error to {twin["ip"]}: {e}')
     t_network_ms = round(max(valid_net), 2) if valid_net else None
-    record_sync_latency(operation, t_local_ms, t_network_ms, None)
+    record_sync_latency(operation, t_local_ms, t_network_ms, None,
+                        payload_bytes=payload_bytes)
 
 
 def sync_snapshot(operation, t_local_ms):
@@ -432,7 +459,7 @@ def sync_snapshot(operation, t_local_ms):
 
 def send_heartbeat():
     """
-    Called by the Twin every 10s to tell the Original it is still alive.
+    Called by the Twin every 3s to tell the Original it is still alive.
     Also used as the initial registration message.
     """
     import socket
