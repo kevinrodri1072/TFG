@@ -419,21 +419,7 @@ def add_router():
                 if p['type'] == 'router' and n != router_name
                 and n in _xarxa.mininet_nodes
             }
-            # ── HOT-RECONFIGURE pool router via vtysh (no daemon kill+relaunch) ──
-            # The pool router's zebra+ospfd are still alive with a skeleton
-            # config. We inject the real config via vtysh, saving 150-300ms.
-            # If hot-config fails (vtysh socket unreachable, etc.), fall back
-            # to the classic kill+relaunch path so the router still works.
-            pool_path = getattr(new_router, '_frr_conf_path', None)
-            hot_ok = False
-            if pool_path:
-                hot_ok = _xarxa._hot_configure_pool_router(
-                    new_router, router_name, router_state, pool_path
-                )
-            if not hot_ok:
-                print(f'[pool-hot] {router_name}: falling back to kill+relaunch')
-                _xarxa._apply_routing(new_router, router_name, router_state)
-
+            _xarxa._apply_routing(new_router, router_name, router_state)
             for n, p in existing.items():
                 threading.Thread(
                     target=_xarxa._update_ospf_hot,
@@ -582,21 +568,7 @@ def add_router():
                 if p['type'] == 'router' and n != router_name
                 and n in _xarxa.mininet_nodes
             }
-            # ── HOT-RECONFIGURE pool router via vtysh (no daemon kill+relaunch) ──
-            # The pool router's zebra+ospfd are still alive with a skeleton
-            # config. We inject the real config via vtysh, saving 150-300ms.
-            # If hot-config fails (vtysh socket unreachable, etc.), fall back
-            # to the classic kill+relaunch path so the router still works.
-            pool_path = getattr(new_router, '_frr_conf_path', None)
-            hot_ok = False
-            if pool_path:
-                hot_ok = _xarxa._hot_configure_pool_router(
-                    new_router, router_name, router_state, pool_path
-                )
-            if not hot_ok:
-                print(f'[pool-hot] {router_name}: falling back to kill+relaunch')
-                _xarxa._apply_routing(new_router, router_name, router_state)
-
+            _xarxa._apply_routing(new_router, router_name, router_state)
             for n, p in existing.items():
                 threading.Thread(
                     target=_xarxa._update_ospf_hot,
