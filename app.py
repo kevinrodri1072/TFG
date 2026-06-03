@@ -15,9 +15,53 @@ import psutil
 from flask import Flask
 from flask import request
 from flask_socketio import SocketIO
+import json
+import paho.mqtt.client as mqtt
 
 from xarxa import Xarxa
 import sync as sync_module
+
+MQTT_BROKER = "10.4.39.102"
+MQTT_PORT = 1883
+MQTT_TOPIC = "topologia/cambios"
+
+def on_connect(client, userdata, flags, rc):
+    print(f"[MQTT_TWIN] Conectado al Bróker. Código de resultado: {rc}")
+    # Al conectarse, el Twin se suscribe al canal de cambios
+    client.subscribe(MQTT_TOPIC, qos=1)
+    print(f"[MQTT_TWIN] Suscrito con éxito al tópico: {MQTT_TOPIC}")
+
+def on_message(client, userdata, msg):
+    """
+    Esta función se ejecuta automáticamente cada vez que el Original 
+    publica un cambio en la topología.
+    """
+    try:
+        payload = json.loads(msg.payload.decode())
+        endpoint = payload.get("endpoint") # Ej: "/add_host" o "/add_router"
+        data = payload.get("data")
+        
+        print(f"[MQTT_TWIN] Mensaje recibido. Procesando acción: {endpoint}")
+        
+        # Simulamos la petición HTTP internamente en la memoria de Flask
+        # para que Mininet ejecute el código sin cambiar tus funciones existentes
+        with app.test_client() as c:
+            response = c.post(endpoint, json=data)
+            print(f"[MQTT_TWIN] Ejecutado {endpoint}. Estado interno: {response.status_code}")
+            
+    except Exception as e:
+        print(f"[MQTT_TWIN] Error al procesar mensaje MQTT: {e}")
+
+# Inicializar y arrancar el cliente MQTT del Twin
+mqtt_twin = mqtt.Client()
+mqtt_twin.on_connect = on_connect
+mqtt_twin.on_message = on_message
+
+try:
+    mqtt_twin.connect(MQTT_BROKER, MQTT_PORT, 60)
+    mqtt_twin.loop_start() # Mantiene la escucha activa en segundo plano
+except Exception as e:
+    print(f"[MQTT_TWIN] No se pudo conectar al Bróker: {e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ARGUMENTS DE LÍNIA DE COMANDES

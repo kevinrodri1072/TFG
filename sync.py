@@ -28,6 +28,7 @@ import json
 import threading
 import time
 from collections import deque
+import paho.mqtt.client as mqtt
 import socketio as sio_client
 
 import psutil
@@ -58,6 +59,38 @@ TWIN_SIDS         = {}   # Mapeo de {ip: websocket_sid}
 _sid_lock         = threading.Lock()
 PENDING_ACKS      = {}   # Control de transacciones {tx_id: {event, net_ms, twin_ms}}
 PENDING_ACKS_LOCK = threading.Lock()
+
+MQTT_BROKER = "10.4.39.102" 
+MQTT_PORT = 1883
+MQTT_TOPIC = "topologia/cambios"
+
+mqtt_client = mqtt.Client()
+
+def conectar_broker():
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start() # Arranca el hilo de red en segundo plano
+        print(f"[MQTT_SYNC] Conectado al Bróker en {MQTT_BROKER}")
+    except Exception as e:
+        print(f"[MQTT_SYNC] Error al conectar al Bróker: {e}")
+
+# Llamar a la conexión al arrancar el script
+conectar_broker()
+
+def sync_event(endpoint, data):
+    """
+    Sustituye tu antigua función de sincronización.
+    En lugar de hacer un bucle por cada Twin, publica una sola vez.
+    """
+    payload = {
+        "endpoint": endpoint,
+        "data": data
+    }
+    
+    # Publicamos el evento en el tópico común
+    mensaje_json = json.dumps(payload)
+    mqtt_client.publish(MQTT_TOPIC, mensaje_json, qos=1)
+    print(f"[MQTT_SYNC] Publicado evento {endpoint} en el tópico {MQTT_TOPIC}")
 
 def map_twin_sid(ip, sid):
     with _sid_lock:
