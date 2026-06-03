@@ -17,51 +17,65 @@ from flask import request
 from flask_socketio import SocketIO
 import json
 import paho.mqtt.client as mqtt
+import socket
 
 from xarxa import Xarxa
 import sync as sync_module
 
 MQTT_BROKER = "10.4.39.102"
 MQTT_PORT = 1883
-MQTT_TOPIC = "topologia/cambios"
+MQTT_TOPIC_CAMBIOS = "topologia/cambios"
+MQTT_TOPIC_ACKS = "topologia/acks"
+
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(('8.8.8.8', 80))
+    TWIN_OWN_IP = s.getsockname()[0]
+    s.close()
+except Exception:
+    TWIN_OWN_IP = '127.0.0.1'
 
 def on_connect(client, userdata, flags, rc):
     print(f"[MQTT_TWIN] Conectado al Bróker. Código de resultado: {rc}")
-    # Al conectarse, el Twin se suscribe al canal de cambios
-    client.subscribe(MQTT_TOPIC, qos=1)
-    print(f"[MQTT_TWIN] Suscrito con éxito al tópico: {MQTT_TOPIC}")
+    # Nos suscribimos al tópico correcto de cambios distribuidos
+    client.subscribe(MQTT_TOPIC_CAMBIOS, qos=1)
+    print(f"[MQTT_TWIN] Suscrito con éxito al tópico: {MQTT_TOPIC_CAMBIOS}")
 
 def on_message(client, userdata, msg):
     """
-    Esta función se ejecuta automáticamente cada vez que el Original 
-    publica un cambio en la topología.
+    Recibe los cambios del Original, los aplica en el entorno local de Mininet
+    y devuelve un ACK con los tiempos de respuesta obtenidos.
     """
     try:
-        payload = json.loads(msg.payload.decode())
-        endpoint = payload.get("endpoint") # Ej: "/add_host" o "/add_router"
-        data = payload.get("data")
+        packet = json.loads(msg.payload.decode())
+        endpoint = packet.get("endpoint") 
+        payload = packet.get("payload")     # Corregido: 'payload' en vez de 'data'
+        tx_id = packet.get("tx_id")
         
         print(f"[MQTT_TWIN] Mensaje recibido. Procesando acción: {endpoint}")
         
-        # Simulamos la petición HTTP internamente en la memoria de Flask
-        # para que Mininet ejecute el código sin cambiar tus funciones existentes
+        t_twin_local = None
         with app.test_client() as c:
-            response = c.post(endpoint, json=data)
+            response = c.post(endpoint, json=payload)
+            if response.status_code == 200:
+                try:
+                    # Intentamos extraer el tiempo que tardó Mininet en el Twin
+                    t_twin_local = response.get_json().get('t_local_ms', None)
+                except Exception:
+                    pass
             print(f"[MQTT_TWIN] Ejecutado {endpoint}. Estado interno: {response.status_code}")
+        
+        # OBLIGATORIO: Publicar el ACK de confirmación para liberar el hilo del Original
+        ack_packet = {
+            'tx_id': tx_id,
+            'ip': TWIN_OWN_IP,
+            't_local_ms': t_twin_local
+        }
+        client.publish(MQTT_TOPIC_ACKS, json.dumps(ack_packet), qos=1)
             
     except Exception as e:
         print(f"[MQTT_TWIN] Error al procesar mensaje MQTT: {e}")
 
-# Inicializar y arrancar el cliente MQTT del Twin
-mqtt_twin = mqtt.Client()
-mqtt_twin.on_connect = on_connect
-mqtt_twin.on_message = on_message
-
-try:
-    mqtt_twin.connect(MQTT_BROKER, MQTT_PORT, 60)
-    mqtt_twin.loop_start() # Mantiene la escucha activa en segundo plano
-except Exception as e:
-    print(f"[MQTT_TWIN] No se pudo conectar al Bróker: {e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ARGUMENTS DE LÍNIA DE COMANDES
@@ -349,6 +363,18 @@ if __name__ == '__main__':
                           twin_ip=args.twin_ip,
                           original_ip=args.original_ip,
                           twin_port=args.twin_port)
+    if IS_TWIN:
+        mqtt_twin = mqtt.Client()
+        mqtt_twin.on_connect = on_connect
+        mqtt_twin.on_message = on_message
+
+        try:
+            mqtt_twin.connect(MQTT_BROKER, MQTT_PORT, 60)
+            mqtt_twin.loop_start() 
+        except Exception as e:
+            print(f"[MQTT_TWIN] No se pudo conectar al Bróker: {e}")
+    else:
+        sync_module.conectar_broker()
 
     # 5. Inicialitza tots els blueprints amb la referència a la xarxa
     init_topology(xarxa, IS_TWIN)
@@ -385,9 +411,7 @@ if __name__ == '__main__':
         def _start_twin_registration():
             while not xarxa.network_ready:
                 time.sleep(0.5)
-            # Arrancar el cliente persistente de WebSocket hacia el puerto 5001 del Original
-            sync_module.start_twin_websocket_client(args.original_ip, original_ws_port=5001)
-            # Mantener el heartbeat HTTP clásico como sistema de respaldo secundario
+            # Mantenemos únicamente el heartbeat clásico como registro de presencia
             sync_module.start_twin_heartbeat()
         threading.Thread(target=_start_twin_registration, daemon=True).start()
 
