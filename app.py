@@ -13,69 +13,10 @@ import time
 
 import psutil
 from flask import Flask
-from flask import request
 from flask_socketio import SocketIO
-import json
-import paho.mqtt.client as mqtt
-import socket
 
 from xarxa import Xarxa
 import sync as sync_module
-
-MQTT_BROKER = "10.4.39.102"
-MQTT_PORT = 1883
-MQTT_TOPIC_CAMBIOS = "topologia/cambios"
-MQTT_TOPIC_ACKS = "topologia/acks"
-
-try:
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(('8.8.8.8', 80))
-    TWIN_OWN_IP = s.getsockname()[0]
-    s.close()
-except Exception:
-    TWIN_OWN_IP = '127.0.0.1'
-
-def on_connect(client, userdata, flags, rc):
-    print(f"[MQTT_TWIN] Conectado al Bróker. Código de resultado: {rc}")
-    # Nos suscribimos al tópico correcto de cambios distribuidos
-    client.subscribe(MQTT_TOPIC_CAMBIOS, qos=1)
-    print(f"[MQTT_TWIN] Suscrito con éxito al tópico: {MQTT_TOPIC_CAMBIOS}")
-
-def on_message(client, userdata, msg):
-    """
-    Recibe los cambios del Original, los aplica en el entorno local de Mininet
-    y devuelve un ACK con los tiempos de respuesta obtenidos.
-    """
-    try:
-        packet = json.loads(msg.payload.decode())
-        endpoint = packet.get("endpoint") 
-        payload = packet.get("payload")     # Corregido: 'payload' en vez de 'data'
-        tx_id = packet.get("tx_id")
-        
-        print(f"[MQTT_TWIN] Mensaje recibido. Procesando acción: {endpoint}")
-        
-        t_twin_local = None
-        with app.test_client() as c:
-            response = c.post(endpoint, json=payload)
-            if response.status_code == 200:
-                try:
-                    # Intentamos extraer el tiempo que tardó Mininet en el Twin
-                    t_twin_local = response.get_json().get('t_local_ms', None)
-                except Exception:
-                    pass
-            print(f"[MQTT_TWIN] Ejecutado {endpoint}. Estado interno: {response.status_code}")
-        
-        # OBLIGATORIO: Publicar el ACK de confirmación para liberar el hilo del Original
-        ack_packet = {
-            'tx_id': tx_id,
-            'ip': TWIN_OWN_IP,
-            't_local_ms': t_twin_local
-        }
-        client.publish(MQTT_TOPIC_ACKS, json.dumps(ack_packet), qos=1)
-            
-    except Exception as e:
-        print(f"[MQTT_TWIN] Error al procesar mensaje MQTT: {e}")
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ARGUMENTS DE LÍNIA DE COMANDES
@@ -120,18 +61,6 @@ app.config['PROPAGATE_EXCEPTIONS'] = True  # propaga errors a Flask per poder ve
 # Servidor de mètriques: NOMÉS WebSockets per al dashboard (port 5001)
 metrics_app = Flask('metrics_ws')
 socketio    = SocketIO(metrics_app, cors_allowed_origins='*', async_mode='threading')
-
-@socketio.on('register_twin_ws')
-def handle_register_twin_ws(data):
-    twin_ip = data.get('ip')
-    sid = request.sid
-    # Registrar en las tablas de estado de sync
-    sync_module.map_twin_sid(twin_ip, sid)
-    sync_module.register_twin(twin_ip)
-
-@socketio.on('twin_ack_ws')
-def handle_twin_ack_ws(data):
-    sync_module.handle_twin_ack_internal(data)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BLUEPRINTS
@@ -354,27 +283,12 @@ if __name__ == '__main__':
         shutil.rmtree(frr_dir, ignore_errors=True)   # esborra el directori sencer
 
     # 4. Inicialitza el mòdul de sincronització amb les IPs dels Twins i de l'Original
-    sync_module._xarxa = xarxa
-    sync_module._socketio_server = socketio  # Inyección del servidor para el Original
-    sync_module._flask_app_ref = app         # Inyección de la app para el test_client del Twin
-    
+    sync_module._xarxa = xarxa  # allow resync_one_twin to access network state
     sync_module.init_sync(xarxa,
                           twins=args.twins,
                           twin_ip=args.twin_ip,
                           original_ip=args.original_ip,
                           twin_port=args.twin_port)
-    if IS_TWIN:
-        mqtt_twin = mqtt.Client()
-        mqtt_twin.on_connect = on_connect
-        mqtt_twin.on_message = on_message
-
-        try:
-            mqtt_twin.connect(MQTT_BROKER, MQTT_PORT, 60)
-            mqtt_twin.loop_start() 
-        except Exception as e:
-            print(f"[MQTT_TWIN] No se pudo conectar al Bróker: {e}")
-    else:
-        sync_module.conectar_broker()
 
     # 5. Inicialitza tots els blueprints amb la referència a la xarxa
     init_topology(xarxa, IS_TWIN)
@@ -411,8 +325,8 @@ if __name__ == '__main__':
         def _start_twin_registration():
             while not xarxa.network_ready:
                 time.sleep(0.5)
-            # Mantenemos únicamente el heartbeat clásico como registro de presencia
-            sync_module.start_twin_heartbeat()
+            from sync import start_twin_heartbeat
+            start_twin_heartbeat()
         threading.Thread(target=_start_twin_registration, daemon=True).start()
 
     # 10. Arrenca el ping del canal físic entre PCs (Original ↔ Twins)
