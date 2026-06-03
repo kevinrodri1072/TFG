@@ -13,6 +13,7 @@ import time
 
 import psutil
 from flask import Flask
+from flask import request
 from flask_socketio import SocketIO
 
 from xarxa import Xarxa
@@ -61,6 +62,18 @@ app.config['PROPAGATE_EXCEPTIONS'] = True  # propaga errors a Flask per poder ve
 # Servidor de mètriques: NOMÉS WebSockets per al dashboard (port 5001)
 metrics_app = Flask('metrics_ws')
 socketio    = SocketIO(metrics_app, cors_allowed_origins='*', async_mode='threading')
+
+@socketio.on('register_twin_ws')
+def handle_register_twin_ws(data):
+    twin_ip = data.get('ip')
+    sid = request.sid
+    # Registrar en las tablas de estado de sync
+    sync_module.map_twin_sid(twin_ip, sid)
+    sync_module.register_twin(twin_ip)
+
+@socketio.on('twin_ack_ws')
+def handle_twin_ack_ws(data):
+    sync_module.handle_twin_ack_internal(data)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BLUEPRINTS
@@ -283,7 +296,10 @@ if __name__ == '__main__':
         shutil.rmtree(frr_dir, ignore_errors=True)   # esborra el directori sencer
 
     # 4. Inicialitza el mòdul de sincronització amb les IPs dels Twins i de l'Original
-    sync_module._xarxa = xarxa  # allow resync_one_twin to access network state
+    sync_module._xarxa = xarxa
+    sync_module._socketio_server = socketio  # Inyección del servidor para el Original
+    sync_module._flask_app_ref = app         # Inyección de la app para el test_client del Twin
+    
     sync_module.init_sync(xarxa,
                           twins=args.twins,
                           twin_ip=args.twin_ip,
@@ -325,8 +341,10 @@ if __name__ == '__main__':
         def _start_twin_registration():
             while not xarxa.network_ready:
                 time.sleep(0.5)
-            from sync import start_twin_heartbeat
-            start_twin_heartbeat()
+            # Arrancar el cliente persistente de WebSocket hacia el puerto 5001 del Original
+            sync_module.start_twin_websocket_client(args.original_ip, original_ws_port=5001)
+            # Mantener el heartbeat HTTP clásico como sistema de respaldo secundario
+            sync_module.start_twin_heartbeat()
         threading.Thread(target=_start_twin_registration, daemon=True).start()
 
     # 10. Arrenca el ping del canal físic entre PCs (Original ↔ Twins)

@@ -28,6 +28,7 @@ import json
 import threading
 import time
 from collections import deque
+import socketio as sio_client
 
 import psutil
 import requests
@@ -47,6 +48,38 @@ ORIGINAL_IP = '10.4.39.104'  # IP de l'Original — usada pels Twins per fer pin
 TWIN_STATUS       = {}
 _twin_status_lock = threading.Lock()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CONTROL DE SESIONES WEBSOCKET (NUEVO)
+# ─────────────────────────────────────────────────────────────────────────────
+_socketio_server = None  # Inyectado por app.py (Original)
+_flask_app_ref   = None  # Inyectado por app.py (Twin)
+
+TWIN_SIDS         = {}   # Mapeo de {ip: websocket_sid}
+_sid_lock         = threading.Lock()
+PENDING_ACKS      = {}   # Control de transacciones {tx_id: {event, net_ms, twin_ms}}
+PENDING_ACKS_LOCK = threading.Lock()
+
+def map_twin_sid(ip, sid):
+    with _sid_lock:
+        TWIN_SIDS[ip] = sid
+        print(f"[sync_ws] Mapeado Twin IP {ip} al SID {sid}")
+
+def get_sid_by_ip(ip):
+    with _sid_lock:
+        return TWIN_SIDS.get(ip)
+
+def handle_twin_ack_internal(data):
+    """Procesa la confirmación asíncrona enviada por el Twin."""
+    tx_id = data.get('tx_id')
+    t_twin_local = data.get('t_local_ms')
+    
+    with PENDING_ACKS_LOCK:
+        if tx_id in PENDING_ACKS:
+            # Calcular tiempo de red total (ida + vuelta)
+            t_network_ms = round((time.time() - PENDING_ACKS[tx_id]['start_time']) * 1000, 2)
+            PENDING_ACKS[tx_id]['net_ms'] = t_network_ms
+            PENDING_ACKS[tx_id]['twin_ms'] = t_twin_local
+            PENDING_ACKS[tx_id]['event'].set()  # Desbloquea el thread de envío
 
 def _init_twin(ip):
     if ip not in TWIN_STATUS:
@@ -231,25 +264,20 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms,
     if payload_bytes and t_network_ms and t_network_ms > 0:
         throughput_bps = round(payload_bytes * 8 / (t_network_ms / 1000), 2)
 
-    # CPU en el moment de registrar (non-blocking: usa la mesura anterior del SO)
     cpu_percent = psutil.cpu_percent(interval=None)
-
     updated_entry = None
 
     with sync_history_lock:
-        # Cas 2: actualització tardana → modifica l'última entrada coincident
         if t_local_ms is not None and t_network_ms is None and t_twin_ms is None:
             for entry in reversed(sync_latency_history):
                 if entry.get('operation') == operation:
                     entry['t_local_ms'] = round(t_local_ms, 2)
-                    # Recalcula t_total = max(t_local, t_network) — execució paral·lela
                     t_net = entry.get('t_network_ms')
                     if t_net is not None:
                         entry['latency_ms'] = round(max(t_local_ms, t_net), 2)
                     updated_entry = dict(entry)
                     break
 
-        # Cas 1: entrada nova
         if updated_entry is None:
             entry = {
                 'operation':      operation,
@@ -264,16 +292,21 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms,
             sync_latency_history.append(entry)
             updated_entry = dict(entry)
 
-    # Replica l'entrada a TOTS els Twins perquè els seus dashboards estiguin sincronitzats
+    # ── REPLICA VÍA WEBSOCKET O HTTP FALLBACK ──
     for twin in TWINS:
-        try:
-            requests.post(
-                f'http://{twin["ip"]}:{twin["port"]}/sync_metrics',
-                json=updated_entry,
-                timeout=3,
-            )
-        except Exception as e:
-            print(f'[sync_metrics] push error to {twin["ip"]}: {e}')
+        sid = get_sid_by_ip(twin['ip'])
+        if sid and _socketio_server:
+            # Envío directo asíncrono (Fire and Forget) para métricas
+            _socketio_server.emit('ws_sync', {
+                'endpoint': '/sync_metrics',
+                'payload': updated_entry,
+                'tx_id': 'metrics_fire_and_forget'
+            }, to=sid)
+        else:
+            try:
+                requests.post(f'http://{twin["ip"]}:{twin["port"]}/sync_metrics', json=updated_entry, timeout=1)
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -281,39 +314,62 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms,
 # Mecanisme principal: envia petits payloads JSON a tots els Twins
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _do_sync_to_one_twin(twin, endpoint, payload, retries=3, delay=0.5):
+# ─────────────────────────────────────────────────────────────────────────────
+# NUEVO TUNEL DE ENVÍO POR WEBSOCKET
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _do_sync_to_one_twin(twin, endpoint, payload):
     """
-    Envia un event a UN Twin. Reintenta fins a `retries` vegades si falla.
-    Retorna (t_network_ms, t_twin_ms) o (None, None) si falla definitivament.
+    Sustituye la comunicación HTTP por emisión de eventos WebSocket directos.
+    Si el canal WebSocket no está listo, realiza un fallback a HTTP.
     """
-    for attempt in range(retries):
+    sid = get_sid_by_ip(twin['ip'])
+    
+    # FALLBACK: Si el Twin no se ha conectado por socket, usamos el HTTP original
+    if not sid:
         try:
-            t_start  = time.time()
-            response = requests.post(
-                f'http://{twin["ip"]}:{twin["port"]}{endpoint}',
-                json=payload,
-                timeout=30,   # espera fins a 30s (Mininet pot ser lent)
-            )
+            t_start = time.time()
+            response = requests.post(f'http://{twin["ip"]}:{twin["port"]}{endpoint}', json=payload, timeout=5)
             t_network_ms = round((time.time() - t_start) * 1000, 2)
             if response.status_code == 200:
-                # t_twin_ms: temps que ha trigat el Twin a aplicar el canvi localment
-                t_twin_ms = response.json().get('t_local_ms', None)
-                print(f'[sync] → {twin["ip"]} {endpoint}  '
-                      f'net={t_network_ms}ms  twin={t_twin_ms}ms')
-                return t_network_ms, t_twin_ms
-        except Exception as e:
-            print(f'[sync_event] {endpoint} → {twin["ip"]} '
-                  f'attempt {attempt+1}/{retries}: {e}')
-            if attempt < retries - 1:
-                time.sleep(delay)
-    print(f'[sync_event] {endpoint} → {twin["ip"]} failed after {retries} attempts')
+                return t_network_ms, response.json().get('t_local_ms', None)
+        except Exception:
+            pass
+        return None, None
+
+    # CANAL PRINCIPAL: WebSockets distribuidos
+    tx_id = f"{endpoint}_{twin['ip']}_{time.time()}"
+    evt = threading.Event()
+    
+    with PENDING_ACKS_LOCK:
+        PENDING_ACKS[tx_id] = {
+            'event': evt,
+            'net_ms': None,
+            'twin_ms': None,
+            'start_time': time.time()
+        }
+    
+    # Emitir paquete encapsulado al canal del Twin
+    ws_packet = {'endpoint': endpoint, 'payload': payload, 'tx_id': tx_id}
+    _socketio_server.emit('ws_sync', ws_packet, to=sid)
+    
+    # Esperar confirmación (bloqueo controlado del hilo paralelo de este Twin)
+    success = evt.wait(timeout=10)
+    
+    with PENDING_ACKS_LOCK:
+        res = PENDING_ACKS.pop(tx_id, None)
+        
+    if success and res:
+        print(f'[sync_ws] → {twin["ip"]} {endpoint} net={res["net_ms"]}ms twin={res["twin_ms"]}ms')
+        return res['net_ms'], res['twin_ms']
+        
+    # Lógica de gestión de divergencia intacta si se agota el timeout
+    print(f'[sync_ws] Timeout en canal WebSocket para {twin["ip"]}')
     set_twin_status(twin['ip'], 'diverged')
     policy = TWIN_STATUS.get(twin['ip'], {}).get('policy', 'resync')
     if policy == 'resync' and _xarxa is not None:
-        print(f'[sync] Divergence policy=resync → resyncing {twin["ip"]}')
         threading.Thread(target=resync_one_twin, args=(_xarxa, twin), daemon=True).start()
     elif policy == 'disconnect':
-        print(f'[sync] Divergence policy=disconnect → disconnecting {twin["ip"]}')
         set_twin_status(twin['ip'], 'disconnected')
     return None, None
 
@@ -414,38 +470,22 @@ def set_t_local(holder, t_local_ms):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _do_sync_snapshot(operation, t_local_ms):
-    """
-    Serialitza l'estat complet (matriu + nodes) i l'envia a tots els Twins via
-    /load_network. El Twin fa un restart_network() complet.
-    """
     xarxa = _xarxa
-    # La matriu conté strings i ints — cal assegurar que tot és serialitzable a JSON
     serializable_matrix = [
         [cell if isinstance(cell, str) else int(cell) for cell in row]
         for row in xarxa.network_matrix
     ]
-    t_net_start = time.time()
-    snapshot_payload = {
-        'matrix': serializable_matrix,
-        'nodes':  xarxa.nodes,
-        'sync':   True,
-    }
+    snapshot_payload = {'matrix': serializable_matrix, 'nodes': xarxa.nodes, 'sync': True}
     payload_bytes = len(json.dumps(snapshot_payload).encode('utf-8'))
     valid_net = []
+    
     for twin in TWINS:
-        try:
-            requests.post(
-                f'http://{twin["ip"]}:{twin["port"]}/load_network',
-                json=snapshot_payload,
-                timeout=10,
-            )
-            t_network_ms = round((time.time() - t_net_start) * 1000, 2)
-            valid_net.append(t_network_ms)
-        except Exception as e:
-            print(f'[sync_snapshot] error to {twin["ip"]}: {e}')
+        net_ms, twin_ms = _do_sync_to_one_twin(twin, '/load_network', snapshot_payload)
+        if net_ms is not None:
+            valid_net.append(net_ms)
+            
     t_network_ms = round(max(valid_net), 2) if valid_net else None
-    record_sync_latency(operation, t_local_ms, t_network_ms, None,
-                        payload_bytes=payload_bytes)
+    record_sync_latency(operation, t_local_ms, t_network_ms, None, payload_bytes=payload_bytes)
 
 
 def sync_snapshot(operation, t_local_ms):
@@ -456,6 +496,63 @@ def sync_snapshot(operation, t_local_ms):
         daemon=True,
     ).start()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CLIENTE WEBSOCKET PERSISTENTE DEL TWIN (NUEVO)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def start_twin_websocket_client(original_ip, original_ws_port=5001):
+    """
+    Lazo de ejecución del cliente del Twin. Escucha el canal permanente
+    e inyecta localmente las operaciones usando el test_client de Flask.
+    """
+    sio = sio_client.Client()
+    
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        own_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        own_ip = '127.0.0.1'
+
+    @sio.event
+    def connect():
+        print(f"[sync_ws] Conectado al túnel del Original. Registrando IP {own_ip}...")
+        sio.emit('register_twin_ws', {'ip': own_ip})
+
+    @sio.on('ws_sync')
+    def on_ws_sync(data):
+        endpoint = data['endpoint']
+        payload  = data['payload']
+        tx_id    = data['tx_id']
+        
+        t_twin_local = None
+        
+        if _flask_app_ref:
+            # Invocar la API localmente saltándose la interfaz física de red
+            with _flask_app_ref.test_client() as client:
+                res = client.post(endpoint, json=payload)
+                if res.status_code == 200:
+                    try:
+                        t_twin_local = res.get_json().get('t_local_ms', None)
+                    except Exception:
+                        pass
+                        
+        # Enviar el ACK asíncrono inmediato si no es una operación desatendida
+        if tx_id != 'metrics_fire_and_forget':
+            sio.emit('twin_ack_ws', {'tx_id': tx_id, 't_local_ms': t_twin_local})
+
+    def _connect_loop():
+        while True:
+            try:
+                if not sio.connected:
+                    sio.connect(f'http://{original_ip}:{original_ws_port}')
+                    sio.wait()
+            except Exception as e:
+                time.sleep(3)
+
+    threading.Thread(target=_connect_loop, daemon=True).start()
 
 def send_heartbeat():
     """
