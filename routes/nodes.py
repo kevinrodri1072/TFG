@@ -119,7 +119,7 @@ def _update_all_routes():
 # Afegeix un host nou a la subxarxa d'un router existent.
 #
 # Dins topology_lock:
-#   - Valida nom uniqu i existència del router
+#   - Valida nom únic i existència del router
 #   - Calcula IP (find_next_ip) i switch corresponent
 #   - Actualitza nodes + matriu
 #   - addHost + addLink (dins lock per evitar nom d'intf duplicat)
@@ -178,10 +178,10 @@ def add_host():
                            intfName1=f'{name}-eth0', intfName2=sw_intf_name)
     # ── Outside lock: node.cmd calls don't need mutual exclusion ──
     new_host.cmd(
-        f'ifconfig {name}-eth0 {ip} && '
-        f'ip route add default via {gw} && '
-        f'ifconfig lo up && '
-        f'ip link set lo up && '
+        f'ifconfig {name}-eth0 {ip} ; '
+        f'ip route add default via {gw} ; '
+        f'ifconfig lo up ; '
+        f'ip link set lo up ; '
         f'ip link set {name}-eth0 up'
     )
     sw_node.cmd(f'ip link set {sw_intf_name} up')
@@ -297,7 +297,6 @@ def remove_node():
         return jsonify({'ok': True})
     return jsonify({'ok': True, 't_local_ms': t_local_ms})
 
-
 @bp.route('/add_router', methods=['POST'])
 # ─────────────────────────────────────────────────────────────────────────
 # ADD ROUTER — l'endpoint més complex del projecte
@@ -336,10 +335,6 @@ def add_router():
     router_name       = data['name']
     connected_routers = data['connected_routers']
     is_sync           = data.get('sync', False)
-
-    # Helper interno para paralelizar la configuración de red de los routers vecinos
-    def _configure_neighbor_async(node, intf, ip_addr):
-        node.cmd(f'ifconfig {intf} {ip_addr}/30 ; ip link set {intf} up')
 
     if is_sync and 'router_state' in data:
         # ── Twin path: apply pre-computed state from Original ──
@@ -389,12 +384,12 @@ def add_router():
             new_switch.cmd(f'ip link set {sw_intf} up')
             os.system(f'ovs-vsctl add-port {switch_name} {sw_intf} 2>/dev/null')
 
+        # ── Batching: accumulate new router's commands into ONE cmd() call ──
+        # Each node.cmd() has overhead (pipe write + prompt wait + read). With N
+        # neighbours we save N-1 round-trips. Neighbour cmd()s stay in-loop —
+        # each one targets a different node so batching is not possible.
         eth_base = 1 if use_pool else 0
-        
-        # Optimización 1 y 2 en Twin path
-        twin_router_cmds = []
-        twin_threads = []
-
+        new_router_cmds = []
         for eth_idx, connected_router in enumerate(connected_routers):
             p2p_link      = router_state['p2p_links'][eth_idx]
             intf_new      = f'{router_name}-eth{eth_base + eth_idx}'
@@ -406,45 +401,51 @@ def add_router():
             intf_existing = f'{connected_router}-{ex_link["local_intf"]}'
             _xarxa.net.addLink(new_router, existing_nd,
                                intfName1=intf_new, intfName2=intf_existing)
-            
-            # Batching para el nuevo router
-            twin_router_cmds.append(f'ifconfig {intf_new} {p2p_link["local_ip"]}/30 ; ip link set {intf_new} up')
-            
-            # Paralelización para el vecino existente
-            t = threading.Thread(
-                target=_configure_neighbor_async,
-                args=(existing_nd, intf_existing, ex_link["local_ip"]),
-                daemon=True
+            new_router_cmds.append(
+                f'ifconfig {intf_new} {p2p_link["local_ip"]}/30 ; '
+                f'ip link set {intf_new} up'
             )
-            twin_threads.append(t)
-            t.start()
+            existing_nd.cmd(
+                f'ifconfig {intf_existing} {ex_link["local_ip"]}/30 ; '
+                f'ip link set {intf_existing} up'
+            )
+        # Flush all new router p2p configs in a single cmd() invocation
+        if new_router_cmds:
+            new_router.cmd(' ; '.join(new_router_cmds))
 
-        if twin_router_cmds:
-            new_router.cmd(' ; '.join(twin_router_cmds))
-
-        for t in twin_threads:
-            t.join()
-
-        # Optimización 3 en Twin path: Despliegue de enrutamiento en background
-        def _async_twin_routing():
-            if use_pool:
-                existing = {
-                    n: p for n, p in _xarxa.nodes.items()
-                    if p['type'] == 'router' and n != router_name
-                    and n in _xarxa.mininet_nodes
-                }
+        if use_pool:
+            existing = {
+                n: p for n, p in _xarxa.nodes.items()
+                if p['type'] == 'router' and n != router_name
+                and n in _xarxa.mininet_nodes
+            }
+            # ── HOT-RECONFIGURE pool router via vtysh (no daemon kill+relaunch) ──
+            # The pool router's zebra+ospfd are still alive with a skeleton
+            # config. We inject the real config via vtysh, saving 150-300ms.
+            # If hot-config fails (vtysh socket unreachable, etc.), fall back
+            # to the classic kill+relaunch path so the router still works.
+            pool_path = getattr(new_router, '_frr_conf_path', None)
+            hot_ok = False
+            if pool_path:
+                hot_ok = _xarxa._hot_configure_pool_router(
+                    new_router, router_name, router_state, pool_path
+                )
+            if not hot_ok:
+                print(f'[pool-hot] {router_name}: falling back to kill+relaunch')
                 _xarxa._apply_routing(new_router, router_name, router_state)
-                for n, p in existing.items():
-                    threading.Thread(
-                        target=_xarxa._update_ospf_hot,
-                        args=(_xarxa.mininet_nodes[n], n, p),
-                        daemon=True
-                    ).start()
-                threading.Thread(target=_xarxa._pool_replenish, daemon=True).start()
-            else:
-                _start_routing_on_new_router(router_name)
 
-        threading.Thread(target=_async_twin_routing, daemon=True).start()
+            for n, p in existing.items():
+                threading.Thread(
+                    target=_xarxa._update_ospf_hot,
+                    args=(_xarxa.mininet_nodes[n], n, p),
+                    daemon=True
+                ).start()
+            # Replenish pool NOW — after all net.addLink calls are done.
+            # Starting it earlier (inside claim_from_pool) causes concurrent
+            # Mininet net operations that corrupt internal state.
+            threading.Thread(target=_xarxa._pool_replenish, daemon=True).start()
+        else:
+            _start_routing_on_new_router(router_name)
 
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
         return jsonify({'ok': True, 't_local_ms': t_local_ms})
@@ -453,6 +454,8 @@ def add_router():
         # ── Original path ──
 
         # ── PHASE 1 (inside lock): validate + compute all values + mutate dicts ──
+        # The lock ensures no other topology change races with our computation:
+        # switch number, subnet, p2p octets — all read-then-write must be atomic.
         with _xarxa.topology_lock:
             if router_name in _xarxa.nodes:
                 return jsonify({'ok': False, 'error': f'A node named {router_name} already exists'})
@@ -556,55 +559,56 @@ def add_router():
             new_switch.cmd(f'ip link set {sw_intf} up')
             os.system(f'ovs-vsctl add-port {switch_name} {sw_intf} 2>/dev/null')
 
-        # Optimización 1 y 2 en Original path
-        orig_router_cmds = []
-        orig_threads = []
-
+        # ── Batching: same approach as in the Twin path above ──
+        new_router_cmds = []
         for idx, (cr, p2p) in enumerate(zip(connected_routers, p2p_subnets)):
             intf_new      = f'{router_name}-eth{eth_base + idx}'
             existing_node = _xarxa.mininet_nodes[cr]
             ex_intf       = f'{cr}-eth{existing_eth_idxs[cr]}'
             _xarxa.net.addLink(new_router, existing_node,
                                intfName1=intf_new, intfName2=ex_intf)
-            
-            # Batching
-            orig_router_cmds.append(f'ifconfig {intf_new} {p2p["ip_a"]}/30 ; ip link set {intf_new} up')
-            
-            # Paralelización de vecinos
-            t = threading.Thread(
-                target=_configure_neighbor_async,
-                args=(existing_node, ex_intf, p2p["ip_b"]),
-                daemon=True
+            new_router_cmds.append(
+                f'ifconfig {intf_new} {p2p["ip_a"]}/30 ; ip link set {intf_new} up'
             )
-            orig_threads.append(t)
-            t.start()
+            existing_node.cmd(
+                f'ifconfig {ex_intf} {p2p["ip_b"]}/30 ; ip link set {ex_intf} up'
+            )
+        if new_router_cmds:
+            new_router.cmd(' ; '.join(new_router_cmds))
 
-        if orig_router_cmds:
-            new_router.cmd(' ; '.join(orig_router_cmds))
-
-        for t in orig_threads:
-            t.join()
-
-        # Optimización 3 en Original path: Despliegue de enrutamiento en background
-        def _async_orig_routing():
-            if use_pool:
-                existing = {
-                    n: p for n, p in _xarxa.nodes.items()
-                    if p['type'] == 'router' and n != router_name
-                    and n in _xarxa.mininet_nodes
-                }
+        if use_pool:
+            existing = {
+                n: p for n, p in _xarxa.nodes.items()
+                if p['type'] == 'router' and n != router_name
+                and n in _xarxa.mininet_nodes
+            }
+            # ── HOT-RECONFIGURE pool router via vtysh (no daemon kill+relaunch) ──
+            # The pool router's zebra+ospfd are still alive with a skeleton
+            # config. We inject the real config via vtysh, saving 150-300ms.
+            # If hot-config fails (vtysh socket unreachable, etc.), fall back
+            # to the classic kill+relaunch path so the router still works.
+            pool_path = getattr(new_router, '_frr_conf_path', None)
+            hot_ok = False
+            if pool_path:
+                hot_ok = _xarxa._hot_configure_pool_router(
+                    new_router, router_name, router_state, pool_path
+                )
+            if not hot_ok:
+                print(f'[pool-hot] {router_name}: falling back to kill+relaunch')
                 _xarxa._apply_routing(new_router, router_name, router_state)
-                for n, p in existing.items():
-                    threading.Thread(
-                        target=_xarxa._update_ospf_hot,
-                        args=(_xarxa.mininet_nodes[n], n, p),
-                        daemon=True
-                    ).start()
-                threading.Thread(target=_xarxa._pool_replenish, daemon=True).start()
-            else:
-                _start_routing_on_new_router(router_name)
 
-        threading.Thread(target=_async_orig_routing, daemon=True).start()
+            for n, p in existing.items():
+                threading.Thread(
+                    target=_xarxa._update_ospf_hot,
+                    args=(_xarxa.mininet_nodes[n], n, p),
+                    daemon=True
+                ).start()
+            # Replenish pool NOW — after all net.addLink calls are done.
+            # Starting it earlier (inside claim_from_pool) causes concurrent
+            # Mininet net operations that corrupt internal state.
+            threading.Thread(target=_xarxa._pool_replenish, daemon=True).start()
+        else:
+            _start_routing_on_new_router(router_name)
 
         t_local_ms = round((time.time() - t_local_start) * 1000, 2)
         set_t_local(holder, t_local_ms)
