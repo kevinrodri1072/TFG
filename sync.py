@@ -39,8 +39,8 @@ import requests
 # Sobreescrita per init_sync() amb els arguments CLI de app.py
 # ─────────────────────────────────────────────────────────────────────────────
 # TWINS: llista de dicts {ip, port} — un per cada PC Twin
-TWINS       = [{'ip': '10.4.39.102', 'port': 5000}]
-ORIGINAL_IP = '10.4.39.104'  # IP de l'Original — usada pels Twins per fer ping de tornada
+TWINS       = []
+ORIGINAL_IP = '10.4.39.104'  # IP de l'Original — usada pels Twins per fer ping de tornada. POSAR LA IP DEL PC ON S'EXECUTA L'ORIGINAL. 
 
 # ── Twin state tracking ───────────────────────────────────────────────────
 # {ip: {status, policy, last_seen, diverged_at}}
