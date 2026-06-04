@@ -249,138 +249,160 @@ def do_operation(op):
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
 def generate_plots(rows, routing_mode='unknown'):
-    fig, axes = plt.subplots(3, 2, figsize=(16, 16))
+    fig, axes = plt.subplots(3, 2, figsize=(16, 18))
     mode_label = routing_mode.upper().replace('_', '+')
     fig.suptitle(
-        f'Digital Twin Network — Sync Latency & Overhead Performance Study\n'
-        f'Routing mode: {mode_label} · Comprehensive Analysis Including Network Link & Host Resource Metrics',
+        f'Digital Twin Network — System Capacity & Sync Latency Study\n'
+        f'Routing mode: {mode_label}  ·  How much can the Original+Twin system handle?',
         fontsize=14, fontweight='bold'
     )
 
-    hosts_data = sorted([r for r in rows if r['op_type'] == 'host'], key=lambda x: x['n_nodes'])
+    hosts_data   = sorted([r for r in rows if r['op_type'] == 'host'],   key=lambda x: x['n_nodes'])
     routers_data = sorted([r for r in rows if r['op_type'] == 'router'], key=lambda x: x['n_nodes'])
 
-    # ── GRÁFICA 1: Evolución de Latencia Total ──
+    # ── GRÁFICA 1: Latencia total vs tamaño de red ──
+    # Responde: ¿cómo crece el tiempo por operación conforme escala la red?
     ax = axes[0][0]
     if hosts_data:
-        ax.plot([r['n_nodes'] for r in hosts_data], [r['t_total_ms'] for r in hosts_data], 
-                'o-', color='#27ae60', linewidth=2, label='add_host latency')
+        ax.plot([r['n_nodes'] for r in hosts_data],
+                [r['t_total_ms'] for r in hosts_data],
+                'o-', color='#27ae60', linewidth=2, label='add_host  t_total')
     if routers_data:
-        ax.plot([r['n_nodes'] for r in routers_data], [r['t_total_ms'] for r in routers_data], 
-                's-', color='#e74c3c', linewidth=2, label='add_router latency')
-    ax.set_title('Sync Latency Evolution Trend', fontweight='bold', fontsize=12)
-    ax.set_xlabel('Network size (Total nodes)')
-    ax.set_ylabel('t_total (ms)')
+        ax.plot([r['n_nodes'] for r in routers_data],
+                [r['t_total_ms'] for r in routers_data],
+                's-', color='#e74c3c', linewidth=2, label='add_router  t_total')
+    ax.set_title('End-to-End Sync Latency vs Network Size', fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (total nodes)')
+    ax.set_ylabel('t_total  ms  [= max(t_local, t_network)]')
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── GRÁFICA 2: Jitter Real por Tipo de Operación ──
+    # ── GRÁFICA 2: Capacidad ops/s vs tamaño de red ──
+    # Responde: ¿cuántas ops/s puede sostener el sistema conforme crece la red?
+    # capacity_ops_s = 1000 / t_total — cae cuando la red es más grande y las ops tardan más
     ax = axes[0][1]
-    if len(hosts_data) > 1:
-        h_nodes = [r['n_nodes'] for r in hosts_data][1:]
-        h_tot = [r['t_total_ms'] for r in hosts_data]
-        h_jitter = [abs(h_tot[i] - h_tot[i-1]) for i in range(1, len(h_tot))]
-        ax.plot(h_nodes, h_jitter, 'o--', color='#27ae60', alpha=0.7, label='Host Jitter')
-    
-    if len(routers_data) > 1:
-        r_nodes = [r['n_nodes'] for r in routers_data][1:]
-        r_tot = [r['t_total_ms'] for r in routers_data]
-        r_jitter = [abs(r_tot[i] - r_tot[i-1]) for i in range(1, len(r_tot))]
-        ax.plot(r_nodes, r_jitter, 's--', color='#e74c3c', alpha=0.7, label='Router Jitter')
-        
-    ax.set_title('Isolated Sync Latency Jitter', fontweight='bold', fontsize=12)
-    ax.set_xlabel('Network size (Total nodes)')
-    ax.set_ylabel('Jitter |Δt| (ms)')
+    h_cap = [r for r in hosts_data   if r.get('capacity_ops_s') is not None]
+    r_cap = [r for r in routers_data if r.get('capacity_ops_s') is not None]
+    if h_cap:
+        ax.plot([r['n_nodes'] for r in h_cap],
+                [r['capacity_ops_s'] for r in h_cap],
+                'o-', color='#27ae60', linewidth=2, label='add_host  ops/s')
+    if r_cap:
+        ax.plot([r['n_nodes'] for r in r_cap],
+                [r['capacity_ops_s'] for r in r_cap],
+                's-', color='#e74c3c', linewidth=2, label='add_router  ops/s')
+    ax.set_title('System Capacity (ops/s) vs Network Size', fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (total nodes)')
+    ax.set_ylabel('ops/s  [= 1000 / t_total]')
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    # Annotation: capacity = 1/latency, so a growing latency → falling capacity
+    ax.annotate('↓ capacity grows as network scales',
+                xy=(0.98, 0.08), xycoords='axes fraction',
+                ha='right', fontsize=9, color='grey', style='italic')
+
+    # ── GRÁFICA 3: Throughput del sistema vs tamaño de red ──
+    # Responde: ¿cuántos bits/s de información de topología procesa el sistema?
+    # throughput_bps = payload_bytes × 8 / t_total — sube cuando los payloads crecen más que la latencia
+    ax = axes[1][0]
+    h_thr = [r for r in hosts_data   if r.get('throughput_bps') is not None]
+    r_thr = [r for r in routers_data if r.get('throughput_bps') is not None]
+    if h_thr:
+        ax.plot([r['n_nodes'] for r in h_thr],
+                [r['throughput_bps'] / 1000 for r in h_thr],  # Kbps
+                'o-', color='#27ae60', linewidth=2, label='add_host  throughput')
+    if r_thr:
+        ax.plot([r['n_nodes'] for r in r_thr],
+                [r['throughput_bps'] / 1000 for r in r_thr],
+                's-', color='#e74c3c', linewidth=2, label='add_router  throughput')
+    ax.set_title('System Throughput (Kbps) vs Network Size', fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (total nodes)')
+    ax.set_ylabel('Throughput  Kbps  [= payload × 8 / t_total]')
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── GRÁFICA 3: Desglose de Componentes para ADD_HOST ──
-    ax = axes[1][0]
+    # ── GRÁFICA 4: Desglose de componentes de latencia ──
+    # Responde: ¿de dónde viene la latencia — Original, red, o Twin?
+    # Si t_local ≈ t_twin: ambas máquinas son similares
+    # Si t_local >> t_network: el bottleneck es el Original (overhead de pool, etc.)
+    ax = axes[1][1]
+    ax.set_title('Latency Component Breakdown', fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (total nodes)')
+    ax.set_ylabel('Time (ms)')
+    has_twin_data = any(
+        r['t_twin_ms'] is not None
+        for r in hosts_data + routers_data
+    )
     if hosts_data:
         h_x = [r['n_nodes'] for r in hosts_data]
-        ax.plot(h_x, [r['t_local_ms'] for r in hosts_data], '-', color='#3498db', label='t_local (Original)')
-        ax.plot(h_x, [r['t_network_ms'] for r in hosts_data], '-', color='#e67e22', label='t_network RTT')
-        # t_twin is None in manual mode — only plot if there is real data
-        if any(r['t_twin_ms'] is not None for r in hosts_data):
-            ax.plot(h_x, [r['t_twin_ms'] for r in hosts_data], '-', color='#9b59b6', label='t_twin (Shadow)')
-        else:
-            ax.text(0.5, 0.5, f't_twin not available\n(routing mode: {routing_mode})',
-                    ha='center', va='center', transform=ax.transAxes,
-                    fontsize=10, color='grey', style='italic')
-    ax.set_title('Component Breakdown: add_host', fontweight='bold', fontsize=12, color='#27ae60')
-    ax.set_xlabel('Network size (Total nodes)')
-    ax.set_ylabel('Time (ms)')
-    ax.legend(loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
-
-    # ── GRÁFICA 4: Desglose de Componentes para ADD_ROUTER ──
-    ax = axes[1][1]
+        ax.plot(h_x, [r['t_local_ms']   for r in hosts_data],
+                '-',  color='#3498db', linewidth=1.5, label='host  t_local')
+        ax.plot(h_x, [r['t_network_ms'] for r in hosts_data],
+                '--', color='#e67e22', linewidth=1.5, label='host  t_network')
+        if has_twin_data:
+            ax.plot(h_x, [r['t_twin_ms'] for r in hosts_data],
+                    ':',  color='#27ae60', linewidth=1.5, label='host  t_twin')
     if routers_data:
         r_x = [r['n_nodes'] for r in routers_data]
-        ax.plot(r_x, [r['t_local_ms'] for r in routers_data], '-', color='#3498db', label='t_local (Original)')
-        ax.plot(r_x, [r['t_network_ms'] for r in routers_data], '-', color='#e67e22', label='t_network RTT')
-        if any(r['t_twin_ms'] is not None for r in routers_data):
-            ax.plot(r_x, [r['t_twin_ms'] for r in routers_data], '-', color='#9b59b6', label='t_twin (Shadow)')
-        else:
-            ax.text(0.5, 0.5, f't_twin not available\n(routing mode: {routing_mode})',
-                    ha='center', va='center', transform=ax.transAxes,
-                    fontsize=10, color='grey', style='italic')
-    ax.set_title('Component Breakdown: add_router', fontweight='bold', fontsize=12, color='#e74c3c')
-    ax.set_xlabel('Network size (Total nodes)')
-    ax.set_ylabel('Time (ms)')
+        ax.plot(r_x, [r['t_local_ms']   for r in routers_data],
+                '-',  color='#c0392b', linewidth=1.5, label='router  t_local')
+        ax.plot(r_x, [r['t_network_ms'] for r in routers_data],
+                '--', color='#d35400', linewidth=1.5, label='router  t_network')
+        if has_twin_data:
+            ax.plot(r_x, [r['t_twin_ms'] for r in routers_data],
+                    ':',  color='#e74c3c', linewidth=1.5, label='router  t_twin')
+    if not has_twin_data:
+        ax.text(0.5, 0.05, f't_twin not available (mode: {routing_mode})',
+                ha='center', transform=ax.transAxes, fontsize=9, color='grey', style='italic')
+    ax.legend(loc='upper left', fontsize=8)
+    ax.grid(True, alpha=0.3, linestyle='--')
+
+    # ── GRÁFICA 5: Payload por operación vs tamaño de red ──
+    # Responde: ¿cuánta información lleva cada mensaje de sync?
+    # add_host: payload estable (~100B, solo nombre+router)
+    # add_router: payload crece con la red (más vecinos OSPF = más configuración)
+    ax = axes[2][0]
+    h_pl = [r for r in hosts_data   if r.get('payload_bytes') is not None]
+    r_pl = [r for r in routers_data if r.get('payload_bytes') is not None]
+    if h_pl:
+        ax.plot([r['n_nodes'] for r in h_pl],
+                [r['payload_bytes'] for r in h_pl],
+                'o-', color='#27ae60', linewidth=2, label='add_host  payload')
+    if r_pl:
+        ax.plot([r['n_nodes'] for r in r_pl],
+                [r['payload_bytes'] for r in r_pl],
+                's-', color='#e74c3c', linewidth=2, label='add_router  payload')
+    ax.set_title('Sync Payload Size vs Network Size', fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (total nodes)')
+    ax.set_ylabel('Payload (bytes)')
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── NUEVA GRÁFICA 5: Rendimiento de Red (Throughput vs Payload) ──
-    ax = axes[2][0]
-    ax_twin = ax.twinx()
-    
-    h_tp_x = [r['n_nodes'] for r in hosts_data if r['throughput_bps'] is not None]
-    h_tp_y = [r['throughput_bps'] for r in hosts_data if r['throughput_bps'] is not None]
-    h_pl_y = [r['payload_bytes'] for r in hosts_data if r['payload_bytes'] is not None]
-    
-    r_tp_x = [r['n_nodes'] for r in routers_data if r['throughput_bps'] is not None]
-    r_tp_y = [r['throughput_bps'] for r in routers_data if r['throughput_bps'] is not None]
-    r_pl_y = [r['payload_bytes'] for r in routers_data if r['payload_bytes'] is not None]
-
-    if h_tp_y:
-        ax.plot(h_tp_x, h_tp_y, '-', color='#2ecc71', label='Host Throughput (bps)')
-        ax_twin.plot(h_tp_x, h_pl_y, ':', color='#27ae60', label='Host Payload (Bytes)')
-    if r_tp_y:
-        ax.plot(r_tp_x, r_tp_y, '-', color='#e74c3c', label='Router Throughput (bps)')
-        ax_twin.plot(r_tp_x, r_pl_y, ':', color='#c0392b', label='Router Payload (Bytes)')
-        
-    ax.set_title('Sync Network Overhead & Throughput Rate', fontweight='bold', fontsize=12)
-    ax.set_xlabel('Network size (Total nodes)')
-    ax.set_ylabel('Throughput (bps)', color='#111111')
-    ax_twin.set_ylabel('Payload size (Bytes)', color='#444444')
-    
-    lines_l, labels_l = ax.get_legend_handles_labels()
-    lines_r, labels_r = ax_twin.get_legend_handles_labels()
-    ax.legend(lines_l + lines_r, labels_l + labels_r, loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
-
-    # ── NUEVA GRÁFICA 6: Consumo de CPU del Host durante Sync ──
+    # ── GRÁFICA 6: CPU durante sync vs tamaño de red ──
+    # Responde: ¿está el sistema CPU-bound o network-bound?
+    # CPU bajo + latencia alta → el bottleneck es Mininet/red, no CPU
+    # CPU alto → hay competencia de CPU que infla las latencias
     ax = axes[2][1]
-    h_cpu_x = [r['n_nodes'] for r in hosts_data if r['cpu_percent'] is not None]
-    h_cpu_y = [r['cpu_percent'] for r in hosts_data if r['cpu_percent'] is not None]
-    r_cpu_x = [r['n_nodes'] for r in routers_data if r['cpu_percent'] is not None]
-    r_cpu_y = [r['cpu_percent'] for r in routers_data if r['cpu_percent'] is not None]
-    
-    if h_cpu_y:
-        ax.plot(h_cpu_x, h_cpu_y, 'o-', color='#9b59b6', linewidth=1.5, label='Host CPU (add_host)')
-    if r_cpu_y:
-        ax.plot(r_cpu_x, r_cpu_y, 's-', color='#f1c40f', linewidth=1.5, label='Host CPU (add_router)')
-        
-    ax.set_title('Original Host CPU Utilization', fontweight='bold', fontsize=12)
-    ax.set_xlabel('Network size (Total nodes)')
+    h_cpu = [r for r in hosts_data   if r.get('cpu_percent') is not None]
+    r_cpu = [r for r in routers_data if r.get('cpu_percent') is not None]
+    if h_cpu:
+        ax.plot([r['n_nodes'] for r in h_cpu],
+                [r['cpu_percent'] for r in h_cpu],
+                'o-', color='#9b59b6', linewidth=1.5, label='add_host  CPU%')
+    if r_cpu:
+        ax.plot([r['n_nodes'] for r in r_cpu],
+                [r['cpu_percent'] for r in r_cpu],
+                's-', color='#f1c40f', linewidth=1.5, label='add_router  CPU%')
+    ax.set_title('CPU Utilization During Sync', fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (total nodes)')
     ax.set_ylabel('CPU Usage (%)')
     ax.set_ylim(0, 105)
+    ax.axhline(y=80, color='#e74c3c', linestyle='--', alpha=0.5, label='80% threshold')
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.92)
+    plt.subplots_adjust(top=0.93)
     plt.savefig(PLOT_FILE, dpi=150, bbox_inches='tight')
     print(f' Plot saved to {PLOT_FILE}')
 
@@ -471,23 +493,25 @@ def main():
         
         # Mapeado extendido con las nuevas metricas extraidas del payload JSON de sync.py
         row = {
-            'op_type':        op['type'],
-            'op_name':        name,
-            'routing_mode':   ROUTING_MODE,
-            'n_nodes':        current,
-            't_local_ms':     t_local,
-            't_network_ms':   t_network,
-            't_twin_ms':      t_twin,
-            't_total_ms':     t_total,
-            'payload_bytes':  entry.get('payload_bytes'),
-            'throughput_bps': entry.get('throughput_bps'),
-            'cpu_percent':    entry.get('cpu_percent'),
-            'error':          '',
+            'op_type':          op['type'],
+            'op_name':          name,
+            'routing_mode':     ROUTING_MODE,
+            'n_nodes':          current,
+            't_local_ms':       t_local,
+            't_network_ms':     t_network,
+            't_twin_ms':        t_twin,
+            't_total_ms':       t_total,
+            'capacity_ops_s':   round(1000 / t_total, 2) if t_total and t_total > 0 else None,
+            'payload_bytes':    entry.get('payload_bytes'),
+            'throughput_bps':   entry.get('throughput_bps'),
+            'cpu_percent':      entry.get('cpu_percent'),
+            'error':            '',
         }
         rows.append(row)
         
+        cap = row['capacity_ops_s']
         print(f'   total={t_total}ms  local={t_local}ms  net={t_network}ms  twin={t_twin}ms  '
-              f'payload={row["payload_bytes"]}B  rate={row["throughput_bps"]}bps  cpu={row["cpu_percent"]}%')
+              f'cap={cap}ops/s  thr={row["throughput_bps"]}bps  payload={row["payload_bytes"]}B')
 
         if op['type'] == 'router':
             # 1. Modo Manual
