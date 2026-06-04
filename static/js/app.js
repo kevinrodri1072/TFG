@@ -1,4 +1,8 @@
-var socket = io('http://localhost:5001');
+// El servidor WebSocket de mètriques corre al port 5001 del MATEIX host que
+// serveix aquesta pàgina (port 5000). Usem location.hostname en lloc de
+// 'localhost' perquè el dashboard funcioni també quan s'accedeix en remot
+// (ex. des d'un portàtil apuntant a http://10.4.39.102:5000).
+var socket = io(location.protocol + '//' + location.hostname + ':5001');
 
         // ── WebSocket: System metrics (CPU/RAM) ──
         socket.on('metrics_system', function(sys) {
@@ -1119,7 +1123,10 @@ var socket = io('http://localhost:5001');
                 html += `<div style="margin-bottom:14px;"><div style="font-weight:bold; font-size:13px; margin-bottom:6px; color:#2c3e50;">📡 ${node}</div><table style="width:100%; border-collapse:collapse; font-size:12px;"><tr style="background:#f0f0f0;"><th style="padding:6px 10px; text-align:left;">Interface</th><th style="padding:6px 10px; text-align:right;">RX bytes</th><th style="padding:6px 10px; text-align:right;">RX pkts</th><th style="padding:6px 10px; text-align:right;">TX bytes</th><th style="padding:6px 10px; text-align:right;">TX pkts</th></tr>`;
                 for (var intf in traffic[node]) {
                     var d = traffic[node][intf];
-                    html += `<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 10px; font-family:monospace;">${intf}</td><td style="padding:6px 10px; text-align:right;">${d.rx_bytes.toLocaleString()}</td><td style="padding:6px 10px; text-align:right;">${d.rx_packets.toLocaleString()}</td><td style="padding:6px 10px; text-align:right;">${d.tx_bytes.toLocaleString()}</td><td style="padding:6px 10px; text-align:right;">${d.tx_packets.toLocaleString()}</td></tr>`;
+                    // La consulta global (sense node) només retorna bytes, no packets.
+                    var rxp = (d.rx_packets !== undefined && d.rx_packets !== null) ? d.rx_packets.toLocaleString() : '—';
+                    var txp = (d.tx_packets !== undefined && d.tx_packets !== null) ? d.tx_packets.toLocaleString() : '—';
+                    html += `<tr style="border-bottom:1px solid #eee;"><td style="padding:6px 10px; font-family:monospace;">${intf}</td><td style="padding:6px 10px; text-align:right;">${d.rx_bytes.toLocaleString()}</td><td style="padding:6px 10px; text-align:right;">${rxp}</td><td style="padding:6px 10px; text-align:right;">${d.tx_bytes.toLocaleString()}</td><td style="padding:6px 10px; text-align:right;">${txp}</td></tr>`;
                 }
                 html += '</table></div>';
             }

@@ -83,13 +83,6 @@ XRF_REGISTRY = {
         'service':     'xrf-hops-svc',
         'deployment':  'xrf-hops',
     },
-    'chaos': {
-        'name':        'Chaos — Node Failure',
-        'description': 'Simulates router failure and measures recovery time',
-        'yaml':        os.path.join(XRF_BASE, '..', 'XRFs/chaos/chaos.yaml'),
-        'service':     'xrf-chaos-svc',
-        'deployment':  'xrf-chaos',
-    },
     'latency_matrix': {
         'name':        'Latency Matrix',
         'description': 'Measures latency and bandwidth between all host pairs',
@@ -99,7 +92,7 @@ XRF_REGISTRY = {
     },
 }
 
-ASYNC_XRFS = {'chaos', 'latency_matrix'}
+ASYNC_XRFS = {'latency_matrix'}
 
 
 def init_blueprint(is_twin, socketio_instance=None):

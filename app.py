@@ -334,12 +334,12 @@ if __name__ == '__main__':
     p.daemon = True
     p.start()
 
-    # 10. Arrenca el servidor SocketIO al port 5001 en background
+    # 11. Arrenca el servidor SocketIO al port 5001 en background
     s = threading.Thread(target=_run_socketio_server)
     s.daemon = True
     s.start()
 
-    # 11. Arrenca el servidor HTTP Flask al port 5000 (threaded=True per atendre
+    # 12. Arrenca el servidor HTTP Flask al port 5000 (threaded=True per atendre
     #     múltiples requests simultànies — imprescindible quan l'Original i el Twin
     #     processen operacions concurrents)
     print(' * HTTP server running on port 5000')

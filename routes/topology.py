@@ -13,6 +13,7 @@ Endpoints:
 import io
 import json
 import threading
+import time
 
 import numpy as np
 from flask import Blueprint, jsonify, render_template, request, send_file
@@ -165,12 +166,21 @@ def load_network():
         )
         new_nodes = json.loads(nodes_json)
 
-    threading.Thread(
-        target=_xarxa.restart_network, args=(new_matrix, new_nodes)
-    ).start()
+    # Mesura el temps real del restart local i el comparteix amb la
+    # sincronització via un holder (mateix patró que add_host/add_router):
+    # el thread de restart senyala 'ready' quan acaba i deixa el temps a 'value'.
+    holder = {'value': None, 'ready': threading.Event()}
+
+    def _timed_restart():
+        t0 = time.time()
+        _xarxa.restart_network(new_matrix, new_nodes)
+        holder['value'] = round((time.time() - t0) * 1000, 2)
+        holder['ready'].set()
+
+    threading.Thread(target=_timed_restart).start()
 
     if not is_sync:
-        sync_in_background('load_network', 0)
+        sync_in_background('load_network', holder)
 
     return jsonify({'ok': True})
 

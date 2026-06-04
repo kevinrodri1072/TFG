@@ -455,47 +455,27 @@ def metrics_sync():
 @bp.route('/sync_metrics', methods=['POST'])
 # Rep una entrada de mètriques de sync enviada per l'Original.
 # El Twin la guarda al seu historial per mostrar-la al seu dashboard.
-# Si és una actualització tardana (t_local conegut, t_network=None), actualitza
-# l'entrada existent en lloc d'afegir-ne una de nova.
+# L'Original envia una entrada completa per operació → sempre s'afegeix nova.
 def update_sync_metrics():
     """
     Receive a sync timing entry pushed by the Original.
-    The Original is the source of truth — Twin mirrors its history exactly.
-    If the entry has t_local_ms but no t_network_ms, it's a late update
-    for an existing entry (parallel sync case).
+    The Original is the source of truth — the Twin mirrors its history exactly,
+    always appending the entry it receives. The Original sends exactly one
+    complete entry per operation, so there are no late/partial updates to merge.
     """
-    data          = request.json
-    operation     = data.get('operation', 'External Update')
-    t_local       = data.get('t_local_ms')
-    t_network     = data.get('t_network_ms')
-    t_twin        = data.get('t_twin_ms')
-    latency       = data.get('latency_ms')
-    payload_bytes = data.get('payload_bytes')
-    throughput    = data.get('throughput_bps')
-    cpu_pct       = data.get('cpu_percent')
-
+    data = request.json or {}
+    entry = {
+        'operation':      data.get('operation', 'External Update'),
+        'latency_ms':     data.get('latency_ms'),
+        't_local_ms':     data.get('t_local_ms'),
+        't_network_ms':   data.get('t_network_ms'),
+        't_twin_ms':      data.get('t_twin_ms'),
+        'payload_bytes':  data.get('payload_bytes'),
+        'throughput_bps': data.get('throughput_bps'),
+        'cpu_percent':    data.get('cpu_percent'),
+        'timestamp':      data.get('timestamp', time.time()),
+    }
     with sync_history_lock:
-        # Late update: update existing entry instead of appending
-        if t_local is not None and t_network is None and t_twin is None:
-            for entry in reversed(sync_latency_history):
-                if entry.get('operation') == operation:
-                    entry['t_local_ms'] = t_local
-                    if latency is not None:
-                        entry['latency_ms'] = latency
-                    return jsonify({'ok': True})
-
-        # New entry — mirror all fields from Original
-        entry = {
-            'operation':      operation,
-            'latency_ms':     latency,
-            't_local_ms':     t_local,
-            't_network_ms':   t_network,
-            't_twin_ms':      t_twin,
-            'payload_bytes':  payload_bytes,
-            'throughput_bps': throughput,
-            'cpu_percent':    cpu_pct,
-            'timestamp':      data.get('timestamp', time.time()),
-        }
         sync_latency_history.append(entry)
     return jsonify({'ok': True})
 

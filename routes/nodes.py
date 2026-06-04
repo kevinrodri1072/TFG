@@ -19,6 +19,7 @@ Sync strategy
       recalculation (which could diverge if states differ by even one node).
 """
 
+import re
 import threading
 import time
 
@@ -50,6 +51,19 @@ bp = Blueprint('nodes', __name__)
 def init_blueprint(xarxa_instance):
     global _xarxa
     _xarxa = xarxa_instance
+
+
+# ── Node name validation ──
+# El nom del node acaba dins comandes de shell (ifconfig {name}-eth0, etc.) i
+# en noms d'interfície de Linux. Validem que només contingui lletres, dígits,
+# guió i guió baix (evita injecció de comandes) i que comenci per lletra.
+# Límit de 10 chars: les interfícies Linux són IFNAMSIZ-1 = 15 chars i el
+# sufix més llarg és "-ethN" (5 chars), així que {name} ha de cabre en 10.
+_NODE_NAME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_-]{0,9}$')
+
+
+def _valid_node_name(name):
+    return bool(name and _NODE_NAME_RE.match(name))
 
 
 # ── Internal helpers ──
@@ -138,6 +152,9 @@ def add_host():
     name    = data['name']
     router  = data['router']
     is_sync = data.get('sync', False)
+
+    if not _valid_node_name(name):
+        return jsonify({'ok': False, 'error': f'Invalid host name: {name}'})
 
     # ── Critical section: validate + compute + mutate Python state + addLink ──
     # The lock covers the intfList() read and addLink together so two concurrent
@@ -335,6 +352,9 @@ def add_router():
     router_name       = data['name']
     connected_routers = data['connected_routers']
     is_sync           = data.get('sync', False)
+
+    if not _valid_node_name(router_name):
+        return jsonify({'ok': False, 'error': f'Invalid router name: {router_name}'})
 
     if is_sync and 'router_state' in data:
         # ── Twin path: apply pre-computed state from Original ──

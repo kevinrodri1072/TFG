@@ -1,4 +1,5 @@
-var socket = io('http://localhost:5001');
+// Mateix host que serveix la pàgina, port 5001 (veure app.js per al detall).
+var socket = io(location.protocol + '//' + location.hostname + ':5001');
 
 // ── WebSocket: latency matrix progress ──
 socket.on('latency_matrix_progress', function(d) {

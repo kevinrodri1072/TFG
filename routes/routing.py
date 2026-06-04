@@ -9,9 +9,12 @@ Endpoints:
   POST /open_wireshark    → launch Wireshark capturing a node interface
 """
 
+import ipaddress
 import os
+import re
 import subprocess
 import threading
+import time
 
 from flask import Blueprint, jsonify, request
 
@@ -44,6 +47,34 @@ VALID_MODES = ('ospf', 'ospf_bfd', 'mpls', 'mpls_bfd', 'manual')
 def init_blueprint(xarxa_instance):
     global _xarxa
     _xarxa = xarxa_instance
+
+
+# ── Input validation helpers ──
+# Els camps dst/via/intf acaben dins node.cmd() (shell bash del node Mininet),
+# així que un valor com "1.1.1.1; rm -rf /" seria una injecció de comandes.
+# Validem el format ABANS de construir la comanda i rebutgem qualsevol cosa
+# que no sigui una IP/xarxa o un nom d'interfície vàlid.
+
+def _is_valid_network(value):
+    """True si value és una IPv4/IPv6 host o xarxa vàlida (ex. '10.2.0.0/24')."""
+    try:
+        ipaddress.ip_network(value, strict=False)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_valid_ip(value):
+    """True si value és una adreça IP vàlida (ex. '10.0.0.2')."""
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+# Nom d'interfície: lletres, dígits, punt, guió i guió baix (ex. 'eth0', 'r1-eth0')
+_INTF_RE = re.compile(r'^[A-Za-z0-9._-]+$')
 
 
 # ── Routes ──
@@ -80,18 +111,31 @@ def set_routing_mode():
         _xarxa._stop_routing(node, name)
         _xarxa._apply_routing(node, name, props)
 
-    # Run one thread per router — each node has its own shell so this is safe.
-    # With N routers this runs in ~max(per-router time) instead of N × per-router.
+    # Original: fire the sync to the Twin BEFORE the local restart so both run
+    # in parallel (t_total = max(t_local, t_network)), matching the model used
+    # by add_host / add_router / remove_node. The Twin applies the same change
+    # on its own routers while we restart ours.
+    holder = None
+    if not is_sync:
+        from sync import sync_event, set_t_local
+        holder = sync_event('/set_routing_mode', {'mode': mode}, None)
+
+    # Measure the real local restart time. One thread per router — each node has
+    # its own shell, so this runs in ~max(per-router) instead of N × per-router.
+    t_local_start = time.time()
     threads = [
         threading.Thread(target=_restart_one, args=(n, p, nd), daemon=True)
         for n, p, nd in routers
     ]
     for t in threads: t.start()
     for t in threads: t.join()
+    t_local_ms = round((time.time() - t_local_start) * 1000, 2)
 
     if not is_sync:
-        sync_event('/set_routing_mode', {'mode': mode}, 0)
-    return jsonify({'ok': True, 'mode': mode})
+        set_t_local(holder, t_local_ms)
+        return jsonify({'ok': True, 'mode': mode})
+    # Twin path: return t_local_ms so the Original can record t_twin.
+    return jsonify({'ok': True, 'mode': mode, 't_local_ms': t_local_ms})
 
 
 @bp.route('/router_routes')
@@ -143,6 +187,11 @@ def modify_router_route():
         via = data.get('via', '').strip()
         if not dst or not via:
             return jsonify({'ok': False, 'error': 'dst and via are required'})
+        # Validate before building the shell command (injection guard)
+        if not _is_valid_network(dst):
+            return jsonify({'ok': False, 'error': f'Invalid destination network: {dst}'})
+        if not _is_valid_ip(via):
+            return jsonify({'ok': False, 'error': f'Invalid gateway address: {via}'})
         result = node.cmd(f'ip route replace {dst} via {via} 2>&1')
         if 'error' in result.lower() or 'invalid' in result.lower():
             return jsonify({'ok': False, 'error': result.strip()})
@@ -155,6 +204,9 @@ def modify_router_route():
         dst = data.get('dst', '').strip()
         if not dst:
             return jsonify({'ok': False, 'error': 'dst is required'})
+        # Validate before building the shell command (injection guard)
+        if not _is_valid_network(dst):
+            return jsonify({'ok': False, 'error': f'Invalid destination network: {dst}'})
         result = node.cmd(f'ip route del {dst} 2>&1')
         if 'error' in result.lower() or 'no such' in result.lower():
             return jsonify({'ok': False, 'error': result.strip()})
@@ -180,6 +232,10 @@ def open_wireshark():
         return jsonify({'ok': False, 'error': 'Node not found'})
     if not _xarxa.network_ready:
         return jsonify({'ok': False, 'error': 'Network not ready'})
+    # intf ends up inside a shell command — validate format (injection guard).
+    # node is already whitelisted against _xarxa.nodes above.
+    if not intf or not _INTF_RE.match(intf):
+        return jsonify({'ok': False, 'error': 'Invalid interface name'})
 
     intf_full = f'{node}-{intf}'
     sudo_user = os.environ.get('SUDO_USER', 'root')
