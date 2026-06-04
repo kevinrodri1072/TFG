@@ -259,22 +259,10 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms,
 
     payload_bytes : mida en bytes del JSON enviat al Twin (per calcular throughput)
     """
-    # ── Throughput del sistema Original+Twin ──
-    # Mesura la capacitat de transferència d'informació del sistema complet.
-    # Usem t_total (= max(t_local, t_network)) perquè és el temps que el sistema
-    # està realment "ocupat" processant un canvi: des que comença fins que TANT
-    # l'Original COM el Twin l'han aplicat. Dividir payload per t_total dóna la
-    # taxa de bytes útils per segon que el sistema pot processar de forma sostinguda.
-    # Nota: payload_bytes és el body JSON enviat al Twin; les capçaleres HTTP
-    # (~350 bytes) no s'inclouen, per tant és una estimació conservadora.
-    throughput_bps = None
-    if payload_bytes and latency_ms and latency_ms > 0:
-        throughput_bps = round(payload_bytes * 8 / (latency_ms / 1000), 2)
-
     # CPU en el moment de registrar (non-blocking: usa la mesura anterior del SO)
     cpu_percent = psutil.cpu_percent(interval=None)
 
-    # t_total = max(t_local, t_network) — execució paral·lela, no suma
+    # t_total = max(t_local, t_network) — ha d'estar definit ABANS del throughput
     latency_ms = None
     if t_local_ms is not None and t_network_ms is not None:
         latency_ms = round(max(t_local_ms, t_network_ms), 2)
@@ -282,6 +270,13 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms,
         latency_ms = round(t_network_ms, 2)
     elif t_local_ms is not None:
         latency_ms = round(t_local_ms, 2)
+
+    # ── Throughput del sistema Original+Twin ──
+    # Usem t_total (latency_ms) perquè és el temps que el sistema complet està
+    # "ocupat": des que comença fins que Original I Twin han aplicat el canvi.
+    throughput_bps = None
+    if payload_bytes and latency_ms and latency_ms > 0:
+        throughput_bps = round(payload_bytes * 8 / (latency_ms / 1000), 2)
 
     with sync_history_lock:
         entry = {
