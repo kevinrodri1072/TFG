@@ -192,6 +192,17 @@ def count_nodes():
     r = requests.get(f'{ORIGINAL_URL}/topology', timeout=10).json()
     return sum(1 for n, p in r['nodes'].items() if p['type'] != 'switch')
 
+def get_routing_mode():
+    try:
+        r = requests.get(f'{ORIGINAL_URL}/get_routing_mode', timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get('ok'):
+                return str(data.get('mode')).lower()
+    except Exception as e:
+        print(f'  [!] Error al consultar el modo de enrutamiento: {e}')
+    return 'manual'
+
 def safe_stats(values):
     values = [v for v in values if v is not None]
     if not values:
@@ -378,6 +389,11 @@ def main():
         return
     print(' Network ready!')
 
+    # --- NUEVA DETECCIÓN AUTOMÁTICA ---
+    ROUTING_MODE = get_routing_mode()
+    print(f' [I] Modo de enrutamiento detectado: {ROUTING_MODE.upper()}')
+    # ----------------------------------
+
     current = count_nodes()
     print(f'\n Initial nodes: {current}')
     if current != 7:
@@ -462,8 +478,35 @@ def main():
               f'payload={row["payload_bytes"]}B  rate={row["throughput_bps"]}bps  cpu={row["cpu_percent"]}%')
 
         if op['type'] == 'router':
-            print(f'      Waiting for OSPF convergence (5s)...')
-            time.sleep(5)
+            # 1. Modo Manual
+            if ROUTING_MODE == 'manual':
+                print('      [MANUAL] Configuración estática instantánea. Saltando espera larga.')
+                time.sleep(0.5)
+            
+            # 2. Modo OSPF estándar
+            elif ROUTING_MODE == 'ospf':
+                print('      [OSPF] Esperando 5s para la convergencia de rutas...')
+                time.sleep(5)
+            
+            # 3. Modo OSPF con BFD
+            elif ROUTING_MODE == 'ospf_bfd':
+                print('      [OSPF_BFD] Esperando 5s para la convergencia (BFD activo)...')
+                time.sleep(5)
+            
+            # 4. Modo OSPF con MPLS (nombrado 'mpls' en tu backend)
+            elif ROUTING_MODE == 'mpls':
+                print('      [MPLS] Esperando 6s para OSPF y distribución de etiquetas LDP...')
+                time.sleep(6)
+            
+            # 5. Modo OSPF con MPLS y BFD (nombrado 'mpls_bfd' en tu backend)
+            elif ROUTING_MODE == 'mpls_bfd':
+                print('      [MPLS_BFD] Esperando 6s para convergencia completa, LDP y sesiones BFD...')
+                time.sleep(6)
+            
+            # Caso de seguridad por si acaso
+            else:
+                print(f'      [{ROUTING_MODE.upper()}] Modo desconocido. Aplicando espera preventiva de 5s...')
+                time.sleep(5)
         else:
             time.sleep(0.5)
 
