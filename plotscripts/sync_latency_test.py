@@ -11,7 +11,7 @@ Metrics recorded per operation:
   - t_local_ms     : time to apply change in Original Mininet
   - t_network_ms   : HTTP round-trip Original → Twin
   - t_twin_ms      : time to apply change in Twin Mininet
-  - t_total_ms     : t_local + t_network (real end-to-end sync latency)
+  - t_total_ms     : max(t_local, t_network) — real end-to-end sync latency (parallel execution)
   - payload_bytes  : real size of the JSON sync payload sent to the Twin
   - throughput_bps : real transmission rate of the sync event link
   - cpu_percent    : original host CPU utilization at registration time
@@ -248,13 +248,13 @@ def do_operation(op):
 
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
-def generate_plots(rows):
-    # Ampliado a un grid de 3x2 para dar soporte a las nuevas metricas de red y host
+def generate_plots(rows, routing_mode='unknown'):
     fig, axes = plt.subplots(3, 2, figsize=(16, 16))
+    mode_label = routing_mode.upper().replace('_', '+')
     fig.suptitle(
-        'Digital Twin Network — Sync Latency & Overhead Performance Study\n'
-        'Comprehensive Analysis Including Network Link & Host Resource Metrics',
-        fontsize=16, fontweight='bold'
+        f'Digital Twin Network — Sync Latency & Overhead Performance Study\n'
+        f'Routing mode: {mode_label} · Comprehensive Analysis Including Network Link & Host Resource Metrics',
+        fontsize=14, fontweight='bold'
     )
 
     hosts_data = sorted([r for r in rows if r['op_type'] == 'host'], key=lambda x: x['n_nodes'])
@@ -300,7 +300,13 @@ def generate_plots(rows):
         h_x = [r['n_nodes'] for r in hosts_data]
         ax.plot(h_x, [r['t_local_ms'] for r in hosts_data], '-', color='#3498db', label='t_local (Original)')
         ax.plot(h_x, [r['t_network_ms'] for r in hosts_data], '-', color='#e67e22', label='t_network RTT')
-        ax.plot(h_x, [r['t_twin_ms'] for r in hosts_data], '-', color='#9b59b6', label='t_twin (Shadow)')
+        # t_twin is None in manual mode — only plot if there is real data
+        if any(r['t_twin_ms'] is not None for r in hosts_data):
+            ax.plot(h_x, [r['t_twin_ms'] for r in hosts_data], '-', color='#9b59b6', label='t_twin (Shadow)')
+        else:
+            ax.text(0.5, 0.5, f't_twin not available\n(routing mode: {routing_mode})',
+                    ha='center', va='center', transform=ax.transAxes,
+                    fontsize=10, color='grey', style='italic')
     ax.set_title('Component Breakdown: add_host', fontweight='bold', fontsize=12, color='#27ae60')
     ax.set_xlabel('Network size (Total nodes)')
     ax.set_ylabel('Time (ms)')
@@ -313,7 +319,12 @@ def generate_plots(rows):
         r_x = [r['n_nodes'] for r in routers_data]
         ax.plot(r_x, [r['t_local_ms'] for r in routers_data], '-', color='#3498db', label='t_local (Original)')
         ax.plot(r_x, [r['t_network_ms'] for r in routers_data], '-', color='#e67e22', label='t_network RTT')
-        ax.plot(r_x, [r['t_twin_ms'] for r in routers_data], '-', color='#9b59b6', label='t_twin (Shadow)')
+        if any(r['t_twin_ms'] is not None for r in routers_data):
+            ax.plot(r_x, [r['t_twin_ms'] for r in routers_data], '-', color='#9b59b6', label='t_twin (Shadow)')
+        else:
+            ax.text(0.5, 0.5, f't_twin not available\n(routing mode: {routing_mode})',
+                    ha='center', va='center', transform=ax.transAxes,
+                    fontsize=10, color='grey', style='italic')
     ax.set_title('Component Breakdown: add_router', fontweight='bold', fontsize=12, color='#e74c3c')
     ax.set_xlabel('Network size (Total nodes)')
     ax.set_ylabel('Time (ms)')
@@ -462,6 +473,7 @@ def main():
         row = {
             'op_type':        op['type'],
             'op_name':        name,
+            'routing_mode':   ROUTING_MODE,
             'n_nodes':        current,
             't_local_ms':     t_local,
             't_network_ms':   t_network,
@@ -529,7 +541,7 @@ def main():
 
         valid_rows = [r for r in rows if r['t_total_ms'] is not None]
         if valid_rows:
-            generate_plots(valid_rows)
+            generate_plots(valid_rows, ROUTING_MODE)
         else:
             print('  No valid rows to plot.')
 

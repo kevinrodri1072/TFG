@@ -568,6 +568,7 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
             dot.className = 'status-dot green';
             document.getElementById('sync-count').textContent = stats.count;
 
+            // ── Fill min/avg/max latency rows ──
             function fill(prefix, obj) {
                 document.getElementById(prefix + '-min').textContent = obj && obj.min !== null ? obj.min + ' ms' : '—';
                 document.getElementById(prefix + '-avg').textContent = obj && obj.avg !== null ? obj.avg + ' ms' : '—';
@@ -577,14 +578,11 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
             fill('sync-net',   stats.t_network);
             fill('sync-twin',  stats.t_twin);
             fill('sync-total', stats.t_total);
-            document.getElementById('sync-jitter').textContent =
-                stats.jitter_ms !== null ? stats.jitter_ms + ' ms' : '—';
-            document.getElementById('sync-jitter-net').textContent =
-                stats.jitter_net_ms !== null && stats.jitter_net_ms !== undefined ? stats.jitter_net_ms + ' ms' : '—';
-            document.getElementById('sync-jitter-twin').textContent =
-                stats.jitter_twin_ms !== null && stats.jitter_twin_ms !== undefined ? stats.jitter_twin_ms + ' ms' : '—';
 
-            // ── Throughput helpers ──
+            document.getElementById('sync-jitter').textContent =
+                stats.jitter_ms !== null && stats.jitter_ms !== undefined ? stats.jitter_ms + ' ms' : '—';
+
+            // ── Format helpers ──
             function fmtBytes(b) {
                 if (b === null || b === undefined) return '—';
                 return b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' KB';
@@ -596,38 +594,24 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
                 return bps.toFixed(0) + ' bps';
             }
 
-            // ── Payload / msg ──
-            var pb = stats.payload_bytes;
-            document.getElementById('sync-payload-avg').textContent  = fmtBytes(pb && pb.avg);
-            document.getElementById('sync-payload-min').textContent  = fmtBytes(pb && pb.min);
-            document.getElementById('sync-payload-avg2').textContent = fmtBytes(pb && pb.avg);
-            document.getElementById('sync-payload-max').textContent  = fmtBytes(pb && pb.max);
+            // ── Throughput ──
+            document.getElementById('sync-payload-avg').textContent = fmtBytes(stats.payload_bytes_avg);
+            document.getElementById('sync-sys-throughput').textContent = fmtBps(stats.system_throughput_bps);
 
-            // ── Link throughput ──
-            var thr = stats.throughput_bps;
-            document.getElementById('sync-thr-avg').textContent  = fmtBps(thr && thr.avg);
-            document.getElementById('sync-thr-min').textContent  = fmtBps(thr && thr.min);
-            document.getElementById('sync-thr-avg2').textContent = fmtBps(thr && thr.avg);
-            document.getElementById('sync-thr-max').textContent  = fmtBps(thr && thr.max);
-
-            // ── CPU during sync ──
+            // ── CPU ──
             var cpu = stats.cpu_at_sync;
-            document.getElementById('sync-cpu-avg').textContent  = cpu && cpu.avg !== null ? cpu.avg + '%' : '—';
-            document.getElementById('sync-cpu-min').textContent  = cpu && cpu.min !== null ? cpu.min + '%' : '—';
-            document.getElementById('sync-cpu-avg2').textContent = cpu && cpu.avg !== null ? cpu.avg + '%' : '—';
-            document.getElementById('sync-cpu-max').textContent  = cpu && cpu.max !== null ? cpu.max + '%' : '—';
+            document.getElementById('sync-cpu-avg').textContent = cpu && cpu.avg !== null ? cpu.avg + '%' : '—';
 
             // ── Ops per second ──
             var ops = stats.ops_per_sec;
-            document.getElementById('sync-ops-capacity-avg').textContent =
-                ops && ops.capacity_avg !== null ? ops.capacity_avg + ' ops/s' : '—';
-            document.getElementById('sync-ops-capacity-max').textContent =
-                ops && ops.capacity_max !== null ? ops.capacity_max + ' ops/s' : '—';
-            document.getElementById('sync-ops-10s').textContent =
-                ops && ops.recent_10s !== null ? ops.recent_10s + ' ops/s' : '—';
-            document.getElementById('sync-ops-60s').textContent =
-                ops && ops.recent_60s !== null ? ops.recent_60s + ' ops/s' : '—';
+            document.getElementById('sync-ops-capacity-local').textContent =
+                ops && ops.capacity_local !== null ? ops.capacity_local + ' ops/s' : '—';
+            document.getElementById('sync-ops-capacity-real').textContent =
+                ops && ops.capacity_real !== null ? ops.capacity_real + ' ops/s' : '—';
+            document.getElementById('sync-overhead-pct').textContent =
+                ops && ops.sync_overhead_pct !== null ? ops.sync_overhead_pct + '%' : '—';
 
+            // ── Recent operations list ──
             var list   = document.getElementById('sync-history-list');
             list.innerHTML = '';
             var recent = data.history.slice(-8).reverse();
@@ -635,15 +619,15 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
                 var d     = new Date(entry.timestamp * 1000);
                 var time  = d.toLocaleTimeString('ca-ES', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
                 var net   = entry.t_network_ms !== null && entry.t_network_ms !== undefined ? entry.t_network_ms : null;
-                var local = entry.t_local_ms !== null && entry.t_local_ms !== undefined ? entry.t_local_ms : null;
-                var twin  = entry.t_twin_ms !== null && entry.t_twin_ms !== undefined ? entry.t_twin_ms : null;
+                var local = entry.t_local_ms   !== null && entry.t_local_ms   !== undefined ? entry.t_local_ms   : null;
+                var twin  = entry.t_twin_ms    !== null && entry.t_twin_ms    !== undefined ? entry.t_twin_ms    : null;
                 var total = (local !== null && net !== null) ? Math.round(Math.max(local, net) * 100) / 100 : null;
                 var color = total === null ? '#aaa' : total < 150 ? '#2ecc71' : total < 500 ? '#f39c12' : '#e74c3c';
-                var thr   = entry.throughput_bps ? (entry.throughput_bps >= 1e6 ? (entry.throughput_bps/1e6).toFixed(2)+' Mbps' : (entry.throughput_bps/1e3).toFixed(1)+' Kbps') : null;
-                var pb    = entry.payload_bytes ? (entry.payload_bytes < 1024 ? entry.payload_bytes+' B' : (entry.payload_bytes/1024).toFixed(1)+' KB') : null;
+                var pb    = entry.payload_bytes ? fmtBytes(entry.payload_bytes) : null;
+                var thr   = entry.throughput_bps ? fmtBps(entry.throughput_bps) : null;
                 var detail = `local:${local ?? '?'}ms  net:${net ?? '?'}ms  twin:${twin ?? '?'}ms  total:${total ?? '?'}ms` +
                              (pb  ? `  payload:${pb}`  : '') +
-                             (thr ? `  thr:${thr}` : '') +
+                             (thr ? `  thr:${thr}`     : '') +
                              (entry.cpu_percent !== null && entry.cpu_percent !== undefined ? `  cpu:${entry.cpu_percent}%` : '');
                 var display = total !== null ? total + ' ms' : (net !== null ? net + ' ms' : '?');
                 list.innerHTML += `<div class="sync-entry"><span class="sync-op">${time} · ${entry.operation}</span><span class="sync-ms" style="color:${color}" title="${detail}">${display}</span></div>`;

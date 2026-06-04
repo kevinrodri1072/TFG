@@ -319,37 +319,19 @@
                     <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="sync-total-max">—</div></div>
                 </div>
                 <div class="metric-row" style="margin-top:4px;">
-                    <span class="metric-label">Total jitter</span>
+                    <span class="metric-label">Jitter (total)</span>
                     <span class="metric-value" id="sync-jitter">—</span>
-                </div>
-                <div class="metric-row" style="margin-top:2px;">
-                    <span class="metric-label">Network jitter</span>
-                    <span class="metric-value" id="sync-jitter-net">—</span>
-                </div>
-                <div class="metric-row" style="margin-top:2px;">
-                    <span class="metric-label">Twin jitter</span>
-                    <span class="metric-value" id="sync-jitter-twin">—</span>
                 </div>
 
                 <!-- Throughput Original→Twin -->
                 <div style="margin-top:10px; font-size:11px; color:#7f8c8d; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Throughput Original→Twin</div>
                 <div class="metric-row">
-                    <span class="metric-label">Payload / msg</span>
+                    <span class="metric-label" title="Avg JSON payload per sync message">Payload / msg (avg)</span>
                     <span class="metric-value" id="sync-payload-avg">—</span>
                 </div>
-                <div class="metric-sub">
-                    <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="sync-payload-min">—</div></div>
-                    <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="sync-payload-avg2">—</div></div>
-                    <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="sync-payload-max">—</div></div>
-                </div>
                 <div class="metric-row" style="margin-top:4px;">
-                    <span class="metric-label">Link throughput</span>
-                    <span class="metric-value" id="sync-thr-avg">—</span>
-                </div>
-                <div class="metric-sub">
-                    <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="sync-thr-min">—</div></div>
-                    <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="sync-thr-avg2">—</div></div>
-                    <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="sync-thr-max">—</div></div>
+                    <span class="metric-label" title="Sustained system throughput: avg_payload × 8 / avg_t_total">System throughput</span>
+                    <span class="metric-value" id="sync-sys-throughput">—</span>
                 </div>
 
                 <!-- CPU / Ops per second -->
@@ -358,26 +340,17 @@
                     <span class="metric-label">CPU during sync</span>
                     <span class="metric-value" id="sync-cpu-avg">—</span>
                 </div>
-                <div class="metric-sub">
-                    <div class="metric-sub-item"><div class="sub-label">MIN</div><div class="sub-value" id="sync-cpu-min">—</div></div>
-                    <div class="metric-sub-item"><div class="sub-label">AVG</div><div class="sub-value" id="sync-cpu-avg2">—</div></div>
-                    <div class="metric-sub-item"><div class="sub-label">MAX</div><div class="sub-value" id="sync-cpu-max">—</div></div>
-                </div>
                 <div class="metric-row" style="margin-top:4px;">
-                    <span class="metric-label" title="Theoretical max ops/s the CPU can handle based on avg t_local">CPU capacity (avg)</span>
-                    <span class="metric-value" id="sync-ops-capacity-avg">—</span>
+                    <span class="metric-label" title="1000 / avg_t_local — max ops/s without Twin">Local capacity</span>
+                    <span class="metric-value" id="sync-ops-capacity-local">—</span>
                 </div>
                 <div class="metric-row" style="margin-top:2px;">
-                    <span class="metric-label" title="Theoretical max ops/s based on fastest operation seen">CPU capacity (max)</span>
-                    <span class="metric-value" id="sync-ops-capacity-max">—</span>
+                    <span class="metric-label" title="1000 / avg_t_total — real sustained ops/s Original+Twin">System capacity</span>
+                    <span class="metric-value" id="sync-ops-capacity-real">—</span>
                 </div>
                 <div class="metric-row" style="margin-top:2px;">
-                    <span class="metric-label">Ops/s (last 10s)</span>
-                    <span class="metric-value" id="sync-ops-10s">—</span>
-                </div>
-                <div class="metric-row" style="margin-top:2px;">
-                    <span class="metric-label">Ops/s (last 60s)</span>
-                    <span class="metric-value" id="sync-ops-60s">—</span>
+                    <span class="metric-label" title="(capacity_local - capacity_real) / capacity_local × 100">Twin overhead</span>
+                    <span class="metric-value" id="sync-overhead-pct">—</span>
                 </div>
 
                 <div style="margin-top:10px; font-size:11px; color:#7f8c8d; margin-bottom:4px;">Recent operations:</div>

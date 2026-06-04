@@ -375,7 +375,6 @@ def metrics_global():
 #   ops_per_sec     → capacitat de CPU (màx teòric) i ops reals (últims 10s)
 #   cpu_at_sync     → ús de CPU del host en el moment de cada operació
 def metrics_sync():
-    import time as _time
     op_filter = request.args.get('op', '').strip()
     with sync_history_lock:
         if op_filter:
@@ -402,51 +401,52 @@ def metrics_sync():
             t_total.append(None)
 
     # ── Throughput i payload ──
-    throughput = [e.get('throughput_bps') for e in history]
-    payload_b  = [e.get('payload_bytes')  for e in history]
-    cpu_vals   = [e.get('cpu_percent')    for e in history]
+    cpu_vals   = [e.get('cpu_percent') for e in history]
 
     # ── Ops/s ──
-    # Capacitat teòrica: si cada operació triga avg_t_local ms, puc fer
-    # 1000/avg_t_local ops/s en sèrie (límit de CPU local)
     t_local_valid = [t for t in t_local if t is not None and t > 0]
+    t_total_valid = [t for t in t_total if t is not None and t > 0]
     avg_t_local   = sum(t_local_valid) / len(t_local_valid) if t_local_valid else None
     min_t_local   = min(t_local_valid) if t_local_valid else None
-    ops_capacity_avg = round(1000 / avg_t_local, 2) if avg_t_local else None
-    ops_capacity_max = round(1000 / min_t_local, 2) if min_t_local else None
+    avg_t_total   = sum(t_total_valid) / len(t_total_valid) if t_total_valid else None
 
-    # Ops/s reals: operacions registrades en els últims 10 i 60 segons
-    now = _time.time()
-    ops_10s = sum(1 for e in history if (now - e.get('timestamp', 0)) <= 10)
-    ops_60s = sum(1 for e in history if (now - e.get('timestamp', 0)) <= 60)
-    ops_per_sec_10s = round(ops_10s / 10, 2)
-    ops_per_sec_60s = round(ops_60s / 60, 2)
+    ops_capacity_local = round(1000 / avg_t_local, 2) if avg_t_local else None
+    ops_capacity_real  = round(1000 / avg_t_total,  2) if avg_t_total else None
+
+    sync_overhead_pct = None
+    if ops_capacity_local and ops_capacity_real:
+        sync_overhead_pct = round(
+            (ops_capacity_local - ops_capacity_real) / ops_capacity_local * 100, 1
+        )
+
+    # ── System throughput sostenible ──
+    payload_vals = [e.get('payload_bytes') for e in history]
+    avg_payload  = sum(v for v in payload_vals if v) / sum(1 for v in payload_vals if v) \
+                   if any(payload_vals) else None
+    system_throughput_bps = round(avg_payload * 8 / (avg_t_total / 1000), 2) \
+                            if avg_payload and avg_t_total else None
 
     return jsonify({
         'ok':      True,
         'history': history,
         'stats': {
-            'count':            len(history),
-            't_local':          safe_stats(t_local),
-            't_network':        safe_stats(t_network),
-            't_twin':           safe_stats(t_twin),
-            't_total':          safe_stats(t_total),
-            'avg_ms':           safe_stats(t_total)['avg'],
-            'min_ms':           safe_stats(t_total)['min'],
-            'max_ms':           safe_stats(t_total)['max'],
-            'jitter_ms':        jitter_of(t_total),
-            'jitter_net_ms':    jitter_of(t_network),
-            'jitter_twin_ms':   jitter_of(t_twin),
-            # ── Throughput / Payload ──
-            'throughput_bps':   safe_stats(throughput),   # min/avg/max bits/s
-            'payload_bytes':    safe_stats(payload_b),    # min/avg/max bytes per missatge
-            # ── CPU / Ops per segon ──
-            'cpu_at_sync':      safe_stats(cpu_vals),     # CPU% durant les operacions
+            'count':   len(history),
+            # ── Latència per component ──
+            't_local':   safe_stats(t_local),    # Original Mininet
+            't_network': safe_stats(t_network),  # Round-trip HTTP (context)
+            't_twin':    safe_stats(t_twin),      # Twin Mininet
+            't_total':   safe_stats(t_total),     # Sistema complet end-to-end
+            'jitter_ms': jitter_of(t_total),      # Estabilitat del sistema
+            # ── Throughput del sistema ──
+            'system_throughput_bps': system_throughput_bps,  # bits/s sostinguts Original+Twin
+            'payload_bytes_avg':     round(avg_payload, 1) if avg_payload else None,
+            # ── CPU durant operacions ──
+            'cpu_at_sync': safe_stats(cpu_vals),
+            # ── Capacitat ops/s ──
             'ops_per_sec': {
-                'capacity_avg': ops_capacity_avg,  # ops/s teòriques (1000/avg_t_local)
-                'capacity_max': ops_capacity_max,  # ops/s teòriques (1000/min_t_local)
-                'recent_10s':   ops_per_sec_10s,   # ops/s reals últims 10s
-                'recent_60s':   ops_per_sec_60s,   # ops/s reals últims 60s
+                'capacity_local':    ops_capacity_local,   # ops/s sense Twin (baseline)
+                'capacity_real':     ops_capacity_real,    # ops/s reals Original+Twin
+                'sync_overhead_pct': sync_overhead_pct,   # % cost de tenir el Twin
             },
         },
     })

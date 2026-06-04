@@ -35,12 +35,29 @@ import psutil
 import requests
 
 # ─────────────────────────────────────────────────────────────────────────────
+# UTILITATS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_own_ip():
+    """Detecta la IP pròpia del host via un socket UDP (no envia res)."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURACIÓ DE CONNEXIÓ
 # Sobreescrita per init_sync() amb els arguments CLI de app.py
 # ─────────────────────────────────────────────────────────────────────────────
 # TWINS: llista de dicts {ip, port} — un per cada PC Twin
-TWINS       = []
-ORIGINAL_IP = '10.4.39.104'  # IP de l'Original — usada pels Twins per fer ping de tornada. POSAR LA IP DEL PC ON S'EXECUTA L'ORIGINAL. 
+TWINS       = []   # poblat dinàmicament quan els Twins arrenquen amb --twin --original-ip
+ORIGINAL_IP = '10.4.39.104'  # IP de l'Original — usada pels Twins per fer ping de tornada
 
 # ── Twin state tracking ───────────────────────────────────────────────────
 # {ip: {status, policy, last_seen, diverged_at}}
@@ -95,6 +112,11 @@ def register_twin(ip, port=5000):
     If the Twin's IP is not in the TWINS list yet, add it so future
     sync events reach it.
     """
+    # No registrar la pròpia IP — sincronitzar-se a un mateix causa race conditions
+    own_ip = _get_own_ip()
+    if ip == own_ip or ip == '127.0.0.1':
+        return
+
     with _twin_status_lock:
         _init_twin(ip)
         TWIN_STATUS[ip]['last_seen'] = round(time.time(), 2)
@@ -200,6 +222,15 @@ def init_sync(xarxa_instance, twins=None, original_ip=None, twin_port=None,
     if original_ip:
         ORIGINAL_IP = original_ip
 
+    # Filtra la pròpia IP de la llista de Twins — sincronitzar-se a un mateix
+    # causa race conditions (dos threads fan node.cmd() al mateix node alhora
+    # → AssertionError de Mininet: "assert self.shell and not self.waiting").
+    own_ip = _get_own_ip()
+    before = len(TWINS)
+    TWINS = [t for t in TWINS if t['ip'] != own_ip and t['ip'] != '127.0.0.1']
+    if len(TWINS) < before:
+        print(f'[sync] Filtered own IP ({own_ip}) from TWINS list — self-sync disabled')
+
     twins_str = ', '.join(f'{t["ip"]}:{t["port"]}' for t in TWINS)
     print(f'[sync] Original={ORIGINAL_IP}  Twins=[{twins_str}]')
 
@@ -228,18 +259,17 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms,
 
     payload_bytes : mida en bytes del JSON enviat al Twin (per calcular throughput)
     """
-    # Throughput del link: bits transferits / temps NET de xarxa.
-    # t_network inclou el temps de procés del Twin (round-trip = anada + procés
-    # Twin + tornada). Per aïllar el temps de xarxa pur restem t_twin quan el
-    # coneixem; així throughput_bps reflecteix l'amplada de banda real del link
-    # i no es veu penalitzat pel temps de CPU del Twin.
+    # ── Throughput del sistema Original+Twin ──
+    # Mesura la capacitat de transferència d'informació del sistema complet.
+    # Usem t_total (= max(t_local, t_network)) perquè és el temps que el sistema
+    # està realment "ocupat" processant un canvi: des que comença fins que TANT
+    # l'Original COM el Twin l'han aplicat. Dividir payload per t_total dóna la
+    # taxa de bytes útils per segon que el sistema pot processar de forma sostinguda.
+    # Nota: payload_bytes és el body JSON enviat al Twin; les capçaleres HTTP
+    # (~350 bytes) no s'inclouen, per tant és una estimació conservadora.
     throughput_bps = None
-    if payload_bytes and t_network_ms and t_network_ms > 0:
-        net_time_ms = t_network_ms
-        if t_twin_ms is not None and 0 < t_twin_ms < t_network_ms:
-            net_time_ms = t_network_ms - t_twin_ms
-        if net_time_ms > 0:
-            throughput_bps = round(payload_bytes * 8 / (net_time_ms / 1000), 2)
+    if payload_bytes and latency_ms and latency_ms > 0:
+        throughput_bps = round(payload_bytes * 8 / (latency_ms / 1000), 2)
 
     # CPU en el moment de registrar (non-blocking: usa la mesura anterior del SO)
     cpu_percent = psutil.cpu_percent(interval=None)
