@@ -350,91 +350,78 @@ def generate_plots(rows, routing_mode='unknown'):
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G4: Twin overhead — barres horitzontals apilades ────────────────────
-    # Cada barra = t_total desglossat en: treball local (verd) + overhead Twin (roig)
-    # Overhead = temps que el sistema espera el Twin després que l'Original ha acabat
-    # 0% = l'Original és el coll d'ampolla (Twin acaba abans, overhead absorbit)
-    # >0% = la xarxa+Twin és el coll d'ampolla (el sistema espera el ACK)
+    # ── G4: Twin overhead — anells visuals ──────────────────────────────────
     ax = axes[1][1]
+    ax.set_aspect('equal')
+    ax.axis('off')
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 7.5)
 
-    bar_labels   = []
-    local_vals   = []
-    overhead_vals= []
-    pct_vals     = []
-    bar_colors_l = []
-    bar_colors_o = []
+    from matplotlib.patches import Wedge
 
-    for data_list, label, col_l, col_o in [
-        (hosts_data,   'add_host',   '#1D9E75', '#D85A30'),
-        (routers_data, 'add_router', '#0F6E56', '#993C1D'),
-    ]:
+    def compute_ring_stats(data_list):
         valid = [r for r in data_list
-                 if r.get('t_local_ms') is not None and r.get('t_total_ms') is not None]
+                 if r.get('t_local_ms') and r.get('t_total_ms')
+                 and r['t_total_ms'] > 0]
         if not valid:
-            continue
-        avg_local    = sum(r['t_local_ms'] for r in valid) / len(valid)
-        avg_total    = sum(r['t_total_ms'] for r in valid) / len(valid)
-        avg_overhead = max(0.0, avg_total - avg_local)
-        ovh_vals     = [max(0.0, (1 - r['t_local_ms'] / r['t_total_ms']) * 100)
-                        for r in valid if r['t_total_ms'] > 0]
-        avg_pct      = sum(ovh_vals) / len(ovh_vals) if ovh_vals else 0.0
+            return None
+        avg_local = sum(r['t_local_ms'] for r in valid) / len(valid)
+        avg_total = sum(r['t_total_ms'] for r in valid) / len(valid)
+        pct = round(max(0.0, (1 - avg_local / avg_total) * 100), 1)
+        ops_real  = round(1000 / avg_total, 1)
+        ops_local = round(1000 / avg_local, 1)
+        return pct, ops_real, ops_local
 
-        bar_labels.append(label)
-        local_vals.append(round(avg_local, 1))
-        overhead_vals.append(round(avg_overhead, 1))
-        pct_vals.append(round(avg_pct, 1))
-        bar_colors_l.append(col_l)
-        bar_colors_o.append(col_o)
+    def draw_ring(ax, cx, cy, pct, col_fg, col_bg, label, ops_real, ops_local):
+        R, w = 1.35, 0.38
+        # Background full ring
+        ax.add_patch(Wedge((cx,cy), R, 0, 360, width=w,
+                           facecolor=col_bg, zorder=2))
+        # Foreground arc — clockwise from top
+        angle = pct / 100 * 360
+        ax.add_patch(Wedge((cx,cy), R, 90 - angle, 90, width=w,
+                           facecolor=col_fg, zorder=3))
+        # Percentage
+        ax.text(cx, cy + 0.18, f'{pct:.1f}', ha='center', va='center',
+                fontsize=24, fontweight='bold', color=col_fg, zorder=4)
+        ax.text(cx, cy - 0.32, '%', ha='center', va='center',
+                fontsize=14, color=col_fg, zorder=4)
+        # Label above
+        ax.text(cx, cy + R + 0.28, label, ha='center', va='bottom',
+                fontsize=11, fontweight='bold',
+                color='#2C2C2A' if routing_mode != 'unknown' else '#444')
+        # Stats below
+        ax.text(cx, cy - R - 0.12, f'{ops_real} ops/s  with Twin',
+                ha='center', va='top', fontsize=9, color='#5F5E5A')
+        ax.text(cx, cy - R - 0.42, f'{ops_local} ops/s  without Twin',
+                ha='center', va='top', fontsize=9, color='#B4B2A9')
 
-    if bar_labels:
-        y_pos = range(len(bar_labels))
-        bars_l = ax.barh(y_pos, local_vals, color=bar_colors_l,
-                         alpha=0.85, height=0.55, label='t_local (local work)')
-        bars_o = ax.barh(y_pos, overhead_vals, left=local_vals, color=bar_colors_o,
-                         alpha=0.85, height=0.55, label='Twin overhead (t_total − t_local)')
+    h_stats = compute_ring_stats(hosts_data)
+    r_stats = compute_ring_stats(routers_data)
 
-        # Etiquetes dins cada segment
-        for i, (lv, ov, pct, col) in enumerate(zip(
-                local_vals, overhead_vals, pct_vals, bar_colors_l)):
-            # Temps local al centre del segment verd
-            ax.text(lv / 2, i, f'{lv:.0f}ms',
-                    ha='center', va='center', fontsize=10,
-                    color='white', fontweight='bold')
-            # % overhead a la dreta del segment roig (si hi ha espai)
-            if ov > 3:
-                ax.text(lv + ov / 2, i, f'{pct}%',
-                        ha='center', va='center', fontsize=11,
-                        color='white', fontweight='bold')
-            else:
-                # Si el segment és molt petit, l'etiqueta va fora
-                ax.text(lv + ov + 2, i, f'{pct}%',
-                        ha='left', va='center', fontsize=11,
-                        color=bar_colors_o[i], fontweight='bold')
+    if h_stats:
+        draw_ring(ax, 2.5, 4.2, h_stats[0],
+                  '#1D9E75', '#E1F5EE', 'add_host',
+                  h_stats[1], h_stats[2])
+    if r_stats:
+        draw_ring(ax, 7.5, 4.2, r_stats[0],
+                  '#1D9E75', '#E1F5EE', 'add_router',
+                  r_stats[1], r_stats[2])
 
-        ax.set_yticks(list(y_pos))
-        ax.set_yticklabels(bar_labels, fontsize=12)
-        ax.set_xlabel('Time (ms)')
-        ax.axvline(x=0, color='grey', linewidth=0.8, alpha=0.4)
+    # Summary message
+    all_pcts = [s[0] for s in [h_stats, r_stats] if s]
+    max_pct  = max(all_pcts) if all_pcts else 0
+    ax.text(5, 1.15,
+            f'The Digital Twin synchronized in real time',
+            ha='center', va='center', fontsize=11,
+            color='#5F5E5A')
+    ax.text(5, 0.45,
+            f'costs less than {int(max_pct)+1}% of system capacity',
+            ha='center', va='center', fontsize=14,
+            fontweight='bold', color='#1D9E75')
 
-        # Llegenda manual
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor='#1D9E75', alpha=0.85, label='t_local  (local Mininet work)'),
-            Patch(facecolor='#D85A30', alpha=0.85, label='Twin overhead  (t_total − t_local)'),
-        ]
-        ax.legend(handles=legend_elements, loc='lower right', fontsize=9)
-    else:
-        ax.text(0.5, 0.5, 'No data', ha='center', va='center',
-                transform=ax.transAxes, color='grey')
-
-    ax.set_title('Twin Sync Overhead — time breakdown', fontweight='bold', fontsize=12)
-    ax.text(0.98, 0.98,
-            '0% → Original is bottleneck, Twin cost absorbed\n'
-            '>0% → network+Twin is bottleneck, system waits',
-            ha='right', va='top', transform=ax.transAxes,
-            fontsize=8, color='grey', style='italic')
-    ax.grid(True, alpha=0.3, linestyle='--', axis='x')
-    ax.set_axisbelow(True)
+    ax.set_title('Twin Sync Overhead — cost of having a live Digital Twin',
+                 fontweight='bold', fontsize=12, pad=10)
 
     # ── G5: Component breakdown — add_host ──────────────────────────────────
     ax = axes[2][0]
