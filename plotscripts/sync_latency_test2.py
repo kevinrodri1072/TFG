@@ -272,15 +272,12 @@ def do_operation(op):
             history = after.get('history', [])
             if len(history) > before_count:
                 entry = history[-1]
-                # Snapshot de memòria DESPRÉS — operació ja aplicada al kernel
+                # RAM del sistema DESPRÉS — valor absolut (no delta)
+                # Guardem el valor absolut per construir la corba acumulada
                 mem_after = get_system_memory_mb()
                 frr_total = get_frr_memory_mb()
-                entry['_mem_delta_mb'] = (
-                    round(mem_after - mem_before, 1)
-                    if mem_before is not None and mem_after is not None
-                    else None
-                )
-                entry['_frr_total_mb'] = frr_total
+                entry['_system_mem_mb'] = mem_after
+                entry['_frr_total_mb']  = frr_total
                 return entry
         except Exception:
             pass
@@ -299,47 +296,53 @@ def generate_plots(rows, routing_mode='unknown'):
 
     hosts_data   = sorted([r for r in rows if r['op_type'] == 'host'],   key=lambda x: x['n_nodes'])
     routers_data = sorted([r for r in rows if r['op_type'] == 'router'], key=lambda x: x['n_nodes'])
-    has_twin_data = any(r['t_twin_ms'] is not None for r in hosts_data + routers_data)
+    has_twin     = any(r['t_twin_ms'] is not None for r in hosts_data + routers_data)
 
-    # ── G1: Latencia total ──
+    # ── G1: Latència total ──────────────────────────────────────────────────
     ax = axes[0][0]
     if hosts_data:
-        ax.plot([r['n_nodes'] for r in hosts_data], [r['t_total_ms'] for r in hosts_data],
-                'o-', color='#27ae60', linewidth=2, label='add_host  t_total')
+        ax.plot([r['n_nodes'] for r in hosts_data],
+                [r['t_total_ms'] for r in hosts_data],
+                'o-', color='#27ae60', linewidth=2, label='add_host')
     if routers_data:
-        ax.plot([r['n_nodes'] for r in routers_data], [r['t_total_ms'] for r in routers_data],
-                's-', color='#e74c3c', linewidth=2, label='add_router  t_total')
+        ax.plot([r['n_nodes'] for r in routers_data],
+                [r['t_total_ms'] for r in routers_data],
+                's-', color='#e74c3c', linewidth=2, label='add_router')
     ax.set_title('End-to-End Sync Latency vs Network Size', fontweight='bold', fontsize=12)
     ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('t_total  ms')
+    ax.set_ylabel('t_total  ms  [max(t_local, t_network)]')
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G2: ops/s ──
+    # ── G2: ops/s ───────────────────────────────────────────────────────────
     ax = axes[0][1]
     h_cap = [r for r in hosts_data   if r.get('capacity_ops_s') is not None]
     r_cap = [r for r in routers_data if r.get('capacity_ops_s') is not None]
     if h_cap:
-        ax.plot([r['n_nodes'] for r in h_cap], [r['capacity_ops_s'] for r in h_cap],
-                'o-', color='#27ae60', linewidth=2, label='add_host  ops/s')
+        ax.plot([r['n_nodes'] for r in h_cap],
+                [r['capacity_ops_s'] for r in h_cap],
+                'o-', color='#27ae60', linewidth=2, label='add_host')
     if r_cap:
-        ax.plot([r['n_nodes'] for r in r_cap], [r['capacity_ops_s'] for r in r_cap],
-                's-', color='#e74c3c', linewidth=2, label='add_router  ops/s')
+        ax.plot([r['n_nodes'] for r in r_cap],
+                [r['capacity_ops_s'] for r in r_cap],
+                's-', color='#e74c3c', linewidth=2, label='add_router')
     ax.set_title('System Capacity (ops/s) vs Network Size', fontweight='bold', fontsize=12)
     ax.set_xlabel('Network size (total nodes)')
     ax.set_ylabel('ops/s  [= 1000 / t_total]')
     ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G3: Throughput Kbps ──
+    # ── G3: Throughput ──────────────────────────────────────────────────────
     ax = axes[1][0]
     h_thr = [r for r in hosts_data   if r.get('throughput_bps') is not None]
     r_thr = [r for r in routers_data if r.get('throughput_bps') is not None]
     if h_thr:
-        ax.plot([r['n_nodes'] for r in h_thr], [r['throughput_bps'] / 1000 for r in h_thr],
+        ax.plot([r['n_nodes'] for r in h_thr],
+                [r['throughput_bps'] / 1000 for r in h_thr],
                 'o-', color='#27ae60', linewidth=2, label='add_host')
     if r_thr:
-        ax.plot([r['n_nodes'] for r in r_thr], [r['throughput_bps'] / 1000 for r in r_thr],
+        ax.plot([r['n_nodes'] for r in r_thr],
+                [r['throughput_bps'] / 1000 for r in r_thr],
                 's-', color='#e74c3c', linewidth=2, label='add_router')
     ax.set_title('System Throughput (Kbps) vs Network Size', fontweight='bold', fontsize=12)
     ax.set_xlabel('Network size (total nodes)')
@@ -347,108 +350,146 @@ def generate_plots(rows, routing_mode='unknown'):
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G4: Desglose componentes ──
+    # ── G4: Twin overhead % ─────────────────────────────────────────────────
+    # overhead_pct per operació = max(0, (1 - t_local/t_total) × 100)
+    # = % de capacitat perduda per tenir el Twin sincronitzat.
+    # 0% = l'Original és el coll d'ampolla (t_total = t_local).
+    # >0% = la xarxa/Twin és el coll d'ampolla (t_total = t_network > t_local).
     ax = axes[1][1]
+
+    def compute_overhead(data):
+        vals = []
+        for r in data:
+            tl, tt = r.get('t_local_ms'), r.get('t_total_ms')
+            if tl and tt and tt > 0:
+                vals.append(max(0.0, (1 - tl / tt) * 100))
+        return vals
+
+    h_ov = compute_overhead(hosts_data)
+    r_ov = compute_overhead(routers_data)
+
+    labels  = []
+    means   = []
+    stds    = []
+    colors  = []
+    if h_ov:
+        labels.append('add_host')
+        means.append(round(sum(h_ov) / len(h_ov), 1))
+        stds.append(round((sum((v - means[-1])**2 for v in h_ov) / len(h_ov))**0.5, 1))
+        colors.append('#27ae60')
+    if r_ov:
+        labels.append('add_router')
+        means.append(round(sum(r_ov) / len(r_ov), 1))
+        stds.append(round((sum((v - means[-1])**2 for v in r_ov) / len(r_ov))**0.5, 1))
+        colors.append('#e74c3c')
+
+    if labels:
+        bars = ax.bar(labels, means, yerr=stds, capsize=8,
+                      color=colors, alpha=0.8, width=0.5,
+                      error_kw={'linewidth': 2})
+        # Mostrar el número prominent a cada barra
+        for bar, mean, std in zip(bars, means, stds):
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + std + 0.5,
+                    f'{mean}%', ha='center', va='bottom',
+                    fontsize=15, fontweight='bold',
+                    color=bar.get_facecolor())
+        ax.set_ylim(0, max(means) * 2.5 if means else 30)
+        ax.axhline(y=0, color='grey', linewidth=0.8, alpha=0.5)
+
+    ax.set_title('Twin Sync Overhead (% capacity cost)', fontweight='bold', fontsize=12)
+    ax.set_ylabel('Overhead %  [(1 - t_local/t_total) × 100]')
+    ax.text(0.98, 0.95,
+            '0% = Original is the bottleneck\n>0% = network/Twin is the bottleneck',
+            ha='right', va='top', transform=ax.transAxes,
+            fontsize=9, color='grey', style='italic')
+    ax.grid(True, alpha=0.3, linestyle='--', axis='y')
+
+    # ── G5: Component breakdown — add_host ──────────────────────────────────
+    ax = axes[2][0]
     if hosts_data:
         h_x = [r['n_nodes'] for r in hosts_data]
-        ax.plot(h_x, [r['t_local_ms']   for r in hosts_data], '-',  color='#3498db', linewidth=1.5, label='host  t_local')
-        ax.plot(h_x, [r['t_network_ms'] for r in hosts_data], '--', color='#e67e22', linewidth=1.5, label='host  t_network')
-        if has_twin_data:
-            ax.plot(h_x, [r['t_twin_ms'] for r in hosts_data], ':', color='#27ae60', linewidth=1.5, label='host  t_twin')
-    if routers_data:
-        r_x = [r['n_nodes'] for r in routers_data]
-        ax.plot(r_x, [r['t_local_ms']   for r in routers_data], '-',  color='#c0392b', linewidth=1.5, label='router  t_local')
-        ax.plot(r_x, [r['t_network_ms'] for r in routers_data], '--', color='#d35400', linewidth=1.5, label='router  t_network')
-        if has_twin_data:
-            ax.plot(r_x, [r['t_twin_ms'] for r in routers_data], ':', color='#e74c3c', linewidth=1.5, label='router  t_twin')
-    if not has_twin_data:
-        ax.text(0.5, 0.05, f't_twin not available (mode: {routing_mode})',
+        ax.plot(h_x, [r['t_local_ms']   for r in hosts_data],
+                '-',  color='#3498db', linewidth=2, label='t_local (Original)')
+        ax.plot(h_x, [r['t_network_ms'] for r in hosts_data],
+                '--', color='#e67e22', linewidth=2, label='t_network (RTT)')
+        if has_twin:
+            ax.plot(h_x, [r['t_twin_ms'] for r in hosts_data],
+                    ':',  color='#27ae60', linewidth=2, label='t_twin (Twin Mininet)')
+    else:
+        ax.text(0.5, 0.5, 'No host data', ha='center', va='center',
+                transform=ax.transAxes, color='grey')
+    if not has_twin:
+        ax.text(0.5, 0.04, f't_twin not available (mode: {routing_mode})',
                 ha='center', transform=ax.transAxes, fontsize=9, color='grey', style='italic')
-    ax.set_title('Latency Component Breakdown', fontweight='bold', fontsize=12)
+    ax.set_title('Latency Breakdown — add_host', fontweight='bold', fontsize=12,
+                 color='#27ae60')
     ax.set_xlabel('Network size (total nodes)')
     ax.set_ylabel('Time (ms)')
-    ax.legend(loc='upper left', fontsize=8)
-    ax.grid(True, alpha=0.3, linestyle='--')
-
-    # ── G5: Payload ──
-    ax = axes[2][0]
-    h_pl = [r for r in hosts_data   if r.get('payload_bytes') is not None]
-    r_pl = [r for r in routers_data if r.get('payload_bytes') is not None]
-    if h_pl:
-        ax.plot([r['n_nodes'] for r in h_pl], [r['payload_bytes'] for r in h_pl],
-                'o-', color='#27ae60', linewidth=2, label='add_host  payload')
-    if r_pl:
-        ax.plot([r['n_nodes'] for r in r_pl], [r['payload_bytes'] for r in r_pl],
-                's-', color='#e74c3c', linewidth=2, label='add_router  payload')
-    ax.set_title('Sync Payload Size vs Network Size', fontweight='bold', fontsize=12)
-    ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('Payload (bytes)')
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G6: CPU ──
+    # ── G6: Component breakdown — add_router ────────────────────────────────
     ax = axes[2][1]
-    h_cpu = [r for r in hosts_data   if r.get('cpu_percent') is not None]
-    r_cpu = [r for r in routers_data if r.get('cpu_percent') is not None]
-    if h_cpu:
-        ax.plot([r['n_nodes'] for r in h_cpu], [r['cpu_percent'] for r in h_cpu],
-                'o-', color='#9b59b6', linewidth=1.5, label='add_host  CPU%')
-    if r_cpu:
-        ax.plot([r['n_nodes'] for r in r_cpu], [r['cpu_percent'] for r in r_cpu],
-                's-', color='#f1c40f', linewidth=1.5, label='add_router  CPU%')
-    ax.set_title('CPU Utilization During Sync', fontweight='bold', fontsize=12)
+    if routers_data:
+        r_x = [r['n_nodes'] for r in routers_data]
+        ax.plot(r_x, [r['t_local_ms']   for r in routers_data],
+                '-',  color='#c0392b', linewidth=2, label='t_local (Original)')
+        ax.plot(r_x, [r['t_network_ms'] for r in routers_data],
+                '--', color='#d35400', linewidth=2, label='t_network (RTT)')
+        if has_twin:
+            ax.plot(r_x, [r['t_twin_ms'] for r in routers_data],
+                    ':',  color='#e74c3c', linewidth=2, label='t_twin (Twin Mininet)')
+    else:
+        ax.text(0.5, 0.5, 'No router data', ha='center', va='center',
+                transform=ax.transAxes, color='grey')
+    if not has_twin:
+        ax.text(0.5, 0.04, f't_twin not available (mode: {routing_mode})',
+                ha='center', transform=ax.transAxes, fontsize=9, color='grey', style='italic')
+    ax.set_title('Latency Breakdown — add_router', fontweight='bold', fontsize=12,
+                 color='#e74c3c')
     ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('CPU Usage (%)')
-    ax.set_ylim(0, 105)
-    ax.axhline(y=80, color='#e74c3c', linestyle='--', alpha=0.5, label='80% threshold')
+    ax.set_ylabel('Time (ms)')
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G7: Delta de memòria del sistema per operació ──
-    # Mesura psutil.virtual_memory().used — captura la RAM del kernel
-    # (namespaces de xarxa, veth pairs, OVS) que Mininet usa majoritàriament.
-    # add_host: delta petit (~3-8 MB: namespace lleuger, sense daemons)
-    # add_router: delta gran (~10-15 MB manual; ~40-50 MB OSPF amb zebra+ospfd)
+    # ── G7: RAM del sistema acumulada ───────────────────────────────────────
+    # Valor absolut de virtual_memory().used després de cada operació.
+    # Mostra com creix la RAM total conforme escala la xarxa, capturant tant
+    # el kernel (namespaces, veth, OVS) com els processos (Python, FRR).
     ax = axes[3][0]
-    h_mem = [r for r in hosts_data   if r.get('mem_delta_mb') is not None]
-    r_mem = [r for r in routers_data if r.get('mem_delta_mb') is not None]
-    if h_mem or r_mem:
-        if h_mem:
-            ax.plot([r['n_nodes'] for r in h_mem],
-                    [r['mem_delta_mb'] for r in h_mem],
-                    'o-', color='#27ae60', linewidth=1.5, label='add_host  ΔRAM')
-        if r_mem:
-            ax.plot([r['n_nodes'] for r in r_mem],
-                    [r['mem_delta_mb'] for r in r_mem],
-                    's-', color='#e74c3c', linewidth=1.5, label='add_router  ΔRAM')
-        ax.axhline(y=0, color='grey', linestyle='-', alpha=0.3)
-        ax.legend(loc='upper left')
+    all_mem = sorted([r for r in rows if r.get('system_mem_mb') is not None],
+                     key=lambda x: x['n_nodes'])
+    if all_mem:
+        ax.plot([r['n_nodes'] for r in all_mem],
+                [r['system_mem_mb'] for r in all_mem],
+                'o-', color='#2980b9', linewidth=1.5, markersize=4,
+                label='System RAM used')
+        ram_avail = 3700 * 0.95  # ~3.7 GB total, usable
+        ax.axhline(y=1500, color='#e74c3c', linestyle='--', alpha=0.7,
+                   label='Free RAM at start (~1500 MB)')
+        ax.axhline(y=ram_avail, color='#c0392b', linestyle='-', alpha=0.5,
+                   label='Total RAM (~3500 MB)')
+        ax.legend(loc='upper left', fontsize=8)
     else:
-        ax.text(0.5, 0.5, 'Memory data not available',
-                ha='center', va='center', transform=ax.transAxes,
-                fontsize=10, color='grey', style='italic')
-    ax.set_title('System RAM Delta per Operation', fontweight='bold', fontsize=12)
+        ax.text(0.5, 0.5, 'No memory data', ha='center', va='center',
+                transform=ax.transAxes, color='grey')
+    ax.set_title('System RAM Usage vs Network Size', fontweight='bold', fontsize=12)
     ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('ΔRAM  MB  [system-wide, per operation]')
+    ax.set_ylabel('RAM used  MB  (system-wide)')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G8: Memòria FRR acumulada ──
-    # Mostra la RAM total dels daemons FRR (zebra+ospfd+ldpd) al llarg del test.
-    # Mode manual: línia plana baixa = daemons dels routers inicials (r1,r2)
-    #              que arrancaren amb OSPF per defecte; nous routers no n'afegeixen.
-    # Mode OSPF:   creix ~40 MB per router afegit.
+    # ── G8: Memòria FRR acumulada ───────────────────────────────────────────
     ax = axes[3][1]
     all_frr = sorted([r for r in rows if r.get('frr_total_mb') is not None],
                      key=lambda x: x['n_nodes'])
     if all_frr:
         frr_vals = [r['frr_total_mb'] for r in all_frr]
-        max_frr  = max(frr_vals) if frr_vals else 0
+        max_frr  = max(frr_vals)
         ax.plot([r['n_nodes'] for r in all_frr], frr_vals,
                 'D-', color='#8e44ad', linewidth=2, label='FRR total (zebra+ospfd)')
-        # Referència RAM disponible (1500 MB lab PCs)
         ax.axhline(y=1500, color='#e74c3c', linestyle='--', alpha=0.7,
-                   label='RAM available (~1500 MB)')
-        # Eix Y dinàmic: deixa espai per veure la línia de dades i la de referència
+                   label='Free RAM at start (~1500 MB)')
         ax.set_ylim(0, max(max_frr * 2, 300))
         if max_frr < 50:
             ax.text(0.5, 0.6,
@@ -458,9 +499,8 @@ def generate_plots(rows, routing_mode='unknown'):
                     fontsize=9, color='grey', style='italic')
         ax.legend(loc='upper left')
     else:
-        ax.text(0.5, 0.5, 'FRR memory data not available',
-                ha='center', va='center', transform=ax.transAxes,
-                fontsize=10, color='grey', style='italic')
+        ax.text(0.5, 0.5, 'FRR data not available',
+                ha='center', va='center', transform=ax.transAxes, color='grey')
     ax.set_title('FRR Daemons Total Memory vs Network Size', fontweight='bold', fontsize=12)
     ax.set_xlabel('Network size (total nodes)')
     ax.set_ylabel('FRR total RAM  MB')
@@ -539,7 +579,7 @@ def main():
                 'payload_bytes':  None,
                 'throughput_bps': None,
                 'cpu_percent':    None,
-                'mem_delta_mb':   None,
+                'system_mem_mb':  None,
                 'frr_total_mb':   None,
                 'error':          entry['error'],
             })
@@ -574,17 +614,17 @@ def main():
             'payload_bytes':  entry.get('payload_bytes'),
             'throughput_bps': entry.get('throughput_bps'),
             'cpu_percent':    entry.get('cpu_percent'),
-            'mem_delta_mb':   entry.get('_mem_delta_mb'),
+            'system_mem_mb':  entry.get('_system_mem_mb'),
             'frr_total_mb':   entry.get('_frr_total_mb'),
             'error':          '',
         }
         rows.append(row)
 
         cap = row['capacity_ops_s']
-        mem = row['mem_delta_mb']
+        mem = row['system_mem_mb']
         frr = row['frr_total_mb']
         print(f'   total={t_total}ms  local={t_local}ms  net={t_network}ms  twin={t_twin}ms  '
-              f'cap={cap}ops/s  mem_delta={mem}MB  frr={frr}MB')
+              f'cap={cap}ops/s  sysram={mem}MB  frr={frr}MB')
 
         if op['type'] == 'router':
             # 1. Modo Manual

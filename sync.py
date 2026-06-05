@@ -84,7 +84,7 @@ def _get_session(ip):
 # ─────────────────────────────────────────────────────────────────────────────
 # TWINS: llista de dicts {ip, port} — un per cada PC Twin
 TWINS       = []   # poblat dinàmicament quan els Twins arrenquen amb --twin --original-ip
-ORIGINAL_IP = '10.4.39.104'  # IP de l'Original — usada pels Twins per fer ping de tornada
+ORIGINAL_IP = '10.4.39.102'  # IP de l'Original — usada pels Twins per fer ping de tornada
 
 # ── Twin state tracking ───────────────────────────────────────────────────
 # {ip: {status, policy, last_seen, diverged_at}}
