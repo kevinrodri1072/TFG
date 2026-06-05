@@ -350,60 +350,91 @@ def generate_plots(rows, routing_mode='unknown'):
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G4: Twin overhead % ─────────────────────────────────────────────────
-    # overhead_pct per operació = max(0, (1 - t_local/t_total) × 100)
-    # = % de capacitat perduda per tenir el Twin sincronitzat.
-    # 0% = l'Original és el coll d'ampolla (t_total = t_local).
-    # >0% = la xarxa/Twin és el coll d'ampolla (t_total = t_network > t_local).
+    # ── G4: Twin overhead — barres horitzontals apilades ────────────────────
+    # Cada barra = t_total desglossat en: treball local (verd) + overhead Twin (roig)
+    # Overhead = temps que el sistema espera el Twin després que l'Original ha acabat
+    # 0% = l'Original és el coll d'ampolla (Twin acaba abans, overhead absorbit)
+    # >0% = la xarxa+Twin és el coll d'ampolla (el sistema espera el ACK)
     ax = axes[1][1]
 
-    def compute_overhead(data):
-        vals = []
-        for r in data:
-            tl, tt = r.get('t_local_ms'), r.get('t_total_ms')
-            if tl and tt and tt > 0:
-                vals.append(max(0.0, (1 - tl / tt) * 100))
-        return vals
+    bar_labels   = []
+    local_vals   = []
+    overhead_vals= []
+    pct_vals     = []
+    bar_colors_l = []
+    bar_colors_o = []
 
-    h_ov = compute_overhead(hosts_data)
-    r_ov = compute_overhead(routers_data)
+    for data_list, label, col_l, col_o in [
+        (hosts_data,   'add_host',   '#1D9E75', '#D85A30'),
+        (routers_data, 'add_router', '#0F6E56', '#993C1D'),
+    ]:
+        valid = [r for r in data_list
+                 if r.get('t_local_ms') is not None and r.get('t_total_ms') is not None]
+        if not valid:
+            continue
+        avg_local    = sum(r['t_local_ms'] for r in valid) / len(valid)
+        avg_total    = sum(r['t_total_ms'] for r in valid) / len(valid)
+        avg_overhead = max(0.0, avg_total - avg_local)
+        ovh_vals     = [max(0.0, (1 - r['t_local_ms'] / r['t_total_ms']) * 100)
+                        for r in valid if r['t_total_ms'] > 0]
+        avg_pct      = sum(ovh_vals) / len(ovh_vals) if ovh_vals else 0.0
 
-    labels  = []
-    means   = []
-    stds    = []
-    colors  = []
-    if h_ov:
-        labels.append('add_host')
-        means.append(round(sum(h_ov) / len(h_ov), 1))
-        stds.append(round((sum((v - means[-1])**2 for v in h_ov) / len(h_ov))**0.5, 1))
-        colors.append('#27ae60')
-    if r_ov:
-        labels.append('add_router')
-        means.append(round(sum(r_ov) / len(r_ov), 1))
-        stds.append(round((sum((v - means[-1])**2 for v in r_ov) / len(r_ov))**0.5, 1))
-        colors.append('#e74c3c')
+        bar_labels.append(label)
+        local_vals.append(round(avg_local, 1))
+        overhead_vals.append(round(avg_overhead, 1))
+        pct_vals.append(round(avg_pct, 1))
+        bar_colors_l.append(col_l)
+        bar_colors_o.append(col_o)
 
-    if labels:
-        bars = ax.bar(labels, means, yerr=stds, capsize=8,
-                      color=colors, alpha=0.8, width=0.5,
-                      error_kw={'linewidth': 2})
-        # Mostrar el número prominent a cada barra
-        for bar, mean, std in zip(bars, means, stds):
-            ax.text(bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + std + 0.5,
-                    f'{mean}%', ha='center', va='bottom',
-                    fontsize=15, fontweight='bold',
-                    color=bar.get_facecolor())
-        ax.set_ylim(0, max(means) * 2.5 if means else 30)
-        ax.axhline(y=0, color='grey', linewidth=0.8, alpha=0.5)
+    if bar_labels:
+        y_pos = range(len(bar_labels))
+        bars_l = ax.barh(y_pos, local_vals, color=bar_colors_l,
+                         alpha=0.85, height=0.55, label='t_local (local work)')
+        bars_o = ax.barh(y_pos, overhead_vals, left=local_vals, color=bar_colors_o,
+                         alpha=0.85, height=0.55, label='Twin overhead (t_total − t_local)')
 
-    ax.set_title('Twin Sync Overhead (% capacity cost)', fontweight='bold', fontsize=12)
-    ax.set_ylabel('Overhead %  [(1 - t_local/t_total) × 100]')
-    ax.text(0.98, 0.95,
-            '0% = Original is the bottleneck\n>0% = network/Twin is the bottleneck',
+        # Etiquetes dins cada segment
+        for i, (lv, ov, pct, col) in enumerate(zip(
+                local_vals, overhead_vals, pct_vals, bar_colors_l)):
+            # Temps local al centre del segment verd
+            ax.text(lv / 2, i, f'{lv:.0f}ms',
+                    ha='center', va='center', fontsize=10,
+                    color='white', fontweight='bold')
+            # % overhead a la dreta del segment roig (si hi ha espai)
+            if ov > 3:
+                ax.text(lv + ov / 2, i, f'{pct}%',
+                        ha='center', va='center', fontsize=11,
+                        color='white', fontweight='bold')
+            else:
+                # Si el segment és molt petit, l'etiqueta va fora
+                ax.text(lv + ov + 2, i, f'{pct}%',
+                        ha='left', va='center', fontsize=11,
+                        color=bar_colors_o[i], fontweight='bold')
+
+        ax.set_yticks(list(y_pos))
+        ax.set_yticklabels(bar_labels, fontsize=12)
+        ax.set_xlabel('Time (ms)')
+        ax.axvline(x=0, color='grey', linewidth=0.8, alpha=0.4)
+
+        # Llegenda manual
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='#1D9E75', alpha=0.85, label='t_local  (local Mininet work)'),
+            Patch(facecolor='#D85A30', alpha=0.85, label='Twin overhead  (t_total − t_local)'),
+        ]
+        ax.legend(handles=legend_elements, loc='lower right', fontsize=9)
+    else:
+        ax.text(0.5, 0.5, 'No data', ha='center', va='center',
+                transform=ax.transAxes, color='grey')
+
+    ax.set_title('Twin Sync Overhead — time breakdown', fontweight='bold', fontsize=12)
+    ax.text(0.98, 0.98,
+            '0% → Original is bottleneck, Twin cost absorbed\n'
+            '>0% → network+Twin is bottleneck, system waits',
             ha='right', va='top', transform=ax.transAxes,
-            fontsize=9, color='grey', style='italic')
-    ax.grid(True, alpha=0.3, linestyle='--', axis='y')
+            fontsize=8, color='grey', style='italic')
+    ax.grid(True, alpha=0.3, linestyle='--', axis='x')
+    ax.set_axisbelow(True)
 
     # ── G5: Component breakdown — add_host ──────────────────────────────────
     ax = axes[2][0]
@@ -461,15 +492,21 @@ def generate_plots(rows, routing_mode='unknown'):
     all_mem = sorted([r for r in rows if r.get('system_mem_mb') is not None],
                      key=lambda x: x['n_nodes'])
     if all_mem:
-        ax.plot([r['n_nodes'] for r in all_mem],
-                [r['system_mem_mb'] for r in all_mem],
+        mem_vals = [r['system_mem_mb'] for r in all_mem]
+        ax.plot([r['n_nodes'] for r in all_mem], mem_vals,
                 'o-', color='#2980b9', linewidth=1.5, markersize=4,
                 label='System RAM used')
-        ram_avail = 3700 * 0.95  # ~3.7 GB total, usable
-        ax.axhline(y=1500, color='#e74c3c', linestyle='--', alpha=0.7,
-                   label='Free RAM at start (~1500 MB)')
-        ax.axhline(y=ram_avail, color='#c0392b', linestyle='-', alpha=0.5,
-                   label='Total RAM (~3500 MB)')
+        # Referència: RAM total del hardware (~3700 MB en els lab PCs)
+        ax.axhline(y=3700, color='#c0392b', linestyle='-', alpha=0.6,
+                   label='Total RAM (~3700 MB)')
+        # Creixement observat durant el test
+        growth = round(mem_vals[-1] - mem_vals[0], 0)
+        ax.annotate(f'Growth: +{growth:.0f} MB\n({mem_vals[0]:.0f}→{mem_vals[-1]:.0f} MB)',
+                    xy=(all_mem[-1]['n_nodes'], mem_vals[-1]),
+                    xytext=(-80, -40), textcoords='offset points',
+                    fontsize=9, color='#2980b9',
+                    arrowprops=dict(arrowstyle='->', color='#2980b9', lw=1.2))
+        ax.set_ylim(min(mem_vals) * 0.95, 3800)
         ax.legend(loc='upper left', fontsize=8)
     else:
         ax.text(0.5, 0.5, 'No memory data', ha='center', va='center',
