@@ -18,7 +18,8 @@ Metrics recorded per operation:
 
 Generates:
   - CSV with all individual measurements (including original-twin sync metrics)
-  - 6 plots: total latency, component breakdown (host/router), jitter, throughput/payload, and CPU overhead
+  - 8 plots: latency, ops/s capacity, throughput, component breakdown,
+             payload size, CPU overhead, memory delta, FRR memory
 
 Usage:
     sudo python3 sync_latency_test.py
@@ -27,15 +28,12 @@ Usage:
 import requests
 import time
 import csv
-import os
 import statistics
 import psutil
 from datetime import datetime
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import numpy as np
 
 # ── Configuration ──
 ORIGINAL_URL = 'http://localhost:5000'
@@ -212,20 +210,14 @@ def safe_stats(values):
     return round(min(values), 2), round(statistics.mean(values), 2), round(max(values), 2)
 
 
-def get_app_memory_mb():
+def get_system_memory_mb():
     """
-    RSS del procés app.py en MB.
-    Cerca el procés python que executa app.py al mateix host.
-    Retorna None si no el troba (p.ex. servidor remot).
+    RAM del sistema en ús en MB (virtual_memory().used).
+    Captura tant la memòria del kernel (namespaces de xarxa, veth, OVS)
+    com la del procés Python — és la mètrica correcta per mesurar el cost
+    real de cada operació Mininet, que viu majoritàriament al kernel.
     """
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'memory_info']):
-        try:
-            cmdline = ' '.join(proc.info['cmdline'] or [])
-            if 'app.py' in cmdline and 'python' in cmdline.lower():
-                return round(proc.info['memory_info'].rss / 1024 / 1024, 1)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    return None
+    return round(psutil.virtual_memory().used / 1024 / 1024, 1)
 
 
 def get_frr_memory_mb():
@@ -245,8 +237,8 @@ def get_frr_memory_mb():
     return round(total / 1024 / 1024, 1) if count > 0 else 0.0
 
 def do_operation(op):
-    # Snapshot de memòria ABANS de l'operació
-    mem_before = get_app_memory_mb()
+    # Snapshot de memòria del sistema ABANS de l'operació
+    mem_before = get_system_memory_mb()
 
     try:
         before = requests.get(f'{ORIGINAL_URL}/metrics/sync', timeout=5).json()
@@ -280,9 +272,9 @@ def do_operation(op):
             history = after.get('history', [])
             if len(history) > before_count:
                 entry = history[-1]
-                # Snapshot de memòria DESPRÉS — operació ja aplicada
-                mem_after  = get_app_memory_mb()
-                frr_total  = get_frr_memory_mb()
+                # Snapshot de memòria DESPRÉS — operació ja aplicada al kernel
+                mem_after = get_system_memory_mb()
+                frr_total = get_frr_memory_mb()
                 entry['_mem_delta_mb'] = (
                     round(mem_after - mem_before, 1)
                     if mem_before is not None and mem_after is not None
@@ -412,38 +404,61 @@ def generate_plots(rows, routing_mode='unknown'):
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G7: Delta de memoria por operación ──
+    # ── G7: Delta de memòria del sistema per operació ──
+    # Mesura psutil.virtual_memory().used — captura la RAM del kernel
+    # (namespaces de xarxa, veth pairs, OVS) que Mininet usa majoritàriament.
+    # add_host: delta petit (~3-8 MB: namespace lleuger, sense daemons)
+    # add_router: delta gran (~10-15 MB manual; ~40-50 MB OSPF amb zebra+ospfd)
     ax = axes[3][0]
     h_mem = [r for r in hosts_data   if r.get('mem_delta_mb') is not None]
     r_mem = [r for r in routers_data if r.get('mem_delta_mb') is not None]
-    if h_mem:
-        ax.plot([r['n_nodes'] for r in h_mem], [r['mem_delta_mb'] for r in h_mem],
-                'o-', color='#27ae60', linewidth=1.5, label='add_host  ΔRAM')
-    if r_mem:
-        ax.plot([r['n_nodes'] for r in r_mem], [r['mem_delta_mb'] for r in r_mem],
-                's-', color='#e74c3c', linewidth=1.5, label='add_router  ΔRAM')
-    if not h_mem and not r_mem:
-        ax.text(0.5, 0.5, 'Memory data not available\n(server may be remote)',
-                ha='center', va='center', transform=ax.transAxes,
-                fontsize=10, color='grey', style='italic')
-    ax.set_title('Memory Delta per Operation (app.py RSS)', fontweight='bold', fontsize=12)
-    ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('ΔRAM  MB  per operation')
-    ax.axhline(y=0, color='grey', linestyle='-', alpha=0.3)
-    ax.legend(loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
-
-    # ── G8: Memoria FRR acumulada ──
-    ax = axes[3][1]
-    all_frr = sorted([r for r in rows if r.get('frr_total_mb') is not None], key=lambda x: x['n_nodes'])
-    if all_frr and any(r['frr_total_mb'] > 0 for r in all_frr):
-        ax.plot([r['n_nodes'] for r in all_frr], [r['frr_total_mb'] for r in all_frr],
-                'D-', color='#8e44ad', linewidth=2, label='FRR total (zebra+ospfd)')
-        ax.axhline(y=1500, color='#e74c3c', linestyle='--', alpha=0.7, label='RAM available (~1500 MB)')
+    if h_mem or r_mem:
+        if h_mem:
+            ax.plot([r['n_nodes'] for r in h_mem],
+                    [r['mem_delta_mb'] for r in h_mem],
+                    'o-', color='#27ae60', linewidth=1.5, label='add_host  ΔRAM')
+        if r_mem:
+            ax.plot([r['n_nodes'] for r in r_mem],
+                    [r['mem_delta_mb'] for r in r_mem],
+                    's-', color='#e74c3c', linewidth=1.5, label='add_router  ΔRAM')
+        ax.axhline(y=0, color='grey', linestyle='-', alpha=0.3)
         ax.legend(loc='upper left')
     else:
-        ax.text(0.5, 0.5,
-                f'FRR memory = 0 MB\n(mode: {routing_mode} — no FRR daemons running)',
+        ax.text(0.5, 0.5, 'Memory data not available',
+                ha='center', va='center', transform=ax.transAxes,
+                fontsize=10, color='grey', style='italic')
+    ax.set_title('System RAM Delta per Operation', fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (total nodes)')
+    ax.set_ylabel('ΔRAM  MB  [system-wide, per operation]')
+    ax.grid(True, alpha=0.3, linestyle='--')
+
+    # ── G8: Memòria FRR acumulada ──
+    # Mostra la RAM total dels daemons FRR (zebra+ospfd+ldpd) al llarg del test.
+    # Mode manual: línia plana baixa = daemons dels routers inicials (r1,r2)
+    #              que arrancaren amb OSPF per defecte; nous routers no n'afegeixen.
+    # Mode OSPF:   creix ~40 MB per router afegit.
+    ax = axes[3][1]
+    all_frr = sorted([r for r in rows if r.get('frr_total_mb') is not None],
+                     key=lambda x: x['n_nodes'])
+    if all_frr:
+        frr_vals = [r['frr_total_mb'] for r in all_frr]
+        max_frr  = max(frr_vals) if frr_vals else 0
+        ax.plot([r['n_nodes'] for r in all_frr], frr_vals,
+                'D-', color='#8e44ad', linewidth=2, label='FRR total (zebra+ospfd)')
+        # Referència RAM disponible (1500 MB lab PCs)
+        ax.axhline(y=1500, color='#e74c3c', linestyle='--', alpha=0.7,
+                   label='RAM available (~1500 MB)')
+        # Eix Y dinàmic: deixa espai per veure la línia de dades i la de referència
+        ax.set_ylim(0, max(max_frr * 2, 300))
+        if max_frr < 50:
+            ax.text(0.5, 0.6,
+                    f'Flat ~{round(max_frr)}MB: initial router daemons only\n'
+                    f'(mode: {routing_mode} — new routers have no FRR daemons)',
+                    ha='center', transform=ax.transAxes,
+                    fontsize=9, color='grey', style='italic')
+        ax.legend(loc='upper left')
+    else:
+        ax.text(0.5, 0.5, 'FRR memory data not available',
                 ha='center', va='center', transform=ax.transAxes,
                 fontsize=10, color='grey', style='italic')
     ax.set_title('FRR Daemons Total Memory vs Network Size', fontweight='bold', fontsize=12)

@@ -52,7 +52,34 @@ def _get_own_ip():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIGURACIÓ DE CONNEXIÓ
+# HTTP SESSIONS — Keep-Alive
+# Una Session per Twin evita el TCP handshake (~0.3ms) a cada operació.
+# urllib3 manté la connexió TCP viva i la reutilitza automàticament.
+# Una sessió per IP (no global) per thread-safety: _do_sync_to_all_twins
+# llança un thread per Twin en paral·lel; cada un usa la seva pròpia sessió.
+# ─────────────────────────────────────────────────────────────────────────────
+_TWIN_SESSIONS      = {}   # {ip: requests.Session}
+_TWIN_SESSIONS_LOCK = threading.Lock()
+
+# Sessió del Twin per enviar heartbeats a l'Original (connexió persistent)
+_ORIGINAL_SESSION = requests.Session()
+
+
+def _get_session(ip):
+    """Retorna (creant si cal) la Session persistent per al Twin indicat."""
+    with _TWIN_SESSIONS_LOCK:
+        if ip not in _TWIN_SESSIONS:
+            s = requests.Session()
+            # pool_connections=1, pool_maxsize=1: una sola connexió TCP per Twin
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=1,
+                pool_maxsize=1,
+            )
+            s.mount('http://', adapter)
+            _TWIN_SESSIONS[ip] = s
+        return _TWIN_SESSIONS[ip]
+
+
 # Sobreescrita per init_sync() amb els arguments CLI de app.py
 # ─────────────────────────────────────────────────────────────────────────────
 # TWINS: llista de dicts {ip, port} — un per cada PC Twin
@@ -162,7 +189,7 @@ def resync_one_twin(xarxa, twin):
             [cell if isinstance(cell, str) else int(cell) for cell in row]
             for row in xarxa.network_matrix
         ]
-        r = requests.post(
+        r = _get_session(twin['ip']).post(
             f'http://{twin["ip"]}:{twin["port"]}/load_network',
             json={'matrix': serializable_matrix, 'nodes': xarxa.nodes, 'sync': True},
             timeout=15,
@@ -296,7 +323,7 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms,
     # Replica l'entrada a TOTS els Twins perquè els seus dashboards estiguin sincronitzats
     for twin in TWINS:
         try:
-            requests.post(
+            _get_session(twin['ip']).post(
                 f'http://{twin["ip"]}:{twin["port"]}/sync_metrics',
                 json=updated_entry,
                 timeout=3,
@@ -318,10 +345,10 @@ def _do_sync_to_one_twin(twin, endpoint, payload, retries=3, delay=0.5):
     for attempt in range(retries):
         try:
             t_start  = time.time()
-            response = requests.post(
+            response = _get_session(twin['ip']).post(
                 f'http://{twin["ip"]}:{twin["port"]}{endpoint}',
                 json=payload,
-                timeout=30,   # espera fins a 30s (Mininet pot ser lent)
+                timeout=30,
             )
             t_network_ms = round((time.time() - t_start) * 1000, 2)
             if response.status_code == 200:
@@ -468,9 +495,8 @@ def _do_sync_snapshot(operation, t_local_holder):
     valid_net = []
     for twin in TWINS:
         try:
-            # t_net_start DINS del bucle: cada Twin es mesura independentment
             t_net_start = time.time()
-            requests.post(
+            _get_session(twin['ip']).post(
                 f'http://{twin["ip"]}:{twin["port"]}/load_network',
                 json=snapshot_payload,
                 timeout=30,
@@ -517,12 +543,12 @@ def send_heartbeat():
         own_ip = '127.0.0.1'
 
     try:
-        requests.post(
+        _ORIGINAL_SESSION.post(
             f'http://{ORIGINAL_IP}:5000/twin/heartbeat',
             json={'ip': own_ip, 'port': 5000},
             timeout=5,
         )
-    except Exception as e:
+    except Exception:
         pass  # Original may not be reachable yet — heartbeat will retry
 
 
