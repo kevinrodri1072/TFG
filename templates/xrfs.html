@@ -15,9 +15,7 @@
         .btn-deploy { background:#27ae60; }
         .btn-undeploy { background:#e74c3c; }
         .btn-query { background:#2c3e50; }
-        .btn-chaos { background:#e74c3c; }
         .result-area { background:white; border-radius:6px; padding:20px; margin-top:16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .chaos-tip:hover .chaos-tiptext { visibility:visible !important; opacity:1 !important; }
         select, input[type="number"] { padding:6px; border-radius:4px; border:1px solid #ccc; font-size:13px; }
         .back-link { display:inline-block; margin-bottom:16px; color:#3498db; text-decoration:none; font-size:13px; }
         .back-link:hover { text-decoration:underline; }
@@ -75,40 +73,6 @@
                     <button onclick="stopTrafficLive()" id="traffic-stop-btn" class="btn" style="display:none; background:#e74c3c;">Stop</button>
                 </div>
                 <div style="font-size:11px; color:#7f8c8d; margin-top:5px;">Select a node to start live monitoring (updates every 2s)</div>
-            </div>
-
-            <!-- Chaos params -->
-            <div id="xrf-chaos-params" style="display:none; margin-bottom:10px;">
-                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
-                    <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
-                        <label style="font-size:11px; color:#7f8c8d;">Router to kill</label>
-                        <select id="chaos-node"></select>
-                    </div>
-                    <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
-                        <label style="font-size:11px; color:#7f8c8d;">Ping source</label>
-                        <select id="chaos-src"></select>
-                    </div>
-                    <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
-                        <label style="font-size:11px; color:#7f8c8d;">Ping destination</label>
-                        <select id="chaos-dst"></select>
-                    </div>
-                    <div style="display:flex; flex-direction:column; gap:4px;">
-                        <label style="font-size:11px; color:#7f8c8d;">Duration (s)</label>
-                        <input type="number" id="chaos-duration" value="10" min="5" max="60" style="width:70px;">
-                    </div>
-                    <button onclick="queryXRF('chaos')" class="btn btn-chaos">Run Chaos</button>
-                </div>
-                <div style="font-size:11px; color:#e74c3c; margin-top:6px;">⚠️ This will temporarily disable the selected router on the Twin</div>
-                <!-- Chaos progress bar -->
-                <div id="chaos-progress-wrap" style="display:none; margin-top:12px;">
-                    <div style="display:flex; justify-content:space-between; font-size:11px; color:#7f8c8d; margin-bottom:4px;">
-                        <span id="chaos-progress-msg">Running...</span>
-                        <span id="chaos-progress-pct">0%</span>
-                    </div>
-                    <div style="background:#ecf0f1; border-radius:4px; height:8px; overflow:hidden;">
-                        <div id="chaos-progress-bar" style="height:100%; width:0%; background:#e74c3c; border-radius:4px; transition:width 0.3s ease;"></div>
-                    </div>
-                </div>
             </div>
 
             <!-- Latency Matrix params -->

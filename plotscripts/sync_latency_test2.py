@@ -1,5 +1,5 @@
 """
-sync_latency_test.py — Digital Twin Sync Latency Study
+sync_latency_test2.py — Digital Twin Sync Latency Study
 ======================================================
 Progressively scales the network using the same FIXED_SEQUENCE
 as scalability_test.py, recording individual sync latency
@@ -22,7 +22,7 @@ Generates:
              payload size, CPU overhead, memory delta, FRR memory
 
 Usage:
-    sudo python3 sync_latency_test.py
+    sudo python3 sync_latency_test2.py
 """
 
 import requests

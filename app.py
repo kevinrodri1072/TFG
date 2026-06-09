@@ -81,7 +81,7 @@ app.register_blueprint(nodes_bp)      # POST /add_host, /add_router, /remove_nod
 app.register_blueprint(metrics_bp)    # GET /metrics/ping, /metrics/sync, /ip_dashboard...
 app.register_blueprint(routing_bp)    # GET/POST /get_routing_mode, /set_routing_mode, /router_routes
 app.register_blueprint(xrfs_bp)       # XRF microservices (Kubernetes, només al Twin)
-app.register_blueprint(proposals_bp)      # POST /chaos/cut_link, /chaos/restore_link
+app.register_blueprint(proposals_bp)  # POST /propose, /proposals/*, /twin/register, /twin/heartbeat
 
 
 # ─────────────────────────────────────────────────────────────────────────────

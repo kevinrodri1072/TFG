@@ -4,8 +4,6 @@ routes/metrics.py — Network and system measurement endpoints.
 Endpoints:
   GET /metrics/system       → CPU + RAM of the host machine
   GET /metrics/ping         → ping (10 pkts) between two hosts
-  GET /metrics/ping_fast    → ping (1 pkt) for live dashboard graph
-  GET /metrics/internal     → full ping + iperf measurement between two hosts
   GET /metrics/global       → Global Scan: all host pairs in parallel
   GET /metrics/sync         → sync latency history + stats
   POST /sync_metrics        → receive sync metrics pushed by the Original
@@ -41,8 +39,6 @@ _socketio        = None   # injected by app.py after SocketIO is created
 # Endpoints:
 #   GET  /metrics/system      → CPU + RAM del host
 #   GET  /metrics/ping        → ping configurable entre dos hosts (count, size, interval)
-#   GET  /metrics/ping_fast   → ping d'un sol paquet (per al gràfic en viu)
-#   GET  /metrics/internal    → ping complet + iperf entre dos hosts
 #   GET  /metrics/global      → Global Scan: pings entre TOTS els parells de hosts
 #   GET  /metrics/sync        → historial de latències de sincronització + estadístiques
 #   POST /sync_metrics        → rep mètriques de sync enviades per l'Original (al Twin)
@@ -115,73 +111,6 @@ def metrics_ping():
     return jsonify({'ok': True, 'src': src, 'dst': dst,
                     'latency_ms': latency, 'jitter_ms': jitter,
                     'cmd': cmd_str, 'count': count, 'size': size})
-
-
-@bp.route('/metrics/ping_fast')
-# Ping d'un sol paquet per al gràfic d'historial en temps real del dashboard.
-# Usa acquire(blocking=False): si el node ja està fent ping, retorna busy=True
-# en lloc de bloquejar, perquè el gràfic no s'aturi esperant.
-def metrics_ping_fast():
-    """Single-packet ping for the live dashboard graph."""
-    if not _xarxa.network_ready:
-        return jsonify({'ok': False, 'avg': None})
-
-    src = request.args.get('src')
-    dst = request.args.get('dst')
-    if not src or not dst or src not in _xarxa.nodes or dst not in _xarxa.nodes:
-        return jsonify({'ok': False, 'avg': None})
-
-    lock = get_ping_lock(src)
-    if not lock.acquire(blocking=False):
-        return jsonify({'ok': False, 'avg': None, 'busy': True})
-    try:
-        src_node   = _xarxa.mininet_nodes[src]
-        dst_ip     = _xarxa.nodes[dst]['ip'].split('/')[0]
-        out        = src_node.cmd(f'ping -c 1 -W 2 {dst_ip}')
-        latency, _ = parse_ping(out)
-        return jsonify({'ok': True, 'avg': latency['avg']})
-    finally:
-        lock.release()
-
-
-@bp.route('/metrics/internal')
-# Mesura completa: ping (10 paquets) + iperf entre dos hosts.
-# _metrics_running evita mesures concurrents (iperf ocupa el node destinació).
-def metrics_internal():
-    """Full ping + iperf measurement between two hosts."""
-    global _metrics_running
-    if not _xarxa.network_ready:
-        return jsonify({'ok': False, 'error': 'Network not ready'})
-    if _metrics_running:
-        return jsonify({'ok': False, 'error': 'A measurement is already running'})
-
-    src = request.args.get('src')
-    dst = request.args.get('dst')
-    if not src or not dst:
-        return jsonify({'ok': False, 'error': 'src and dst parameters required'})
-    if src not in _xarxa.nodes or dst not in _xarxa.nodes:
-        return jsonify({'ok': False, 'error': 'Node not found'})
-    if _xarxa.nodes[src]['type'] != 'host' or _xarxa.nodes[dst]['type'] != 'host':
-        return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
-
-    _metrics_running = True
-    try:
-        src_node        = _xarxa.mininet_nodes[src]
-        dst_node        = _xarxa.mininet_nodes[dst]
-        dst_ip          = _xarxa.nodes[dst]['ip'].split('/')[0]
-        out             = src_node.cmd(f'ping -c 10 -i 0.2 {dst_ip}')
-        latency, jitter = parse_ping(out)
-        bandwidth       = measure_bandwidth(src_node, dst_node, dst_ip, iterations=10)
-
-        return jsonify({
-            'ok': True, 'src': src, 'dst': dst,
-            'latency_ms':     latency,
-            'jitter_ms':      jitter,
-            'bandwidth_mbps': bandwidth,
-            'system':         system_stats(),
-        })
-    finally:
-        _metrics_running = False
 
 
 def _emit_progress(step, total, msg):

@@ -25,7 +25,7 @@ import time
 
 from flask import Blueprint, jsonify, request
 
-from sync import sync_event
+from sync import sync_event, set_t_local
 
 _xarxa = None
 
@@ -185,7 +185,6 @@ def add_host():
 
         if not is_sync:
             # Send to Twin in parallel BEFORE addLink (all values pre-computed)
-            from sync import sync_event, set_t_local
             holder = sync_event('/add_host', {
                 'name': name, 'router': router,
                 'switch': switch, 'ip': ip, 'gw': gw,
@@ -242,7 +241,6 @@ def remove_node():
         return jsonify({'ok': False, 'error': f'Node {name} not found'})
 
     if not is_sync:
-        from sync import sync_event, set_t_local
         holder = sync_event('/remove_node', {'name': name}, None)
 
     t_local_start = time.time()
@@ -527,7 +525,6 @@ def add_router():
                 _xarxa.nodes[cr] = cr_state
 
         # ── PHASE 2: Send to Twin NOW, in parallel with Mininet apply ──
-        from sync import sync_event, set_t_local
         holder = sync_event('/add_router', {
             'name':              router_name,
             'connected_routers': connected_routers,

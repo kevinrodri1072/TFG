@@ -18,7 +18,7 @@ import time
 
 from flask import Blueprint, jsonify, request
 
-from sync import sync_event
+from sync import sync_event, set_t_local
 
 _xarxa = None
 
@@ -117,7 +117,6 @@ def set_routing_mode():
     # on its own routers while we restart ours.
     holder = None
     if not is_sync:
-        from sync import sync_event, set_t_local
         holder = sync_event('/set_routing_mode', {'mode': mode}, None)
 
     # Measure the real local restart time. One thread per router — each node has

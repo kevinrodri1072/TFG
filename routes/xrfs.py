@@ -16,20 +16,22 @@ _socketio = None
 # ─────────────────────────────────────────────────────────────────────────────
 # xrfs.py — Microserveis XRF sobre Kubernetes (NOMÉS disponible al Twin)
 #
-# XRF (eXposure Function Router) és una funció de xarxa del core 5G que
-# enruta peticions entre NFs (Network Functions). En aquest TFG es simula
-# com un microservei Kubernetes al Twin.
+# Una XRF (Extended Reality Function) és una funció estesa que s'implementa
+# exclusivament sobre el Twin i que no existeix a la xarxa original. S'emmarca
+# en el paradigma dels Network Digital Twins amb Extended Reality, on el twin
+# ofereix serveis addicionals (consultes, experiments, monitoratge) que no
+# estan disponibles a l'original. Cada XRF s'executa com un microservei
+# Kubernetes independent que consulta l'API REST del Twin.
 #
 # RESTRICCIÓ: tots els endpoints retornen error si IS_TWIN=False.
 # El Twin té minikube/kubectl configurat; l'Original no.
 #
 # Endpoints:
-#   GET  /xrfs              → llista de XRFs desplegades
-#   POST /deploy_xrf        → desplega una nova XRF (kubectl apply)
-#   DELETE /delete_xrf      → elimina una XRF (kubectl delete)
-#   GET  /xrf_status        → estat dels pods XRF
-#   POST /xrf_route         → crea una ruta XRF
-#   GET  /xrf_logs          → logs d'una XRF
+#   GET  /xrf/status        → estat (running/stopped) de totes les XRFs del registre
+#   POST /xrf/deploy        → desplega una XRF (kubectl apply)
+#   POST /xrf/undeploy      → elimina una XRF (kubectl delete)
+#   POST /xrf/query         → executa una XRF; si és asíncrona retorna un job_id
+#   GET  /xrf/result/<id>   → recull el resultat d'una XRF asíncrona (polling)
 # ─────────────────────────────────────────────────────────────────────────────
 bp = Blueprint('xrfs', __name__)
 
