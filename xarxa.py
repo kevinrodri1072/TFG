@@ -202,7 +202,11 @@ class Xarxa:
         node.cmd(f'pkill -f "bfdd.*{name}" 2>/dev/null')
         node.cmd(f'pkill -f "zebra.*{name}" 2>/dev/null')
         node.cmd('sleep 0.05')
-
+        # Elimina els PID files antics perquè el proper arrencada
+        # no trobi fitxers bloquejats del run anterior.
+        conf_path = f'/tmp/frr_{name}'
+        for pidfile in ['zebra.pid', 'ospfd.pid', 'ldpd.pid', 'bfdd.pid']:
+            node.cmd(f'rm -f {conf_path}/{pidfile} 2>/dev/null')
     def _update_ospf_hot(self, node, name, props):
         """
         Inject OSPF networks into a running ospfd WITHOUT restarting daemons.
@@ -517,13 +521,77 @@ class Xarxa:
             elif props['type'] == 'switch':
                 self.mininet_nodes[name] = self.net.addSwitch(name, failMode='standalone')
 
-        # Create the links
+        # Create the links with explicit interface names so IPs are
+        # always assigned to the correct interface after restart.
         node_names = list(self.nodes.keys())
+
+        # Pre-build p2p intf map: {(routerA, routerB): (intfA, intfB)}
+        p2p_map = {}
+        for name, props in self.nodes.items():
+            if props['type'] != 'router':
+                continue
+            for link in props.get('p2p_links', []):
+                key = tuple(sorted([name, link['peer']]))
+                if key not in p2p_map:
+                    p2p_map[key] = {}
+                p2p_map[key][name] = link['local_intf']
+
+        # Pre-build router→switch intf map: find the LAN intf of each router
+        # (the intf that is not a p2p intf and not 'lan')
+        router_lan_intf = {}
+        for name, props in self.nodes.items():
+            if props['type'] != 'router':
+                continue
+            p2p_intfs = {l['local_intf'] for l in props.get('p2p_links', [])}
+            lan_intfs = [k for k in props['ips'] if k != 'lan' and k not in p2p_intfs]
+            router_lan_intf[name] = lan_intfs[0] if lan_intfs else 'eth0'
+
         for i in range(len(self.network_matrix)):
             for j in range(i + 1, len(self.network_matrix)):
-                if self.network_matrix[i][j] != 0:
-                    self.net.addLink(self.mininet_nodes[node_names[i]], self.mininet_nodes[node_names[j]])
+                if self.network_matrix[i][j] == 0:
+                    continue
+                node_i = node_names[i]
+                node_j = node_names[j]
+                type_i = self.nodes[node_i]['type']
+                type_j = self.nodes[node_j]['type']
 
+                # router ↔ router (p2p)
+                if type_i == 'router' and type_j == 'router':
+                    key = tuple(sorted([node_i, node_j]))
+                    intfs = p2p_map.get(key, {})
+                    intf_i = intfs.get(node_i, f'{node_i}-eth0')
+                    intf_j = intfs.get(node_j, f'{node_j}-eth0')
+                    self.net.addLink(self.mininet_nodes[node_i],
+                                     self.mininet_nodes[node_j],
+                                     intfName1=f'{node_i}-{intf_i}',
+                                     intfName2=f'{node_j}-{intf_j}')
+
+                # router ↔ switch (LAN)
+                elif type_i == 'router' and type_j == 'switch':
+                    intf_i = router_lan_intf.get(node_i, 'eth0')
+                    self.net.addLink(self.mininet_nodes[node_i],
+                                     self.mininet_nodes[node_j],
+                                     intfName1=f'{node_i}-{intf_i}')
+                elif type_i == 'switch' and type_j == 'router':
+                    intf_j = router_lan_intf.get(node_j, 'eth0')
+                    self.net.addLink(self.mininet_nodes[node_i],
+                                     self.mininet_nodes[node_j],
+                                     intfName2=f'{node_j}-{intf_j}')
+
+                # host ↔ switch
+                elif type_i == 'host' and type_j == 'switch':
+                    self.net.addLink(self.mininet_nodes[node_i],
+                                     self.mininet_nodes[node_j],
+                                     intfName1=f'{node_i}-eth0')
+                elif type_i == 'switch' and type_j == 'host':
+                    self.net.addLink(self.mininet_nodes[node_i],
+                                     self.mininet_nodes[node_j],
+                                     intfName2=f'{node_j}-eth0')
+
+                # fallback (no debería ocurrir)
+                else:
+                    self.net.addLink(self.mininet_nodes[node_i],
+                                     self.mininet_nodes[node_j])
         self.net.start() # Mininet aixeca la xarxa.
 
         # Configure router interfaces
