@@ -197,16 +197,23 @@ class Xarxa:
 
     def _stop_routing(self, node, name):
         """Stop all routing daemons for a router."""
-        node.cmd(f'pkill -f "ospfd.*{name}" 2>/dev/null')
-        node.cmd(f'pkill -f "ldpd.*{name}" 2>/dev/null')
+        # Ordre correcte: primers els protocols (ospfd/ldpd/bfdd),
+        # després zebra. Si zebra mor primer, ospfd perd la connexió
+        # i pot deixar el socket vtysh bloquejat.
+        conf_path = f'/tmp/frr_{name}'
         node.cmd(f'pkill -f "bfdd.*{name}" 2>/dev/null')
+        node.cmd(f'pkill -f "ldpd.*{name}" 2>/dev/null')
+        node.cmd(f'pkill -f "ospfd.*{name}" 2>/dev/null')
+        node.cmd('sleep 0.1')  # espera que ospfd alliberi el socket vtysh
         node.cmd(f'pkill -f "zebra.*{name}" 2>/dev/null')
-        node.cmd('sleep 0.05')
+        node.cmd('sleep 0.1')  # espera que zebra alliberi el socket
         # Elimina els PID files antics perquè el proper arrencada
         # no trobi fitxers bloquejats del run anterior.
-        conf_path = f'/tmp/frr_{name}'
         for pidfile in ['zebra.pid', 'ospfd.pid', 'ldpd.pid', 'bfdd.pid']:
             node.cmd(f'rm -f {conf_path}/{pidfile} 2>/dev/null')
+        # Elimina també el socket vtysh per garantir un arrencada neta.
+        node.cmd(f'rm -f {conf_path}/*.vty 2>/dev/null')
+        node.cmd(f'rm -f {conf_path}/zebra.sock 2>/dev/null')
     def _update_ospf_hot(self, node, name, props):
         """
         Inject OSPF networks into a running ospfd WITHOUT restarting daemons.
