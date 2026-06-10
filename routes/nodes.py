@@ -542,6 +542,15 @@ def add_router():
             )
             if new_router is None:
                 use_pool = False
+                eth_base = 0
+                lan_eth_key = f'eth{lan_eth_idx}'
+                router_state['ips'].pop('eth0', None)
+                router_state['ips'][lan_eth_key] = ip_lan
+                for idx, link in enumerate(router_state['p2p_links']):
+                    old_intf = f'eth{1 + idx}'
+                    new_intf = f'eth{idx}'
+                    link['local_intf'] = new_intf
+                    router_state['ips'][new_intf] = router_state['ips'].pop(old_intf)
 
         if not use_pool:
             new_router = _xarxa.net.addHost(router_name, ip='127.0.0.1')

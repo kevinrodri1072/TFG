@@ -19,9 +19,9 @@ MESURA DE LATÈNCIES:
 
 MESURA DE THROUGHPUT I CPU:
   payload_bytes   = mida del JSON enviat al Twin per cada operacio
-  throughput_bps  = payload_bytes x 8 / (temps net de xarxa / 1000)
-                    temps net = t_network_ms - t_twin_ms (aïlla el temps de xarxa
-                    pur del temps de procés del Twin) — bits/s reals del link
+  throughput_bps  = payload_bytes x 8 / (t_total / 1000)
+                    t_total = max(t_local_ms, t_network_ms) — temps end-to-end
+                    real del sistema complet — bits/s reals del link
   cpu_percent     = us de CPU del host en el moment de registrar l'operacio
   ops_per_sec     = capacitat de CPU: 1000 / t_local_ms (ops/s en serie) + recent (ultims 10s)
 """

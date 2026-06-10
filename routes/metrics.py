@@ -97,7 +97,6 @@ def metrics_ping():
 
     # Build ping command
     size_flag = f'-s {size}' if size != 64 else ''
-    cmd       = f'ping -c {count} -i {interval} {size_flag} {{}}'.strip()
     cmd_str   = f'ping -c {count} -i {interval}' + (f' -s {size}' if size != 64 else '') + ' <dst_ip>'
 
     lock = get_ping_lock(src)

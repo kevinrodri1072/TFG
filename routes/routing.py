@@ -197,7 +197,9 @@ def modify_router_route():
         route_str = f'{dst} via {via}'
         if route_str not in _xarxa.nodes[router].get('routes', []):
             _xarxa.nodes[router].setdefault('routes', []).append(route_str)
-        return jsonify({'ok': True})
+        if not data.get('sync', False):
+            sync_event('/router_routes', {**data, 'router': router}, 0)
+        return jsonify({'ok': True, 't_local_ms': 0})
 
     elif action == 'delete':
         dst = data.get('dst', '').strip()
@@ -213,7 +215,9 @@ def modify_router_route():
             r for r in _xarxa.nodes[router].get('routes', [])
             if not r.startswith(dst)
         ]
-        return jsonify({'ok': True})
+        if not data.get('sync', False):
+            sync_event('/router_routes', {**data, 'router': router}, 0)
+        return jsonify({'ok': True, 't_local_ms': 0})
 
     return jsonify({'ok': False, 'error': f'Unknown action: {action}'})
 
