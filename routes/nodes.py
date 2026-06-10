@@ -406,7 +406,11 @@ def add_router():
         # Each node.cmd() has overhead (pipe write + prompt wait + read). With N
         # neighbours we save N-1 round-trips. Neighbour cmd()s stay in-loop —
         # each one targets a different node so batching is not possible.
-        eth_base = 1 if use_pool else 0
+        # eth_base es deriva del router_state rebut de l'Original, no del
+        # pool local — així el Twin usa el mateix layout d'interfícies que
+        # l'Original independentment de l'estat del seu propi pool.
+        p2p_intfs_in_state = {l['local_intf'] for l in router_state.get('p2p_links', [])}
+        eth_base = 1 if 'eth0' not in p2p_intfs_in_state and 'eth0' in router_state.get('ips', {}) else 0
         new_router_cmds = []
         for eth_idx, connected_router in enumerate(connected_routers):
             p2p_link      = router_state['p2p_links'][eth_idx]

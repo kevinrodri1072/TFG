@@ -140,11 +140,16 @@ class Xarxa:
     def _launch_daemon(self, node, name, binary, conf_path):
         """Launches an FRRouting daemon in background mode."""
         daemon = os.path.basename(binary)  # 'zebra', 'ospfd', etc.
+        # --socket especifica el path del socket zserv (connexió entre
+        # ospfd/ldpd/bfdd i zebra). Sense aquest paràmetre, els daemons
+        # busquen /var/run/frr/zserv.api (el FRR del sistema) en lloc
+        # del zebra del namespace correcte.
         node.cmd(
             f'{binary} -d '
             f'--config_file {conf_path}/{daemon}.conf '
             f'--pid_file {conf_path}/{daemon}.pid '
             f'--vty_socket {conf_path}/ '
+            f'--socket {conf_path}/zserv.api '
             f'> {conf_path}/{daemon}.log 2>&1'
         )
 
@@ -165,7 +170,7 @@ class Xarxa:
         self._launch_daemon(node, name, ZEBRA, conf_path)
         node.cmd('sleep 0.02')  # zebra binds socket in <10ms; 20ms is safe
         self._launch_daemon(node, name, OSPFD, conf_path)
-
+    
     def _start_mpls(self, node, name, props):
         """
         Starts zebra + ospfd + ldpd inside the router's network namespace.
@@ -477,13 +482,10 @@ class Xarxa:
         node.cmd('sleep 0.05')  # wait for bfdd to exit
 
         # Start bfdd
-        node.cmd(
-            f'{BFDD} -d '
-            f'--config_file {conf_path}/bfdd.conf '
-            f'--pid_file {conf_path}/bfdd.pid '
-            f'--vty_socket {conf_path}/ '
-            f'> {conf_path}/bfdd.log 2>&1'
-        )
+        # Start bfdd — usa _launch_daemon perquè inclou --socket
+        # {conf_path}/zserv.api i així bfdd es connecta al zebra del
+        # namespace correcte i no al FRR del sistema (/var/run/frr/).
+        self._launch_daemon(node, name, BFDD, conf_path)
         node.cmd('sleep 0.05')  # bfdd binds socket in <20ms
 
         # Enable BFD on all OSPF interfaces via vtysh
@@ -566,8 +568,8 @@ class Xarxa:
                 if type_i == 'router' and type_j == 'router':
                     key = tuple(sorted([node_i, node_j]))
                     intfs = p2p_map.get(key, {})
-                    intf_i = intfs.get(node_i, f'{node_i}-eth0')
-                    intf_j = intfs.get(node_j, f'{node_j}-eth0')
+                    intf_i = intfs.get(node_i, 'eth0')
+                    intf_j = intfs.get(node_j, 'eth0')
                     self.net.addLink(self.mininet_nodes[node_i],
                                      self.mininet_nodes[node_j],
                                      intfName1=f'{node_i}-{intf_i}',

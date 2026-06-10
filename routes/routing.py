@@ -110,7 +110,7 @@ def set_routing_mode():
         """Stop + restart routing on a single router (sequential per node)."""
         _xarxa._stop_routing(node, name)
         _xarxa._apply_routing(node, name, props)
-
+        
     # Original: fire the sync to the Twin BEFORE the local restart so both run
     # in parallel (t_total = max(t_local, t_network)), matching the model used
     # by add_host / add_router / remove_node. The Twin applies the same change
