@@ -95,16 +95,16 @@ def metrics_ping():
     if _xarxa.nodes[src]['type'] != 'host' or _xarxa.nodes[dst]['type'] != 'host':
         return jsonify({'ok': False, 'error': 'Both nodes must be hosts'})
 
-    # Build ping command
-    size_flag = f'-s {size}' if size != 64 else ''
-    cmd_str   = f'ping -c {count} -i {interval}' + (f' -s {size}' if size != 64 else '') + ' <dst_ip>'
+    # Build ping command (size_part s'usa tant per a la comanda real com
+    # per a la versió mostrada a la UI — una sola font de veritat)
+    size_part = f' -s {size}' if size != 64 else ''
+    cmd_str   = f'ping -c {count} -i {interval}{size_part} <dst_ip>'
 
     lock = get_ping_lock(src)
     with lock:
         src_node        = _xarxa.mininet_nodes[src]
         dst_ip          = _xarxa.nodes[dst]['ip'].split('/')[0]
-        ping_cmd        = f'ping -c {count} -i {interval}' + (f' -s {size}' if size != 64 else '') + f' {dst_ip}'
-        out             = src_node.cmd(ping_cmd)
+        out             = src_node.cmd(f'ping -c {count} -i {interval}{size_part} {dst_ip}')
         latency, jitter = parse_ping(out)
 
     return jsonify({'ok': True, 'src': src, 'dst': dst,

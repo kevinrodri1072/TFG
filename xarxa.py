@@ -362,22 +362,41 @@ class Xarxa:
         except Exception as e:
             print(f'[pool] failed to create entry: {e}')
 
-    def claim_from_pool(self, router_name, switch_name, lan_ip):
+    def reserve_pool_entry(self):
+        """
+        Reserva ATÒMICAMENT una entrada del pool (pop de la llista) sense
+        fer cap operació Mininet. Pensada per cridar-se dins topology_lock
+        a la Fase 1 d'add_router: així la decisió use_pool és definitiva i
+        no pot canviar entre l'enviament al Twin (Fase 2) i l'aplicació a
+        Mininet (Fase 3). Retorna la tupla del pool o None si està buit.
+        """
+        if not hasattr(self, '_router_pool'):
+            return None
+        with self._router_pool_lock:
+            if not self._router_pool:
+                return None
+            return self._router_pool.pop(0)
+
+    def claim_from_pool(self, router_name, switch_name, lan_ip,
+                        entry=None, lan_intf='eth0'):
         """
         Claim a pre-warmed router from the pool.
         - Renames pool nodes to final names
-        - Renames LAN interface from __pool_rN-eth0 to router_name-eth0
+        - Renames LAN interface from __pool_rN-eth0 to router_name-{lan_intf}
         - Renames OVS bridge from __pool_sN to swN
         - Registers in net.nameToNode and mininet_nodes
-        - Replenishes pool in background
+        entry    : pool tuple pre-reserved via reserve_pool_entry(); if None,
+                   reserves one here (legacy behaviour).
+        lan_intf : final name of the LAN interface ('eth0' by default; the
+                   Twin passes the name derived from the Original's state so
+                   both sides end up with identical interface layouts).
         Returns (router_node, switch_node) or (None, None) if pool empty.
         """
-        import threading
-        with self._router_pool_lock:
-            if not self._router_pool:
+        if entry is None:
+            entry = self.reserve_pool_entry()
+            if entry is None:
                 return None, None
-            router_node, switch_node, pool_name, pool_switch_name = \
-                self._router_pool.pop(0)
+        router_node, switch_node, pool_name, pool_switch_name = entry
 
         # Rename nodes in Mininet's nameToNode
         router_node.name = router_name
@@ -391,9 +410,9 @@ class Xarxa:
         self.mininet_nodes[router_name] = router_node
         self.mininet_nodes[switch_name] = switch_node
 
-        # Rename LAN interface: __pool_rN-eth0 → router_name-eth0
+        # Rename LAN interface: __pool_rN-eth0 → router_name-{lan_intf}
         old_lan = f'{pool_name}-eth0'
-        new_lan = f'{router_name}-eth0'
+        new_lan = f'{router_name}-{lan_intf}'
         router_node.cmd(f'ip link set {old_lan} name {new_lan} 2>/dev/null || true')
         router_node.cmd(
             f'ifconfig {new_lan} {lan_ip} ; '
@@ -428,7 +447,7 @@ class Xarxa:
         # The Linux interface was already renamed above (ip link set),
         # so nameToIntf must match for remove_node/delIntf to work.
         old_r_lan = f'{pool_name}-eth0'
-        new_r_lan = f'{router_name}-eth0'
+        new_r_lan = f'{router_name}-{lan_intf}'
         for intf in router_node.intfList():
             if intf.name == old_r_lan:
                 router_node.nameToIntf.pop(old_r_lan, None)
@@ -454,13 +473,6 @@ class Xarxa:
         # causes concurrent net operations that corrupt Mininet's internal
         # state, putting zebra in a different namespace than the interfaces.
         return router_node, switch_node
-
-    def _router_pool_available(self):
-        """Check if pool has at least one entry ready."""
-        if not hasattr(self, '_router_pool'):
-            return False
-        with self._router_pool_lock:
-            return len(self._router_pool) > 0
 
     def _start_bfd(self, node, name, props):
         """

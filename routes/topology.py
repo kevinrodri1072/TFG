@@ -20,6 +20,7 @@ from flask import Blueprint, jsonify, render_template, request, send_file
 from scipy.io import loadmat, savemat
 
 from sync import sync_in_background
+from routes.nodes import _valid_node_name
 
 # Injected by app.py via init_blueprint()
 _xarxa    = None
@@ -165,6 +166,21 @@ def load_network():
             else mat['nodes_json']
         )
         new_nodes = json.loads(nodes_json)
+
+    # ── Validació del snapshot abans d'aplicar res ──
+    # Els noms de node acaben dins comandes de shell a start_network()
+    # (ifconfig {name}-eth0, etc.). add_host/add_router ja validen amb
+    # _valid_node_name, però aquí els noms venen d'un JSON o d'un .mat
+    # pujat per l'usuari — sense aquesta guarda, un .mat manipulat amb un
+    # nom tipus "h1; rm -rf /" s'executaria com a root al restart.
+    invalid = [n for n in new_nodes if not _valid_node_name(n)]
+    if invalid:
+        return jsonify({'ok': False,
+                        'error': f'Invalid node name(s): {", ".join(invalid)}'})
+    if len(new_matrix) != len(new_nodes) or \
+            any(len(row) != len(new_nodes) for row in new_matrix):
+        return jsonify({'ok': False,
+                        'error': 'Matrix dimensions do not match node count'})
 
     # Mesura el temps real del restart local i el comparteix amb la
     # sincronització via un holder (mateix patró que add_host/add_router):

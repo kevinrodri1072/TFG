@@ -19,6 +19,7 @@ Sync strategy
       recalculation (which could diverge if states differ by even one node).
 """
 
+import copy
 import re
 import threading
 import time
@@ -372,16 +373,29 @@ def add_router():
                 _xarxa.nodes[rname] = rstate
 
         # ── Mininet apply outside lock (slow ops: pool, addLink, FRR) ──
+        # El layout d'interfícies es deriva SENCER del router_state rebut de
+        # l'Original — el Twin replica exactament els mateixos noms,
+        # independentment de l'estat del seu propi pool. La LAN és la clau
+        # d'ips que no apareix a cap p2p_link (i no és l'àlies 'lan').
         t_local_start = time.time()
-        n_p2p    = len(connected_routers)
         ip_lan   = router_state['ips'].get('lan', '10.254.0.1/24')
-        use_pool = _xarxa._router_pool_available()
+        p2p_intfs_in_state = {l['local_intf'] for l in router_state.get('p2p_links', [])}
+        lan_intf_key = next(
+            (k for k in router_state.get('ips', {})
+             if k != 'lan' and k not in p2p_intfs_in_state),
+            'eth0',
+        )
+
+        pool_entry = _xarxa.reserve_pool_entry()
+        use_pool   = pool_entry is not None
         if use_pool:
+            # lan_intf=lan_intf_key: la interfície del pool es renombra al nom
+            # que dicta l'estat de l'Original (eth0 si l'Original va usar pool,
+            # ethN si no) — abans quedava sempre eth0 i divergia.
             new_router, new_switch = _xarxa.claim_from_pool(
-                router_name, switch_name, ip_lan
+                router_name, switch_name, ip_lan,
+                entry=pool_entry, lan_intf=lan_intf_key,
             )
-            if new_router is None:
-                use_pool = False
 
         if not use_pool:
             new_router = _xarxa.net.addHost(router_name, ip='127.0.0.1')
@@ -390,7 +404,9 @@ def add_router():
                 _xarxa.mininet_nodes[router_name] = new_router
                 _xarxa.mininet_nodes[switch_name] = new_switch
             new_switch.start([])
-            intf_eth_lan = f'{router_name}-eth{n_p2p}'
+            # Nom de la LAN segons l'estat de l'Original, NO segons n_p2p:
+            # si l'Original va usar pool, la LAN és eth0 i les p2p eth1..N.
+            intf_eth_lan = f'{router_name}-{lan_intf_key}'
             _xarxa.net.addLink(new_router, new_switch, intfName1=intf_eth_lan)
             new_router.cmd(
                 f'ifconfig {intf_eth_lan} {ip_lan} ; '
@@ -406,15 +422,12 @@ def add_router():
         # Each node.cmd() has overhead (pipe write + prompt wait + read). With N
         # neighbours we save N-1 round-trips. Neighbour cmd()s stay in-loop —
         # each one targets a different node so batching is not possible.
-        # eth_base es deriva del router_state rebut de l'Original, no del
-        # pool local — així el Twin usa el mateix layout d'interfícies que
-        # l'Original independentment de l'estat del seu propi pool.
-        p2p_intfs_in_state = {l['local_intf'] for l in router_state.get('p2p_links', [])}
-        eth_base = 1 if 'eth0' not in p2p_intfs_in_state and 'eth0' in router_state.get('ips', {}) else 0
+        # Els noms d'interfície p2p surten directament de p2p_links[i] de
+        # l'estat rebut — no cal derivar cap eth_base.
         new_router_cmds = []
         for eth_idx, connected_router in enumerate(connected_routers):
             p2p_link      = router_state['p2p_links'][eth_idx]
-            intf_new      = f'{router_name}-eth{eth_base + eth_idx}'
+            intf_new      = f'{router_name}-{p2p_link["local_intf"]}'
             existing_nd   = _xarxa.mininet_nodes[connected_router]
             ex_link       = next(
                 l for l in connected_states[connected_router]['p2p_links']
@@ -472,7 +485,13 @@ def add_router():
             switch_name = f'sw{switch_num}'
             subnet_num  = _xarxa.find_next_subnet()
             ip_lan      = f'10.{subnet_num}.0.1/24'
-            use_pool    = _xarxa._router_pool_available()
+            # Reserva ATÒMICA d'una entrada del pool DINS el lock. Així la
+            # decisió use_pool (i per tant el layout d'interfícies enviat al
+            # Twin a la Fase 2) és definitiva: abans, el pool es podia buidar
+            # entre la Fase 1 i la Fase 3 per un add_router concurrent, i el
+            # fallback mutava router_state quan ja s'havia enviat al Twin.
+            pool_entry  = _xarxa.reserve_pool_entry()
+            use_pool    = pool_entry is not None
             eth_base    = 1 if use_pool else 0
             lan_eth_idx = len(connected_routers)
 
@@ -529,32 +548,26 @@ def add_router():
                 _xarxa.nodes[cr] = cr_state
 
         # ── PHASE 2: Send to Twin NOW, in parallel with Mininet apply ──
+        # deepcopy: el json.dumps del payload es fa en un thread de background;
+        # passar còpies independents garanteix que cap mutació local posterior
+        # (d'aquesta o d'altres operacions) pugui canviar el que rep el Twin.
         holder = sync_event('/add_router', {
             'name':              router_name,
             'connected_routers': connected_routers,
-            'router_state':      router_state,
+            'router_state':      copy.deepcopy(router_state),
             'switch_name':       switch_name,
-            'connected_states':  connected_states_update,
+            'connected_states':  copy.deepcopy(connected_states_update),
         }, None)
 
         # ── PHASE 3: Apply to Mininet (outside lock — slow ops) ──
         t_local_start = time.time()
 
         if use_pool:
+            # L'entrada ja està reservada des de la Fase 1 — claim_from_pool
+            # només fa els renames, no pot retornar None.
             new_router, new_switch = _xarxa.claim_from_pool(
-                router_name, switch_name, ip_lan
+                router_name, switch_name, ip_lan, entry=pool_entry
             )
-            if new_router is None:
-                use_pool = False
-                eth_base = 0
-                lan_eth_key = f'eth{lan_eth_idx}'
-                router_state['ips'].pop('eth0', None)
-                router_state['ips'][lan_eth_key] = ip_lan
-                for idx, link in enumerate(router_state['p2p_links']):
-                    old_intf = f'eth{1 + idx}'
-                    new_intf = f'eth{idx}'
-                    link['local_intf'] = new_intf
-                    router_state['ips'][new_intf] = router_state['ips'].pop(old_intf)
 
         if not use_pool:
             new_router = _xarxa.net.addHost(router_name, ip='127.0.0.1')
@@ -576,9 +589,11 @@ def add_router():
             os.system(f'ovs-vsctl add-port {switch_name} {sw_intf} 2>/dev/null')
 
         # ── Batching: same approach as in the Twin path above ──
+        # Els noms d'interfície surten directament de new_p2p_links (l'estat
+        # ja enviat al Twin) — una sola font de veritat per al layout.
         new_router_cmds = []
         for idx, (cr, p2p) in enumerate(zip(connected_routers, p2p_subnets)):
-            intf_new      = f'{router_name}-eth{eth_base + idx}'
+            intf_new      = f'{router_name}-{new_p2p_links[idx]["local_intf"]}'
             existing_node = _xarxa.mininet_nodes[cr]
             ex_intf       = f'{cr}-eth{existing_eth_idxs[cr]}'
             _xarxa.net.addLink(new_router, existing_node,

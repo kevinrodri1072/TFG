@@ -39,16 +39,23 @@ import requests
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _get_own_ip():
-    """Detecta la IP pròpia del host via un socket UDP (no envia res)."""
+    """
+    Detecta la IP pròpia del host via un socket UDP (no envia res).
+    Prova primer contra ORIGINAL_IP (funciona en laboratoris aïllats sense
+    ruta a Internet) i, si falla, contra 8.8.8.8.
+    """
     import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return '127.0.0.1'
+    for probe in (ORIGINAL_IP, '8.8.8.8'):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((probe, 80))
+            ip = s.getsockname()[0]
+            s.close()
+            if ip and ip != '127.0.0.1':
+                return ip
+        except Exception:
+            continue
+    return '127.0.0.1'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -320,8 +327,11 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms,
         sync_latency_history.append(entry)
         updated_entry = dict(entry)
 
-    # Replica l'entrada a TOTS els Twins perquè els seus dashboards estiguin sincronitzats
+    # Replica l'entrada NOMÉS als Twins actius — enviar a Twins desconnectats
+    # o offline bloquejava el thread de sync fins a 3s per Twin caigut.
     for twin in TWINS:
+        if not _is_twin_active(twin['ip']):
+            continue
         try:
             _get_session(twin['ip']).post(
                 f'http://{twin["ip"]}:{twin["port"]}/sync_metrics',
@@ -352,17 +362,31 @@ def _do_sync_to_one_twin(twin, endpoint, payload, retries=3, delay=0.5):
             )
             t_network_ms = round((time.time() - t_start) * 1000, 2)
             if response.status_code == 200:
-                # t_twin_ms: temps que ha trigat el Twin a aplicar el canvi localment
-                t_twin_ms = response.json().get('t_local_ms', None)
-                print(f'[sync] → {twin["ip"]} {endpoint}  '
-                      f'net={t_network_ms}ms  twin={t_twin_ms}ms')
-                return t_network_ms, t_twin_ms
+                body = response.json()
+                # IMPORTANT: el Twin retorna els errors d'aplicació amb
+                # HTTP 200 i {'ok': False}. Mirar només el status code feia
+                # que una aplicació fallida (p. ex. "node already exists" en
+                # un Twin divergit) es registrés com a sync correcte i no
+                # disparés mai la política de divergència.
+                if body.get('ok', True):
+                    # t_twin_ms: temps que ha trigat el Twin a aplicar el canvi localment
+                    t_twin_ms = body.get('t_local_ms', None)
+                    print(f'[sync] → {twin["ip"]} {endpoint}  '
+                          f'net={t_network_ms}ms  twin={t_twin_ms}ms')
+                    return t_network_ms, t_twin_ms
+                # El Twin ha respost però NO ha pogut aplicar el canvi →
+                # divergència d'aplicació. Reintentar és inútil (l'estat del
+                # Twin no canviarà sol), així que sortim directament cap al
+                # tractament de divergència de sota.
+                print(f'[sync_event] {endpoint} → {twin["ip"]} '
+                      f'apply failed: {body.get("error", "unknown error")}')
+                break
         except Exception as e:
             print(f'[sync_event] {endpoint} → {twin["ip"]} '
                   f'attempt {attempt+1}/{retries}: {e}')
             if attempt < retries - 1:
                 time.sleep(delay)
-    print(f'[sync_event] {endpoint} → {twin["ip"]} failed after {retries} attempts')
+    print(f'[sync_event] {endpoint} → {twin["ip"]} sync failed — marking diverged')
     set_twin_status(twin['ip'], 'diverged')
     policy = TWIN_STATUS.get(twin['ip'], {}).get('policy', 'resync')
     if policy == 'resync' and _xarxa is not None:
@@ -533,14 +557,7 @@ def send_heartbeat():
     Called by the Twin every 3s to tell the Original it is still alive.
     Also used as the initial registration message.
     """
-    import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('8.8.8.8', 80))
-        own_ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        own_ip = '127.0.0.1'
+    own_ip = _get_own_ip()
 
     try:
         _ORIGINAL_SESSION.post(

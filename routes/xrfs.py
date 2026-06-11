@@ -135,12 +135,15 @@ def _run_xrf_job(job_id, xrf_id, url, params):
     """Run XRF in background thread, store result in _jobs dict."""
     try:
         resp = requests.post(f'{url}/run', json=params, timeout=180)
-        result = resp.json()
-        with _jobs_lock:
-            _jobs[job_id] = {'ready': True, 'ok': True, 'result': result}
+        result = {'ready': True, 'ok': True, 'result': resp.json()}
     except Exception as e:
-        with _jobs_lock:
-            _jobs[job_id] = {'ready': True, 'ok': False, 'error': str(e)}
+        result = {'ready': True, 'ok': False, 'error': str(e)}
+    # update() en lloc de reassignar el dict: preserva 'created_at', que
+    # _cleanup_old_jobs necessita per expirar jobs acabats mai consultats
+    # (abans es perdia i aquests jobs quedaven a memòria per sempre).
+    with _jobs_lock:
+        job = _jobs.setdefault(job_id, {'created_at': time.time()})
+        job.update(result)
 
 
 # ── Routes ──

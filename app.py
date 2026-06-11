@@ -281,7 +281,7 @@ if __name__ == '__main__':
         shutil.rmtree(frr_dir, ignore_errors=True)   # esborra el directori sencer
 
     # 4. Inicialitza el mòdul de sincronització amb les IPs dels Twins i de l'Original
-    sync_module._xarxa = xarxa  # allow resync_one_twin to access network state
+    #    (init_sync ja injecta la referència a xarxa dins sync._xarxa)
     sync_module.init_sync(xarxa,
                           twins=args.twins,
                           twin_ip=args.twin_ip,

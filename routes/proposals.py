@@ -139,12 +139,16 @@ def approve_proposal(proposal_id):
     if _IS_TWIN:
         return jsonify({'ok': False, 'error': 'Only available on Original'})
 
+    # Comprovació + transició d'estat ATÒMIQUES dins el lock: abans, dos
+    # clics simultanis a Approve passaven tots dos el check 'pending' i
+    # l'operació s'aplicava DUES vegades. 'applying' actua de guarda.
     with _pend_lock:
         proposal = _pending.get(proposal_id)
-    if not proposal:
-        return jsonify({'ok': False, 'error': 'Proposal not found'})
-    if proposal['status'] != 'pending':
-        return jsonify({'ok': False, 'error': f'Proposal already {proposal["status"]}'})
+        if not proposal:
+            return jsonify({'ok': False, 'error': 'Proposal not found'})
+        if proposal['status'] != 'pending':
+            return jsonify({'ok': False, 'error': f'Proposal already {proposal["status"]}'})
+        proposal['status'] = 'applying'
 
     op_type = proposal['op_type']
     payload = proposal['payload']
@@ -157,6 +161,8 @@ def approve_proposal(proposal_id):
                       json=payload, timeout=35)
         resp = r.json()
     except Exception as e:
+        with _pend_lock:
+            proposal['status'] = 'pending'   # permet reintentar
         return jsonify({'ok': False, 'error': f'Apply failed: {e}'})
 
     if resp.get('ok'):
@@ -166,6 +172,8 @@ def approve_proposal(proposal_id):
         return jsonify({'ok': True})
     else:
         err = resp.get('error', 'Unknown error')
+        with _pend_lock:
+            proposal['status'] = 'pending'   # permet reintentar
         return jsonify({'ok': False, 'error': err})
 
 
@@ -177,12 +185,10 @@ def reject_proposal(proposal_id):
 
     with _pend_lock:
         proposal = _pending.get(proposal_id)
-    if not proposal:
-        return jsonify({'ok': False, 'error': 'Proposal not found'})
-    if proposal['status'] != 'pending':
-        return jsonify({'ok': False, 'error': f'Proposal already {proposal["status"]}'})
-
-    with _pend_lock:
+        if not proposal:
+            return jsonify({'ok': False, 'error': 'Proposal not found'})
+        if proposal['status'] != 'pending':
+            return jsonify({'ok': False, 'error': f'Proposal already {proposal["status"]}'})
         proposal['status'] = 'rejected'
 
     print(f'[proposals] Rejected {proposal["op_type"]} id={proposal_id}')
@@ -344,13 +350,7 @@ def my_proposal_status(proposal_id):
 # ── Helper ──
 
 def _get_own_ip():
-    """Best-effort: get our own outbound IP."""
-    import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return '127.0.0.1'
+    """Best-effort: get our own outbound IP. Delega a sync._get_own_ip, que
+    funciona també en laboratoris aïllats sense ruta a Internet."""
+    from sync import _get_own_ip as _sync_get_own_ip
+    return _sync_get_own_ip()
