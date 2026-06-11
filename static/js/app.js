@@ -976,15 +976,19 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
             .then(data => {
                 isTwin = data.is_twin;
                 if (isTwin) {
-                    // Twin: show single Propose dropdown
+                    // Twin: show Propose dropdown + My Proposals button
                     var wrap = document.getElementById('btn-propose-wrap');
                     if (wrap) wrap.style.display = 'inline-block';
+                    var btnMy = document.getElementById('btn-my-proposals');
+                    if (btnMy) btnMy.style.display = 'inline-block';
+                    refreshMyStatus();
+                    setInterval(refreshMyStatus, 5000);
                 } else {
-                    // Original: show Proposals btn + Twins toolbar indicator
+                    // Original: show Proposals btn + Twins button
                     var btnP = document.getElementById('btn-proposals');
                     if (btnP) btnP.style.display = 'inline-block';
-                    var tw = document.getElementById('twins-toolbar-wrap');
-                    if (tw) tw.style.display = 'inline-block';
+                    var btnT = document.getElementById('btn-twins');
+                    if (btnT) btnT.style.display = 'inline-block';
                     refreshProposals();
                     setInterval(refreshProposals, 3000);
                     refreshTwinStatus();
@@ -992,19 +996,35 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
                 }
             });
 
-        // ── Twins dropdown (Original toolbar) ──
-        function toggleTwinsDD() {
-            var dd = document.getElementById('twins-dd');
-            if (!dd) return;
-            dd.style.display = dd.style.display === 'block' ? 'none' : 'block';
+        // ── Twins modal (Original) ──
+        function showTwinsModal() {
+            document.getElementById('twins-modal').style.display = 'flex';
+            refreshTwinStatus();
         }
-        document.addEventListener('click', function(e) {
-            var wrap = document.getElementById('twins-toolbar-wrap');
-            if (wrap && !wrap.contains(e.target)) {
-                var dd = document.getElementById('twins-dd');
-                if (dd) dd.style.display = 'none';
-            }
-        });
+        function closeTwinsModal() {
+            document.getElementById('twins-modal').style.display = 'none';
+        }
+
+        // ── Twin self-status banner (Twin side) ──
+        // El Twin consulta el seu propi estat (rebut de l'Original via
+        // heartbeat) i mostra un banner si ha estat desconnectat.
+        function refreshMyStatus() {
+            fetch('/twin/my_status')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.ok) return;
+                    var banner = document.getElementById('twin-disconnect-banner');
+                    var reason = document.getElementById('twin-disconnect-reason');
+                    if (!banner) return;
+                    if (data.status === 'disconnected') {
+                        banner.style.display = 'block';
+                        if (reason) reason.textContent = data.reason ? '— ' + data.reason : '';
+                    } else {
+                        banner.style.display = 'none';
+                    }
+                })
+                .catch(() => {});
+        }
 
         // ── Propose dropdown (Twin) ──
         function toggleProposeDD() {
@@ -1111,7 +1131,24 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
             }
         }
 
+        var _proposalsTab = 'pending';
+
+        function switchProposalsTab(tab) {
+            _proposalsTab = tab;
+            var tabP = document.getElementById('proposals-tab-pending');
+            var tabH = document.getElementById('proposals-tab-history');
+            if (tabP && tabH) {
+                var act = 'color:#3498db;border-bottom:2px solid #3498db;font-weight:bold;';
+                var ina = 'color:#95a5a6;border-bottom:2px solid transparent;font-weight:normal;';
+                tabP.style.cssText = 'background:none;border:none;font-size:12px;cursor:pointer;padding:6px 14px;' + (tab === 'pending' ? act : ina);
+                tabH.style.cssText = 'background:none;border:none;font-size:12px;cursor:pointer;padding:6px 14px;' + (tab === 'history' ? act : ina);
+            }
+            if (tab === 'pending') renderProposalsFull();
+            else                   renderProposalsHistory();
+        }
+
         function renderProposalsFull(proposals) {
+            if (_proposalsTab !== 'pending') return;
             if (!proposals) {
                 fetch('/proposals').then(r => r.json()).then(d => { if (d.ok) renderProposalsFull(d.proposals); });
                 return;
@@ -1122,7 +1159,12 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
             var empty  = document.getElementById('proposals-modal-empty');
             if (!list) return;
             if (mBadge) { mBadge.style.display = pending.length > 0 ? 'inline' : 'none'; mBadge.textContent = pending.length; }
-            if (pending.length === 0) { list.innerHTML = ''; empty.style.display = 'block'; return; }
+            if (pending.length === 0) {
+                list.innerHTML = '';
+                empty.textContent = 'No pending proposals.';
+                empty.style.display = 'block';
+                return;
+            }
             empty.style.display = 'none';
             list.innerHTML = pending.map(function(p) {
                 var ts = new Date(p.timestamp * 1000).toLocaleTimeString();
@@ -1149,12 +1191,103 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
                                            border-radius:4px;cursor:pointer;font-size:12px;">✗ Reject</button>
                         </div>
                     </div>
+                    <input type="text" id="proposal-comment-${p.id}"
+                           placeholder="Optional comment for the Twin..."
+                           style="width:100%;margin-top:8px;background:#1a2a3a;border:1px solid #1a3a5c;
+                                  border-radius:4px;color:#ecf0f1;font-size:11px;padding:5px 8px;">
                 </div>`;
             }).join('');
         }
 
+        function renderProposalsHistory() {
+            if (_proposalsTab !== 'history') return;
+            fetch('/proposals/history')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.ok) return;
+                    var list  = document.getElementById('proposals-modal-list');
+                    var empty = document.getElementById('proposals-modal-empty');
+                    if (!list) return;
+                    var resolved = data.history.filter(p => p.status !== 'pending');
+                    if (resolved.length === 0) {
+                        list.innerHTML = '';
+                        empty.textContent = 'No resolved proposals yet.';
+                        empty.style.display = 'block';
+                        return;
+                    }
+                    empty.style.display = 'none';
+                    list.innerHTML = resolved.map(p => proposalHistoryCard(p, true)).join('');
+                })
+                .catch(() => {});
+        }
+
+        // Targeta d'historial compartida entre Original (showTwin=true)
+        // i Twin (showTwin=false — el Twin ja sap que són seves)
+        function proposalHistoryCard(p, showTwin) {
+            var ts = new Date(p.timestamp * 1000).toLocaleString();
+            var icon = p.op_type === 'add_router' ? '🔀' : p.op_type === 'remove_node' ? '🗑' : '💻';
+            var detail = p.op_type === 'add_host'   ? (p.payload.name + ' → ' + p.payload.router)
+                       : p.op_type === 'add_router' ? (p.payload.name + ' → [' + (p.payload.connected_routers||[]).join(', ') + ']')
+                       : p.payload.name;
+            var stColor = p.status === 'approved' ? '#27ae60'
+                        : p.status === 'rejected' ? '#e74c3c' : '#f39c12';
+            var fromHtml = showTwin
+                ? `from <span style="color:#95a5a6;">${p.twin_ip}</span> · `
+                : '';
+            var commentHtml = p.comment
+                ? `<div style="color:#bdc3c7;font-size:11px;margin-top:5px;
+                               border-left:2px solid ${stColor};padding-left:8px;">
+                       💬 ${p.comment}</div>`
+                : '';
+            return `<div style="background:#0d1f2d;border:1px solid #1a3a5c;border-radius:6px;
+                                padding:10px 12px;margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <span style="color:#3498db;font-size:12px;">${icon} ${p.op_type}</span>
+                        <span style="color:#ecf0f1;font-size:12px;margin-left:6px;font-weight:bold;">${detail}</span>
+                        <div style="color:#4a6278;font-size:11px;margin-top:3px;">${fromHtml}${ts}</div>
+                    </div>
+                    <span style="color:${stColor};font-size:11px;font-weight:bold;
+                                 border:1px solid ${stColor};border-radius:3px;padding:2px 8px;">
+                        ${p.status.toUpperCase()}</span>
+                </div>
+                ${commentHtml}
+            </div>`;
+        }
+
+        // ── My Proposals modal (Twin side) ──
+        function showMyProposalsModal() {
+            document.getElementById('my-proposals-modal').style.display = 'flex';
+            fetch('/proposals/my_history')
+                .then(r => r.json())
+                .then(data => {
+                    var list  = document.getElementById('my-proposals-list');
+                    var empty = document.getElementById('my-proposals-empty');
+                    if (!list) return;
+                    if (!data.ok || !data.history || data.history.length === 0) {
+                        list.innerHTML = '';
+                        empty.style.display = 'block';
+                        return;
+                    }
+                    empty.style.display = 'none';
+                    list.innerHTML = data.history.map(p => proposalHistoryCard(p, false)).join('');
+                })
+                .catch(() => {});
+        }
+        function closeMyProposalsModal() {
+            document.getElementById('my-proposals-modal').style.display = 'none';
+        }
+
+        function _getProposalComment(id) {
+            var inp = document.getElementById('proposal-comment-' + id);
+            return inp ? inp.value.trim() : '';
+        }
+
         function approveProposal(id) {
-            fetch('/proposals/approve/' + id, {method:'POST'})
+            fetch('/proposals/approve/' + id, {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({comment: _getProposalComment(id)})
+            })
                 .then(r => r.json())
                 .then(data => {
                     if (data.ok) { refreshProposals(); setTimeout(() => location.reload(), 600); }
@@ -1163,12 +1296,15 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
         }
 
         function rejectProposal(id) {
-            fetch('/proposals/reject/' + id, {method:'POST'})
+            fetch('/proposals/reject/' + id, {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({comment: _getProposalComment(id)})
+            })
                 .then(r => r.json())
                 .then(() => refreshProposals());
         }
 
-        // ── Twin Status panel (Original sidebar) ──
+        // ── Twin Status (Original — modal) ──
 
         function refreshTwinStatus() {
             fetch('/proposals/twin_status')
@@ -1178,85 +1314,93 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
         }
 
         function renderTwinStatus(statuses) {
-            var list  = document.getElementById('twin-status-list');
-            var badge = document.getElementById('twins-count-badge');
-            if (!list) return;
+            var list   = document.getElementById('twins-modal-list');
+            var empty  = document.getElementById('twins-modal-empty');
+            var badge  = document.getElementById('twins-count-badge');
+            var mBadge = document.getElementById('twins-modal-badge');
             var ips = Object.keys(statuses);
-            // Badge: count only connected/diverged (not offline/disconnected)
-            var activeCount = ips.filter(ip => ['connected','diverged'].includes(statuses[ip].status)).length;
-            if (badge) badge.textContent = ips.length + ' (' + activeCount + ' active)';
+            // Badge: count only connected twins as active
+            var activeCount = ips.filter(ip => statuses[ip].status === 'connected').length;
+            if (badge)  badge.textContent  = ips.length + ' (' + activeCount + ' active)';
+            if (mBadge) mBadge.textContent = ips.length + ' (' + activeCount + ' active)';
+            if (!list) return;
             if (ips.length === 0) {
-                list.innerHTML = '<span style="color:#4a6278;font-size:11px;">No twins registered yet.</span>';
+                list.innerHTML = '';
+                if (empty) empty.style.display = 'block';
                 return;
             }
+            if (empty) empty.style.display = 'none';
+
             list.innerHTML = ips.map(function(ip) {
                 var s = statuses[ip];
-                // Color by status
-                var color = s.status === 'connected'    ? '#27ae60'
-                          : s.status === 'diverged'     ? '#f39c12'
-                          : s.status === 'offline'      ? '#95a5a6'
-                          :                               '#e74c3c';  // disconnected
-                var policyLabel = s.policy === 'disconnect' ? 'on error: disconnect' : 'on error: resync';
+                var color = s.status === 'connected' ? '#27ae60'
+                          : s.status === 'offline'   ? '#95a5a6'
+                          :                            '#e74c3c';  // disconnected
+                var statusLabel = s.status.toUpperCase();
 
-                // Resync button: shown when diverged, offline or disconnected
-                var resyncBtn = (s.status !== 'connected')
-                    ? `<button onclick="twinAction('${ip}','resync')"
-                               title="Send full snapshot to restore Original state"
-                               style="font-size:10px;background:#f39c12;color:#fff;border:none;
-                                      padding:2px 6px;border-radius:3px;cursor:pointer;margin-right:3px;">
-                          🔄 Resync</button>`
-                    : '';
-
-                // Main action button
-                var mainBtn = s.status === 'disconnected'
-                    ? `<button onclick="twinAction('${ip}','reconnect')"
-                               title="Re-enable sync to this Twin"
-                               style="font-size:10px;background:#27ae60;color:#fff;border:none;
-                                      padding:2px 6px;border-radius:3px;cursor:pointer;">
-                          Reconnect</button>`
-                    : s.status === 'offline'
-                    ? `<span style="font-size:10px;color:#95a5a6;font-style:italic;">no heartbeat</span>`
-                    : `<button onclick="twinAction('${ip}','disconnect')"
+                // Action buttons by state
+                var actions = '';
+                if (s.status === 'connected') {
+                    actions = `<button onclick="twinAction('${ip}','disconnect')"
                                title="Stop sending changes to this Twin"
-                               style="font-size:10px;background:#e74c3c;color:#fff;border:none;
-                                      padding:2px 6px;border-radius:3px;cursor:pointer;">
+                               style="font-size:11px;background:#e74c3c;color:#fff;border:none;
+                                      padding:5px 14px;border-radius:4px;cursor:pointer;">
                           Disconnect</button>`;
+                } else if (s.status === 'disconnected') {
+                    actions = `<button id="btn-reconnect-${ip.replaceAll('.','-')}"
+                               onclick="twinAction('${ip}','reconnect')"
+                               title="Full resync + reconnect (always together)"
+                               style="font-size:11px;background:#27ae60;color:#fff;border:none;
+                                      padding:5px 14px;border-radius:4px;cursor:pointer;">
+                          🔄 Resync & Reconnect</button>`;
+                } else {  // offline
+                    actions = `<span style="font-size:11px;color:#95a5a6;font-style:italic;">
+                          waiting for heartbeat...</span>`;
+                }
 
-                // Last seen
                 var lastSeen = s.last_seen
                     ? new Date(s.last_seen * 1000).toLocaleTimeString()
                     : 'never';
 
-                return `<div style="padding:5px 0;border-bottom:1px solid #1a2a3a;">
-                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">
+                var reasonHtml = s.reason
+                    ? `<div style="color:#f39c12;font-size:11px;margin-top:5px;">
+                           ⚠ ${s.reason}</div>`
+                    : '';
+
+                return `<div style="background:#0d1f2d;border:1px solid #1a3a5c;border-radius:6px;
+                                    padding:12px 14px;margin-bottom:8px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
                         <div>
-                            <span style="color:${color};font-size:13px;">●</span>
-                            <span style="color:#ecf0f1;font-size:11px;margin-left:3px;">${ip}</span>
-                            <span style="color:${color};font-size:10px;margin-left:4px;">${s.status}</span>
-                            <span style="color:#4a6278;font-size:10px;margin-left:4px;">· ${lastSeen}</span>
+                            <span style="color:${color};font-size:14px;">●</span>
+                            <span style="color:#ecf0f1;font-size:13px;font-weight:bold;margin-left:6px;">${ip}</span>
+                            <span style="color:${color};font-size:11px;margin-left:8px;
+                                         border:1px solid ${color};border-radius:3px;padding:1px 6px;">
+                                ${statusLabel}</span>
+                            <div style="color:#4a6278;font-size:11px;margin-top:4px;">
+                                last heartbeat: ${lastSeen}</div>
+                            ${reasonHtml}
                         </div>
-                        <div style="display:flex;gap:3px;align-items:center;">${resyncBtn}${mainBtn}</div>
+                        <div style="display:flex;gap:6px;align-items:center;">${actions}</div>
                     </div>
-                    <div style="color:#4a6278;font-size:10px;cursor:pointer;"
-                         onclick="togglePolicy('${ip}','${s.policy}')"
-                         title="Click to toggle divergence policy">⚙ ${policyLabel}</div>
                 </div>`;
             }).join('');
         }
 
         function twinAction(ip, action) {
+            if (action === 'reconnect') {
+                // Resync síncron — pot trigar uns segons; deshabilita el botó
+                var btn = document.getElementById('btn-reconnect-' + ip.replaceAll('.','-'));
+                if (btn) { btn.disabled = true; btn.textContent = 'Resyncing...'; }
+            }
             fetch('/proposals/twin_action', {
                 method:'POST', headers:{'Content-Type':'application/json'},
                 body: JSON.stringify({twin_ip:ip, action:action})
-            }).then(() => { refreshTwinStatus(); if (action==='resync') alert('Resync started for ' + ip); });
-        }
-
-        function togglePolicy(ip, currentPolicy) {
-            var newPolicy = currentPolicy === 'resync' ? 'disconnect' : 'resync';
-            fetch('/proposals/twin_action', {
-                method:'POST', headers:{'Content-Type':'application/json'},
-                body: JSON.stringify({twin_ip:ip, action:'set_policy', policy:newPolicy})
-            }).then(() => refreshTwinStatus());
+            }).then(r => r.json())
+              .then(data => {
+                  if (!data.ok) alert('Action failed: ' + (data.error || ''));
+                  refreshTwinStatus();
+              })
+              .catch(() => refreshTwinStatus());
         }
 
         // ═══════════════════════════════════════════════════════════════

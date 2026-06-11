@@ -26,6 +26,7 @@ MESURA DE THROUGHPUT I CPU:
   ops_per_sec     = capacitat de CPU: 1000 / t_local_ms (ops/s en serie) + recent (ultims 10s)
 """
 
+import hashlib
 import json
 import threading
 import time
@@ -94,17 +95,22 @@ TWINS       = []   # poblat dinàmicament quan els Twins arrenquen amb --twin --
 ORIGINAL_IP = '10.4.39.102'  # IP de l'Original — usada pels Twins per fer ping de tornada
 
 # ── Twin state tracking ───────────────────────────────────────────────────
-# {ip: {status, policy, last_seen, diverged_at}}
-# status : 'connected' | 'diverged' | 'disconnected'
-# policy : 'resync' (default) | 'disconnect'
+# {ip: {status, last_seen, reason}}
+# status : 'connected' | 'offline' | 'disconnected'
+#   connected    → receives all sync changes normally
+#   offline      → no heartbeat received recently (network/process down)
+#   disconnected → actively disconnected by the Original (manual or automatic
+#                  on divergence); no changes sent until manual reconnect,
+#                  which ALWAYS performs a full resync first
+# reason : human-readable explanation of why the Twin is disconnected/offline
 TWIN_STATUS       = {}
 _twin_status_lock = threading.Lock()
 
 
 def _init_twin(ip):
     if ip not in TWIN_STATUS:
-        TWIN_STATUS[ip] = {'status': 'connected', 'policy': 'resync',
-                            'last_seen': None, 'diverged_at': None}
+        TWIN_STATUS[ip] = {'status': 'connected', 'last_seen': None,
+                            'reason': None}
 
 
 def _touch_twin(ip):
@@ -113,18 +119,11 @@ def _touch_twin(ip):
         TWIN_STATUS[ip]['last_seen'] = round(time.time(), 2)
 
 
-def set_twin_status(ip, status):
+def set_twin_status(ip, status, reason=None):
     with _twin_status_lock:
         _init_twin(ip)
         TWIN_STATUS[ip]['status'] = status
-        if status == 'diverged':
-            TWIN_STATUS[ip]['diverged_at'] = round(time.time(), 2)
-
-
-def set_twin_policy(ip, policy):
-    with _twin_status_lock:
-        _init_twin(ip)
-        TWIN_STATUS[ip]['policy'] = policy
+        TWIN_STATUS[ip]['reason'] = reason
 
 
 def get_twin_statuses():
@@ -133,10 +132,78 @@ def get_twin_statuses():
 
 
 def _is_twin_active(ip):
-    """Return True only if Twin is connected or diverged — not offline or disconnected."""
+    """Return True only if Twin is connected — offline/disconnected Twins
+    receive no sync events."""
     with _twin_status_lock:
         status = TWIN_STATUS.get(ip, {}).get('status', 'connected')
-        return status in ('connected', 'diverged')
+        return status == 'connected'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOPOLOGY HASH — divergence detection
+# The Twin sends a hash of its topology with every heartbeat. The Original
+# compares it against its own hash: a persistent mismatch means the Twin has
+# been modified locally (out-of-band) and is automatically disconnected.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Estat propi del Twin segons l'Original (rebut a la resposta del heartbeat).
+# El dashboard del Twin l'usa per mostrar si ha estat desconnectat i per què.
+TWIN_SELF_STATUS = {'status': 'connected', 'reason': None}
+
+# Comptador de mismatches consecutius per Twin (només a l'Original).
+# Cal un mínim de 2 heartbeats seguits amb hash diferent per desconnectar:
+# un sol mismatch pot ser un sync en vol (l'Original ja ha aplicat el canvi
+# però el Twin encara no) — no és divergència real.
+_HASH_MISMATCH_COUNT = {}
+
+
+def topology_hash(xarxa):
+    """
+    Deterministic hash of the network topology (nodes + matrix).
+    json.dumps amb sort_keys garanteix que el mateix estat produeix sempre
+    el mateix hash, independentment de l'ordre d'inserció als dicts.
+    """
+    if xarxa is None:
+        return None
+    try:
+        matrix = [
+            [cell if isinstance(cell, str) else int(cell) for cell in row]
+            for row in xarxa.network_matrix
+        ]
+        payload = json.dumps({'nodes': xarxa.nodes, 'matrix': matrix},
+                             sort_keys=True)
+        return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
+    except Exception:
+        return None
+
+
+def check_twin_hash(ip, twin_hash):
+    """
+    Called by the Original on every heartbeat. Compares the Twin's topology
+    hash against the Original's own. After 2 consecutive mismatches the Twin
+    is automatically disconnected (security: it has been modified locally).
+    """
+    if twin_hash is None or _xarxa is None:
+        return
+    with _twin_status_lock:
+        status = TWIN_STATUS.get(ip, {}).get('status')
+    if status != 'connected':
+        # Disconnected/offline Twins are expected to mismatch — don't count
+        _HASH_MISMATCH_COUNT.pop(ip, None)
+        return
+
+    own_hash = topology_hash(_xarxa)
+    if own_hash is None or own_hash == twin_hash:
+        _HASH_MISMATCH_COUNT.pop(ip, None)
+        return
+
+    count = _HASH_MISMATCH_COUNT.get(ip, 0) + 1
+    _HASH_MISMATCH_COUNT[ip] = count
+    if count >= 2:
+        _HASH_MISMATCH_COUNT.pop(ip, None)
+        reason = 'local modification detected (topology hash mismatch)'
+        set_twin_status(ip, 'disconnected', reason=reason)
+        print(f'[sync] Twin {ip} DISCONNECTED — {reason}')
 
 
 def register_twin(ip, port=5000):
@@ -157,6 +224,7 @@ def register_twin(ip, port=5000):
         TWIN_STATUS[ip]['port']      = port
         if TWIN_STATUS[ip]['status'] in ('offline', 'unknown'):
             TWIN_STATUS[ip]['status'] = 'connected'
+            TWIN_STATUS[ip]['reason'] = None
 
     # Dynamically add to TWINS if not already present (e.g. Twin started
     # with --twin-ip but was not listed in the Original's --twins argument)
@@ -183,6 +251,7 @@ def _start_heartbeat_checker():
                     if last and (now - last) > HEARTBEAT_TIMEOUT:
                         if s['status'] not in ('offline', 'disconnected'):
                             s['status'] = 'offline'
+                            s['reason'] = 'no heartbeat received'
                             print(f'[sync] Twin {ip} marked offline (no heartbeat)')
 
     t = threading.Thread(target=_check, daemon=True)
@@ -287,7 +356,7 @@ def record_sync_latency(operation, t_local_ms, t_network_ms, t_twin_ms,
 
     En el flux HTTP actual, t_local, t_network i t_twin arriben SEMPRE junts en
     una sola crida des de _do_sync_to_all_twins, així que cada operació afegeix
-    una entrada nova. Si cap Twin respon (offline/diverged/timeout), t_network i
+    una entrada nova. Si cap Twin respon (offline/disconnected/timeout), t_network i
     t_twin són None i l'entrada ho reflecteix — NO se sobreescriu cap entrada
     anterior (això evitava registrar correctament operacions amb el Twin caigut).
 
@@ -386,15 +455,13 @@ def _do_sync_to_one_twin(twin, endpoint, payload, retries=3, delay=0.5):
                   f'attempt {attempt+1}/{retries}: {e}')
             if attempt < retries - 1:
                 time.sleep(delay)
-    print(f'[sync_event] {endpoint} → {twin["ip"]} sync failed — marking diverged')
-    set_twin_status(twin['ip'], 'diverged')
-    policy = TWIN_STATUS.get(twin['ip'], {}).get('policy', 'resync')
-    if policy == 'resync' and _xarxa is not None:
-        print(f'[sync] Divergence policy=resync → resyncing {twin["ip"]}')
-        threading.Thread(target=resync_one_twin, args=(_xarxa, twin), daemon=True).start()
-    elif policy == 'disconnect':
-        print(f'[sync] Divergence policy=disconnect → disconnecting {twin["ip"]}')
-        set_twin_status(twin['ip'], 'disconnected')
+    print(f'[sync_event] {endpoint} → {twin["ip"]} sync failed — disconnecting Twin')
+    # Divergència: el Twin no ha pogut aplicar el canvi (o no s'hi pot
+    # arribar). En ambdós casos el seu estat ja NO coincideix amb l'Original
+    # (ha perdut com a mínim aquest event), així que es desconnecta
+    # automàticament. La reconnexió manual sempre fa un resync complet.
+    set_twin_status(twin['ip'], 'disconnected',
+                    reason=f'sync failed on {endpoint} — Twin state divergent')
     return None, None
 
 
@@ -556,15 +623,26 @@ def send_heartbeat():
     """
     Called by the Twin every 3s to tell the Original it is still alive.
     Also used as the initial registration message.
+
+    Inclou el hash de la topologia local: l'Original el compara amb el seu
+    per detectar modificacions locals del Twin (divergència out-of-band).
+    La resposta de l'Original conté l'estat d'aquest Twin (connected /
+    disconnected + motiu), que es guarda a TWIN_SELF_STATUS perquè el
+    dashboard del Twin pugui mostrar si ha estat desconnectat i per què.
     """
     own_ip = _get_own_ip()
 
     try:
-        _ORIGINAL_SESSION.post(
+        r = _ORIGINAL_SESSION.post(
             f'http://{ORIGINAL_IP}:5000/twin/heartbeat',
-            json={'ip': own_ip, 'port': 5000},
+            json={'ip': own_ip, 'port': 5000,
+                  'topo_hash': topology_hash(_xarxa)},
             timeout=5,
         )
+        body = r.json()
+        if body.get('ok'):
+            TWIN_SELF_STATUS['status'] = body.get('status', 'connected')
+            TWIN_SELF_STATUS['reason'] = body.get('reason')
     except Exception:
         pass  # Original may not be reachable yet — heartbeat will retry
 

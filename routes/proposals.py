@@ -15,25 +15,34 @@ FLOW
 TWIN STATUS
 ───────────
   Each Twin can be in one of three states:
-    connected   → receives all sync changes normally
-    diverged    → last sync failed (local changes incompatible)
-    disconnected→ manually disconnected, no changes sent
+    connected    → receives all sync changes normally
+    offline      → no heartbeat received recently (network/process down)
+    disconnected → actively disconnected by the Original, either manually or
+                   automatically (sync failure, or local modification detected
+                   via topology hash mismatch in the heartbeat)
 
-  On divergence (sync failure), the Original applies one of two policies
-  (configurable per-Twin from the dashboard):
-    resync      → send full snapshot to restore Original state (default)
-    disconnect  → stop sending changes until manually reconnected
+  Reconnecting a disconnected Twin ALWAYS performs a full resync first —
+  a Twin can never rejoin without restoring the Original's state.
+
+PROPOSAL HISTORY
+────────────────
+  All proposals are kept in memory with their final status (approved /
+  rejected) and an optional comment written by the Original's operator.
+  The Original sees the full history; each Twin only sees its own.
 
 Endpoints on Original:
   GET  /proposals                   → list pending proposals
+  GET  /proposals/history           → full history (optional ?twin_ip= filter)
   POST /propose                     → receive proposal from a Twin
-  POST /proposals/approve/<id>      → approve and apply
-  POST /proposals/reject/<id>       → reject and discard
-  GET  /proposals/twin_status       → Twin states + policies
-  POST /proposals/twin_action       → resync / disconnect / reconnect
+  POST /proposals/approve/<id>      → approve and apply (optional comment)
+  POST /proposals/reject/<id>       → reject and discard (optional comment)
+  GET  /proposals/twin_status       → Twin states + reasons
+  POST /proposals/twin_action       → disconnect / reconnect (resync+connect)
 
 Endpoint on Twin:
   POST /propose_to_original         → forward proposal to Original
+  GET  /proposals/my_history        → own proposal history (from Original)
+  GET  /twin/my_status              → own status as seen by the Original
 """
 
 import threading
@@ -69,12 +78,14 @@ _pend_lock = threading.Lock()
 def _new_proposal(twin_ip, op_type, payload):
     pid = str(uuid.uuid4())[:8]
     return {
-        'id':        pid,
-        'twin_ip':   twin_ip,
-        'op_type':   op_type,   # 'add_host' | 'add_router' | 'remove_node'
-        'payload':   payload,
-        'timestamp': round(time.time(), 2),
-        'status':    'pending',
+        'id':          pid,
+        'twin_ip':     twin_ip,
+        'op_type':     op_type,   # 'add_host' | 'add_router' | 'remove_node'
+        'payload':     payload,
+        'timestamp':   round(time.time(), 2),
+        'status':      'pending',
+        'comment':     None,      # comentari de l'Original en aprovar/rebutjar
+        'resolved_at': None,      # timestamp de la resolució
     }
 
 
@@ -92,6 +103,24 @@ def list_proposals():
     # Sort: pending first, then by timestamp
     proposals.sort(key=lambda p: (0 if p['status'] == 'pending' else 1, p['timestamp']))
     return jsonify({'ok': True, 'proposals': proposals})
+
+
+@bp.route('/proposals/history')
+def proposals_history():
+    """
+    Full proposal history (Original side), most recent first.
+    Optional ?twin_ip=X.X.X.X filter — used by Twins to retrieve ONLY their
+    own proposals (a Twin must never see other Twins' history).
+    """
+    if _IS_TWIN:
+        return jsonify({'ok': False, 'error': 'Only available on Original'})
+    twin_ip = request.args.get('twin_ip', '').strip()
+    with _pend_lock:
+        proposals = list(_pending.values())
+    if twin_ip:
+        proposals = [p for p in proposals if p['twin_ip'] == twin_ip]
+    proposals.sort(key=lambda p: p['timestamp'], reverse=True)
+    return jsonify({'ok': True, 'history': proposals})
 
 
 @bp.route('/propose', methods=['POST'])
@@ -152,6 +181,7 @@ def approve_proposal(proposal_id):
 
     op_type = proposal['op_type']
     payload = proposal['payload']
+    comment = (request.json or {}).get('comment') or None
 
     # Apply the operation by calling the existing endpoint on localhost.
     # Flask threaded=True handles concurrent requests so the loopback call
@@ -167,7 +197,9 @@ def approve_proposal(proposal_id):
 
     if resp.get('ok'):
         with _pend_lock:
-            proposal['status'] = 'approved'
+            proposal['status']      = 'approved'
+            proposal['comment']     = comment
+            proposal['resolved_at'] = round(time.time(), 2)
         print(f'[proposals] Approved {op_type} id={proposal_id}')
         return jsonify({'ok': True})
     else:
@@ -179,17 +211,20 @@ def approve_proposal(proposal_id):
 
 @bp.route('/proposals/reject/<proposal_id>', methods=['POST'])
 def reject_proposal(proposal_id):
-    """Reject a proposal — mark as rejected, do not apply."""
+    """Reject a proposal — mark as rejected, do not apply. Optional comment."""
     if _IS_TWIN:
         return jsonify({'ok': False, 'error': 'Only available on Original'})
 
+    comment = (request.json or {}).get('comment') or None
     with _pend_lock:
         proposal = _pending.get(proposal_id)
         if not proposal:
             return jsonify({'ok': False, 'error': 'Proposal not found'})
         if proposal['status'] != 'pending':
             return jsonify({'ok': False, 'error': f'Proposal already {proposal["status"]}'})
-        proposal['status'] = 'rejected'
+        proposal['status']      = 'rejected'
+        proposal['comment']     = comment
+        proposal['resolved_at'] = round(time.time(), 2)
 
     print(f'[proposals] Rejected {proposal["op_type"]} id={proposal_id}')
     return jsonify({'ok': True})
@@ -197,7 +232,7 @@ def reject_proposal(proposal_id):
 
 @bp.route('/proposals/twin_status')
 def get_twin_status():
-    """Return status + divergence policy for each known Twin."""
+    """Return status + reason for each known Twin."""
     if _IS_TWIN:
         return jsonify({'ok': False, 'error': 'Only available on Original'})
     from sync import get_twin_statuses
@@ -208,10 +243,10 @@ def get_twin_status():
 def twin_action():
     """
     Perform a manual action on a Twin:
-      action='resync'      → send full snapshot to Twin (restores Original state)
       action='disconnect'  → stop sending changes to this Twin
-      action='reconnect'   → re-enable sync to this Twin
-      action='set_policy'  → change divergence policy ('resync' or 'disconnect')
+      action='reconnect'   → full resync + re-enable sync (always together:
+                             a Twin can never rejoin without restoring the
+                             Original's state first)
     """
     if _IS_TWIN:
         return jsonify({'ok': False, 'error': 'Only available on Original'})
@@ -219,34 +254,30 @@ def twin_action():
     data    = request.json or {}
     twin_ip = data.get('twin_ip')
     action  = data.get('action')
-    policy  = data.get('policy')   # for set_policy
 
     if not twin_ip:
         return jsonify({'ok': False, 'error': 'twin_ip required'})
 
     from sync import set_twin_status, get_twin_statuses, resync_one_twin, TWINS
 
-    if action == 'resync':
-        twin = next((t for t in TWINS if t['ip'] == twin_ip), None)
-        if not twin:
-            return jsonify({'ok': False, 'error': 'Twin IP not in TWINS list'})
-        threading.Thread(target=resync_one_twin, args=(_xarxa, twin), daemon=True).start()
-        return jsonify({'ok': True, 'action': 'resync_started'})
-
-    elif action == 'disconnect':
-        set_twin_status(twin_ip, 'disconnected')
+    if action == 'disconnect':
+        set_twin_status(twin_ip, 'disconnected',
+                        reason='disconnected manually by Original')
         return jsonify({'ok': True, 'action': 'disconnected'})
 
     elif action == 'reconnect':
-        set_twin_status(twin_ip, 'connected')
-        return jsonify({'ok': True, 'action': 'reconnected'})
-
-    elif action == 'set_policy':
-        if policy not in ('resync', 'disconnect'):
-            return jsonify({'ok': False, 'error': 'policy must be resync or disconnect'})
-        from sync import set_twin_policy
-        set_twin_policy(twin_ip, policy)
-        return jsonify({'ok': True, 'policy': policy})
+        twin = next((t for t in TWINS if t['ip'] == twin_ip), None)
+        if not twin:
+            return jsonify({'ok': False, 'error': 'Twin IP not in TWINS list'})
+        # Resync síncron: la reconnexió només es completa si el snapshot
+        # s'aplica correctament. resync_one_twin posa status='connected'
+        # (i neteja el reason) si té èxit.
+        resync_one_twin(_xarxa, twin)
+        status = get_twin_statuses().get(twin_ip, {}).get('status')
+        if status == 'connected':
+            return jsonify({'ok': True, 'action': 'reconnected'})
+        return jsonify({'ok': False,
+                        'error': 'Resync failed — Twin remains disconnected'})
 
     return jsonify({'ok': False, 'error': f'Unknown action: {action}'})
 
@@ -286,15 +317,25 @@ def twin_register():
 def twin_heartbeat():
     """
     Periodic heartbeat (every 3s). Updates last_seen, restores 'offline' → 'connected'.
+
+    El heartbeat porta el hash de la topologia del Twin: si difereix del de
+    l'Original durant 2 heartbeats consecutius, el Twin es desconnecta
+    automàticament (modificació local detectada). La resposta retorna
+    l'estat del Twin perquè aquest sàpiga si ha estat desconnectat i per què.
     """
     if _IS_TWIN:
         return jsonify({'ok': False, 'error': 'Only available on Original'})
     data      = request.json or {}
     twin_ip   = data.get('ip') or request.remote_addr
     twin_port = int(data.get('port', 5000))
-    from sync import register_twin
+    from sync import register_twin, check_twin_hash, get_twin_statuses
     register_twin(twin_ip, twin_port)
-    return jsonify({'ok': True})
+    check_twin_hash(twin_ip, data.get('topo_hash'))
+
+    st = get_twin_statuses().get(twin_ip, {})
+    return jsonify({'ok': True,
+                    'status': st.get('status', 'connected'),
+                    'reason': st.get('reason')})
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -345,6 +386,41 @@ def my_proposal_status(proposal_id):
         return jsonify(r.json())
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
+
+
+@bp.route('/proposals/my_history')
+def my_proposal_history():
+    """
+    Twin-side: retrieve the history of proposals submitted by THIS Twin.
+    Forwards to the Original with the Twin's own IP as filter, so a Twin
+    can never see other Twins' proposals.
+    """
+    if not _IS_TWIN:
+        return jsonify({'ok': False, 'error': 'Only available on Twin'})
+
+    from sync import ORIGINAL_IP
+    try:
+        r = _req.get(
+            f'http://{ORIGINAL_IP}:5000/proposals/history',
+            params={'twin_ip': _get_own_ip()},
+            timeout=5,
+        )
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+
+@bp.route('/twin/my_status')
+def twin_my_status():
+    """
+    Twin-side: own status as seen by the Original (updated on every
+    heartbeat response). Lets the Twin dashboard show that it has been
+    disconnected and why.
+    """
+    if not _IS_TWIN:
+        return jsonify({'ok': False, 'error': 'Only available on Twin'})
+    from sync import TWIN_SELF_STATUS
+    return jsonify({'ok': True, **TWIN_SELF_STATUS})
 
 
 # ── Helper ──
