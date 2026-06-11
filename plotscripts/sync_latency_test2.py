@@ -18,8 +18,9 @@ Metrics recorded per operation:
 
 Generates:
   - CSV with all individual measurements (including original-twin sync metrics)
-  - 8 plots: latency, ops/s capacity, throughput, component breakdown,
-             payload size, CPU overhead, memory delta, FRR memory
+  - 9 plots (3x3 grid): end-to-end latency, latency breakdown (add_host,
+    add_router), ops/s capacity, Twin sync overhead, sync payload size,
+    system RAM, host CPU usage, jitter per operation type
 
 Usage:
     sudo python3 sync_latency_test2.py
@@ -286,71 +287,108 @@ def do_operation(op):
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
 def generate_plots(rows, routing_mode='unknown'):
-    fig, axes = plt.subplots(4, 2, figsize=(16, 22))
+    """
+    9 plots in a 3x3 grid, ordered as a coherent narrative:
+      Row 1 — TIME:      G1 end-to-end latency · G2 breakdown add_host · G3 breakdown add_router
+      Row 2 — CAPACITY:  G4 ops/s capacity     · G5 Twin sync overhead · G6 sync payload size
+      Row 3 — RESOURCES: G7 system RAM         · G8 CPU usage          · G9 jitter per op type
+    """
+    fig, axes = plt.subplots(3, 3, figsize=(22, 16))
     mode_label = routing_mode.upper().replace('_', '+')
     fig.suptitle(
         f'Digital Twin Network — System Capacity & Sync Latency Study\n'
         f'Routing mode: {mode_label}  ·  How much can the Original+Twin system handle?',
-        fontsize=14, fontweight='bold'
+        fontsize=15, fontweight='bold'
     )
 
     hosts_data   = sorted([r for r in rows if r['op_type'] == 'host'],   key=lambda x: x['n_nodes'])
     routers_data = sorted([r for r in rows if r['op_type'] == 'router'], key=lambda x: x['n_nodes'])
     has_twin     = any(r['t_twin_ms'] is not None for r in hosts_data + routers_data)
 
-    # ── G1: Latència total ──────────────────────────────────────────────────
+    # ── G1: End-to-end sync latency ─────────────────────────────────────────
     ax = axes[0][0]
     if hosts_data:
         ax.plot([r['n_nodes'] for r in hosts_data],
                 [r['t_total_ms'] for r in hosts_data],
-                'o-', color='#27ae60', linewidth=2, label='add_host')
+                'o-', color='#27ae60', linewidth=2, markersize=4, label='add_host')
     if routers_data:
         ax.plot([r['n_nodes'] for r in routers_data],
                 [r['t_total_ms'] for r in routers_data],
-                's-', color='#e74c3c', linewidth=2, label='add_router')
-    ax.set_title('End-to-End Sync Latency vs Network Size', fontweight='bold', fontsize=12)
+                's-', color='#e74c3c', linewidth=2, markersize=4, label='add_router')
+    ax.set_title('G1 — End-to-End Sync Latency vs Network Size',
+                 fontweight='bold', fontsize=12)
     ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('t_total  ms  [max(t_local, t_network)]')
+    ax.set_ylabel('t_total (ms)  [max(t_local, t_network)]')
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G2: ops/s ───────────────────────────────────────────────────────────
-    ax = axes[0][1]
+    # ── Helper: latency breakdown as overlapping areas ──────────────────────
+    # t_local and t_network run IN PARALLEL (not stacked), so the two areas
+    # overlap and the upper envelope of the two equals t_total.
+    def breakdown_areas(ax, data, op_label, color_title):
+        if not data:
+            ax.text(0.5, 0.5, f'No {op_label} data', ha='center', va='center',
+                    transform=ax.transAxes, color='grey')
+        else:
+            # Filter per series: fill_between cannot handle None values
+            loc = [(r['n_nodes'], r['t_local_ms'])   for r in data if r['t_local_ms']   is not None]
+            net = [(r['n_nodes'], r['t_network_ms']) for r in data if r['t_network_ms'] is not None]
+            twn = [(r['n_nodes'], r['t_twin_ms'])    for r in data if r['t_twin_ms']    is not None]
+            if loc:
+                x, y = zip(*loc)
+                ax.fill_between(x, 0, y, color='#3498db', alpha=0.35, zorder=2)
+                ax.plot(x, y, '-', color='#3498db', linewidth=1.8, zorder=4,
+                        label='t_local (Original Mininet)')
+            if net:
+                x, y = zip(*net)
+                ax.fill_between(x, 0, y, color='#e67e22', alpha=0.35, zorder=3)
+                ax.plot(x, y, '-', color='#e67e22', linewidth=1.8, zorder=5,
+                        label='t_network (HTTP round-trip)')
+            if twn:
+                x, y = zip(*twn)
+                ax.plot(x, y, ':', color='#27ae60', linewidth=2, zorder=6,
+                        label='t_twin (Twin Mininet)')
+            if loc and net:
+                ax.text(0.98, 0.04, 'Areas overlap (parallel execution) — upper envelope = t_total',
+                        ha='right', va='bottom', transform=ax.transAxes,
+                        fontsize=8.5, color='#5F5E5A', style='italic')
+        if not has_twin:
+            ax.text(0.5, 0.04, f't_twin not available (mode: {routing_mode})',
+                    ha='center', transform=ax.transAxes,
+                    fontsize=9, color='grey', style='italic')
+        ax.set_title(f'{op_label} — Latency Breakdown by Component',
+                     fontweight='bold', fontsize=12, color=color_title)
+        ax.set_xlabel('Network size (total nodes)')
+        ax.set_ylabel('Time (ms)')
+        ax.legend(loc='upper left', fontsize=9)
+        ax.grid(True, alpha=0.3, linestyle='--')
+
+    # ── G2: Breakdown — add_host ────────────────────────────────────────────
+    breakdown_areas(axes[0][1], hosts_data,   'G2 — add_host',   '#27ae60')
+
+    # ── G3: Breakdown — add_router ──────────────────────────────────────────
+    breakdown_areas(axes[0][2], routers_data, 'G3 — add_router', '#e74c3c')
+
+    # ── G4: System capacity (ops/s) ─────────────────────────────────────────
+    ax = axes[1][0]
     h_cap = [r for r in hosts_data   if r.get('capacity_ops_s') is not None]
     r_cap = [r for r in routers_data if r.get('capacity_ops_s') is not None]
     if h_cap:
         ax.plot([r['n_nodes'] for r in h_cap],
                 [r['capacity_ops_s'] for r in h_cap],
-                'o-', color='#27ae60', linewidth=2, label='add_host')
+                'o-', color='#27ae60', linewidth=2, markersize=4, label='add_host')
     if r_cap:
         ax.plot([r['n_nodes'] for r in r_cap],
                 [r['capacity_ops_s'] for r in r_cap],
-                's-', color='#e74c3c', linewidth=2, label='add_router')
-    ax.set_title('System Capacity (ops/s) vs Network Size', fontweight='bold', fontsize=12)
+                's-', color='#e74c3c', linewidth=2, markersize=4, label='add_router')
+    ax.set_title('G4 — System Capacity (ops/s) vs Network Size',
+                 fontweight='bold', fontsize=12)
     ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('ops/s  [= 1000 / t_total]')
+    ax.set_ylabel('Capacity (ops/s)  [= 1000 / t_total]')
     ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G3: Throughput ──────────────────────────────────────────────────────
-    ax = axes[1][0]
-    h_thr = [r for r in hosts_data   if r.get('throughput_bps') is not None]
-    r_thr = [r for r in routers_data if r.get('throughput_bps') is not None]
-    if h_thr:
-        ax.plot([r['n_nodes'] for r in h_thr],
-                [r['throughput_bps'] / 1000 for r in h_thr],
-                'o-', color='#27ae60', linewidth=2, label='add_host')
-    if r_thr:
-        ax.plot([r['n_nodes'] for r in r_thr],
-                [r['throughput_bps'] / 1000 for r in r_thr],
-                's-', color='#e74c3c', linewidth=2, label='add_router')
-    ax.set_title('System Throughput (Kbps) vs Network Size', fontweight='bold', fontsize=12)
-    ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('Kbps  [= payload×8 / t_total]')
-    ax.legend(loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
-
-    # ── G4: Twin overhead — anells visuals ──────────────────────────────────
+    # ── G5: Twin sync overhead — visual rings ───────────────────────────────
     ax = axes[1][1]
     ax.set_aspect('equal')
     ax.axis('off')
@@ -375,11 +413,11 @@ def generate_plots(rows, routing_mode='unknown'):
     def draw_ring(ax, cx, cy, pct, col_fg, col_bg, label, ops_real, ops_local):
         R, w = 1.35, 0.38
         # Background full ring
-        ax.add_patch(Wedge((cx,cy), R, 0, 360, width=w,
+        ax.add_patch(Wedge((cx, cy), R, 0, 360, width=w,
                            facecolor=col_bg, zorder=2))
         # Foreground arc — clockwise from top
         angle = pct / 100 * 360
-        ax.add_patch(Wedge((cx,cy), R, 90 - angle, 90, width=w,
+        ax.add_patch(Wedge((cx, cy), R, 90 - angle, 90, width=w,
                            facecolor=col_fg, zorder=3))
         # Percentage
         ax.text(cx, cy + 0.18, f'{pct:.1f}', ha='center', va='center',
@@ -412,70 +450,44 @@ def generate_plots(rows, routing_mode='unknown'):
     all_pcts = [s[0] for s in [h_stats, r_stats] if s]
     max_pct  = max(all_pcts) if all_pcts else 0
     ax.text(5, 1.15,
-            f'The Digital Twin synchronized in real time',
+            'The Digital Twin synchronized in real time',
             ha='center', va='center', fontsize=11,
             color='#5F5E5A')
     ax.text(5, 0.45,
-            f'costs less than {int(max_pct)+1}% of system capacity',
+            f'costs less than {int(max_pct) + 1}% of system capacity',
             ha='center', va='center', fontsize=14,
             fontweight='bold', color='#1D9E75')
 
-    ax.set_title('Twin Sync Overhead — cost of having a live Digital Twin',
+    ax.set_title('G5 — Twin Sync Overhead (cost of a live Digital Twin)',
                  fontweight='bold', fontsize=12, pad=10)
 
-    # ── G5: Component breakdown — add_host ──────────────────────────────────
+    # ── G6: Sync payload size ───────────────────────────────────────────────
+    ax = axes[1][2]
+    h_pay = [r for r in hosts_data   if r.get('payload_bytes') is not None]
+    r_pay = [r for r in routers_data if r.get('payload_bytes') is not None]
+    if h_pay:
+        ax.plot([r['n_nodes'] for r in h_pay],
+                [r['payload_bytes'] for r in h_pay],
+                'o-', color='#27ae60', linewidth=2, markersize=4, label='add_host')
+    if r_pay:
+        ax.plot([r['n_nodes'] for r in r_pay],
+                [r['payload_bytes'] for r in r_pay],
+                's-', color='#e74c3c', linewidth=2, markersize=4, label='add_router')
+    if not h_pay and not r_pay:
+        ax.text(0.5, 0.5, 'No payload data', ha='center', va='center',
+                transform=ax.transAxes, color='grey')
+    ax.set_title('G6 — Sync Payload Size vs Network Size',
+                 fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (total nodes)')
+    ax.set_ylabel('Payload size (bytes per sync event)')
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
+
+    # ── G7: System RAM usage ────────────────────────────────────────────────
+    # Absolute value of virtual_memory().used after each operation.
+    # Captures both kernel memory (namespaces, veth, OVS) and processes
+    # (Python, FRR) as the network scales.
     ax = axes[2][0]
-    if hosts_data:
-        h_x = [r['n_nodes'] for r in hosts_data]
-        ax.plot(h_x, [r['t_local_ms']   for r in hosts_data],
-                '-',  color='#3498db', linewidth=2, label='t_local (Original)')
-        ax.plot(h_x, [r['t_network_ms'] for r in hosts_data],
-                '--', color='#e67e22', linewidth=2, label='t_network (RTT)')
-        if has_twin:
-            ax.plot(h_x, [r['t_twin_ms'] for r in hosts_data],
-                    ':',  color='#27ae60', linewidth=2, label='t_twin (Twin Mininet)')
-    else:
-        ax.text(0.5, 0.5, 'No host data', ha='center', va='center',
-                transform=ax.transAxes, color='grey')
-    if not has_twin:
-        ax.text(0.5, 0.04, f't_twin not available (mode: {routing_mode})',
-                ha='center', transform=ax.transAxes, fontsize=9, color='grey', style='italic')
-    ax.set_title('Latency Breakdown — add_host', fontweight='bold', fontsize=12,
-                 color='#27ae60')
-    ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('Time (ms)')
-    ax.legend(loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
-
-    # ── G6: Component breakdown — add_router ────────────────────────────────
-    ax = axes[2][1]
-    if routers_data:
-        r_x = [r['n_nodes'] for r in routers_data]
-        ax.plot(r_x, [r['t_local_ms']   for r in routers_data],
-                '-',  color='#c0392b', linewidth=2, label='t_local (Original)')
-        ax.plot(r_x, [r['t_network_ms'] for r in routers_data],
-                '--', color='#d35400', linewidth=2, label='t_network (RTT)')
-        if has_twin:
-            ax.plot(r_x, [r['t_twin_ms'] for r in routers_data],
-                    ':',  color='#e74c3c', linewidth=2, label='t_twin (Twin Mininet)')
-    else:
-        ax.text(0.5, 0.5, 'No router data', ha='center', va='center',
-                transform=ax.transAxes, color='grey')
-    if not has_twin:
-        ax.text(0.5, 0.04, f't_twin not available (mode: {routing_mode})',
-                ha='center', transform=ax.transAxes, fontsize=9, color='grey', style='italic')
-    ax.set_title('Latency Breakdown — add_router', fontweight='bold', fontsize=12,
-                 color='#e74c3c')
-    ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('Time (ms)')
-    ax.legend(loc='upper left')
-    ax.grid(True, alpha=0.3, linestyle='--')
-
-    # ── G7: RAM del sistema acumulada ───────────────────────────────────────
-    # Valor absolut de virtual_memory().used després de cada operació.
-    # Mostra com creix la RAM total conforme escala la xarxa, capturant tant
-    # el kernel (namespaces, veth, OVS) com els processos (Python, FRR).
-    ax = axes[3][0]
     all_mem = sorted([r for r in rows if r.get('system_mem_mb') is not None],
                      key=lambda x: x['n_nodes'])
     if all_mem:
@@ -483,10 +495,9 @@ def generate_plots(rows, routing_mode='unknown'):
         ax.plot([r['n_nodes'] for r in all_mem], mem_vals,
                 'o-', color='#2980b9', linewidth=1.5, markersize=4,
                 label='System RAM used')
-        # Referència: RAM total del hardware (~3700 MB en els lab PCs)
+        # Reference: total hardware RAM (~3700 MB on the lab PCs)
         ax.axhline(y=3700, color='#c0392b', linestyle='-', alpha=0.6,
                    label='Total RAM (~3700 MB)')
-        # Creixement observat durant el test
         growth = round(mem_vals[-1] - mem_vals[0], 0)
         ax.annotate(f'Growth: +{growth:.0f} MB\n({mem_vals[0]:.0f}→{mem_vals[-1]:.0f} MB)',
                     xy=(all_mem[-1]['n_nodes'], mem_vals[-1]),
@@ -498,43 +509,75 @@ def generate_plots(rows, routing_mode='unknown'):
     else:
         ax.text(0.5, 0.5, 'No memory data', ha='center', va='center',
                 transform=ax.transAxes, color='grey')
-    ax.set_title('System RAM Usage vs Network Size', fontweight='bold', fontsize=12)
+    ax.set_title('G7 — System RAM Usage vs Network Size',
+                 fontweight='bold', fontsize=12)
     ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('RAM used  MB  (system-wide)')
+    ax.set_ylabel('RAM used (MB, system-wide)')
     ax.grid(True, alpha=0.3, linestyle='--')
 
-    # ── G8: Memòria FRR acumulada ───────────────────────────────────────────
-    ax = axes[3][1]
-    all_frr = sorted([r for r in rows if r.get('frr_total_mb') is not None],
+    # ── G8: CPU usage at sync time ──────────────────────────────────────────
+    # cpu_percent is host-wide (psutil), measured when each operation is
+    # registered — plotted as a single series across all operation types.
+    ax = axes[2][1]
+    all_cpu = sorted([r for r in rows if r.get('cpu_percent') is not None],
                      key=lambda x: x['n_nodes'])
-    if all_frr:
-        frr_vals = [r['frr_total_mb'] for r in all_frr]
-        max_frr  = max(frr_vals)
-        ax.plot([r['n_nodes'] for r in all_frr], frr_vals,
-                'D-', color='#8e44ad', linewidth=2, label='FRR total (zebra+ospfd)')
-        ax.axhline(y=1500, color='#e74c3c', linestyle='--', alpha=0.7,
-                   label='Free RAM at start (~1500 MB)')
-        ax.set_ylim(0, max(max_frr * 2, 300))
-        if max_frr < 50:
-            ax.text(0.5, 0.6,
-                    f'Flat ~{round(max_frr)}MB: initial router daemons only\n'
-                    f'(mode: {routing_mode} — new routers have no FRR daemons)',
-                    ha='center', transform=ax.transAxes,
-                    fontsize=9, color='grey', style='italic')
-        ax.legend(loc='upper left')
+    if all_cpu:
+        cpu_x = [r['n_nodes'] for r in all_cpu]
+        cpu_y = [r['cpu_percent'] for r in all_cpu]
+        ax.plot(cpu_x, cpu_y, 'o-', color='#8e44ad', linewidth=1.5,
+                markersize=4, label='CPU at sync registration')
+        cpu_avg = sum(cpu_y) / len(cpu_y)
+        ax.axhline(y=cpu_avg, color='#8e44ad', linestyle='--', alpha=0.6,
+                   label=f'Average ({cpu_avg:.1f}%)')
+        ax.set_ylim(0, max(100, max(cpu_y) * 1.1))
+        ax.legend(loc='upper left', fontsize=9)
     else:
-        ax.text(0.5, 0.5, 'FRR data not available',
-                ha='center', va='center', transform=ax.transAxes, color='grey')
-    ax.set_title('FRR Daemons Total Memory vs Network Size', fontweight='bold', fontsize=12)
+        ax.text(0.5, 0.5, 'No CPU data', ha='center', va='center',
+                transform=ax.transAxes, color='grey')
+    ax.set_title('G8 — Host CPU Usage vs Network Size',
+                 fontweight='bold', fontsize=12)
     ax.set_xlabel('Network size (total nodes)')
-    ax.set_ylabel('FRR total RAM  MB')
+    ax.set_ylabel('CPU usage (%)')
+    ax.grid(True, alpha=0.3, linestyle='--')
+
+    # ── G9: Jitter per operation type ───────────────────────────────────────
+    # Jitter = |Δt_total| between consecutive operations of the SAME type.
+    # Computed per type to avoid the artificial inflation caused by mixing
+    # fast add_host and slow add_router operations in one series.
+    ax = axes[2][2]
+
+    def jitter_series(data):
+        vals = [(r['n_nodes'], r['t_total_ms']) for r in data
+                if r.get('t_total_ms') is not None]
+        if len(vals) < 2:
+            return [], [], None
+        xs = [vals[i][0] for i in range(1, len(vals))]
+        ys = [round(abs(vals[i][1] - vals[i - 1][1]), 2) for i in range(1, len(vals))]
+        avg = round(sum(ys) / len(ys), 2)
+        return xs, ys, avg
+
+    h_jx, h_jy, h_javg = jitter_series(hosts_data)
+    r_jx, r_jy, r_javg = jitter_series(routers_data)
+    if h_jy:
+        ax.plot(h_jx, h_jy, 'o-', color='#27ae60', linewidth=1.5, markersize=4,
+                label=f'add_host (avg {h_javg} ms)')
+    if r_jy:
+        ax.plot(r_jx, r_jy, 's-', color='#e74c3c', linewidth=1.5, markersize=4,
+                label=f'add_router (avg {r_javg} ms)')
+    if not h_jy and not r_jy:
+        ax.text(0.5, 0.5, 'Not enough data for jitter', ha='center', va='center',
+                transform=ax.transAxes, color='grey')
+    ax.set_title('G9 — Sync Jitter per Operation Type',
+                 fontweight='bold', fontsize=12)
+    ax.set_xlabel('Network size (total nodes)')
+    ax.set_ylabel('Jitter (ms)  [|Δt_total| between consecutive ops]')
+    ax.legend(loc='upper left', fontsize=9)
     ax.grid(True, alpha=0.3, linestyle='--')
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.95)
+    plt.subplots_adjust(top=0.93)
     plt.savefig(PLOT_FILE, dpi=150, bbox_inches='tight')
     print(f' Plot saved to {PLOT_FILE}')
-
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
