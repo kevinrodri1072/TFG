@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Digital Twin Network</title>
+    <title>Network Digital Twin</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">
@@ -9,7 +9,13 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
 </head>
 <body>
-    <h1>Digital Twin Network</h1>
+    <div id="navbar">
+        <span id="navbar-title">Network Digital Twin</span>
+        <div id="navbar-logos">
+            <img src="/static/logos/upc.svg"   alt="UPC"    id="logo-upc">
+            <img src="/static/logos/etsetb.svg" alt="ETSETB" id="logo-etsetb">
+        </div>
+    </div>
     <div id="controls">
         <button onclick="showRouterForm()">Add Router</button>
         <button onclick="showMatrix()">View Matrix</button>
