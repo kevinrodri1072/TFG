@@ -12,6 +12,7 @@ originals i és directament compatible amb generate_plots.
 
 import argparse
 import csv
+import importlib.util
 import statistics
 import sys
 from collections import defaultdict
@@ -150,6 +151,38 @@ def main():
     print(f'  {total} operations merged  ({ok} clean, {total - ok} with partial failures)')
     print(f'  Routing mode : {routing_mode}')
     print(f'  Output       : {out_path}')
+
+    # ── Generate plot ────────────────────────────────────────────────────────
+    # Load generate_plots from sync_latency_test2.py (same directory)
+    script_dir = Path(__file__).parent
+    slt_path   = script_dir / 'sync_latency_test2.py'
+    if not slt_path.exists():
+        print(f'  Warning: sync_latency_test2.py not found at {slt_path} — skipping plot.')
+        return
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('slt', slt_path)
+    slt  = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(slt)
+
+    # Convert string values back to float/None for generate_plots
+    plot_rows = []
+    for r in merged_rows:
+        pr = dict(r)
+        for col in NUMERIC_COLS:
+            v = pr.get(col)
+            pr[col] = float(v) if v not in (None, '') else None
+        plot_rows.append(pr)
+
+    valid_rows = [r for r in plot_rows if r.get('t_total_ms') is not None]
+    if not valid_rows:
+        print('  Warning: no valid rows to plot.')
+        return
+
+    plot_path     = str(out_path).replace('.csv', '.png')
+    slt.PLOT_FILE = plot_path
+    slt.generate_plots(valid_rows, routing_mode)
+    print(f'  Plot         : {plot_path}')
 
 
 if __name__ == '__main__':
