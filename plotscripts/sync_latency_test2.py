@@ -579,6 +579,102 @@ def generate_plots(rows, routing_mode='unknown'):
     plt.savefig(PLOT_FILE, dpi=150, bbox_inches='tight')
     print(f' Plot saved to {PLOT_FILE}')
 
+    # ── Export each panel as an individual figure ────────────────────────────
+    # Naming: replace .png suffix with _G1.png, _G2.png, … _G9.png
+    import copy
+    import matplotlib.collections as mcoll
+    from matplotlib.patches import Wedge
+
+    base = PLOT_FILE[:-4] if PLOT_FILE.endswith('.png') else PLOT_FILE
+    panel_titles = ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9']
+
+    for idx, (panel_ax, panel_name) in enumerate(zip(axes.flat, panel_titles)):
+
+        # ── G5: re-render from scratch (Wedge patches can't be copied) ───────
+        if panel_name == 'G5':
+            fig_single, ax_single = plt.subplots(figsize=(8, 6))
+            ax_single.set_aspect('equal')
+            ax_single.axis('off')
+            ax_single.set_xlim(0, 10)
+            ax_single.set_ylim(0, 7.5)
+
+            h_stats = compute_ring_stats(hosts_data)
+            r_stats = compute_ring_stats(routers_data)
+
+            if h_stats:
+                draw_ring(ax_single, 2.5, 4.2, h_stats[0],
+                          '#1D9E75', '#E1F5EE', 'add_host',
+                          h_stats[1], h_stats[2])
+            if r_stats:
+                draw_ring(ax_single, 7.5, 4.2, r_stats[0],
+                          '#1D9E75', '#E1F5EE', 'add_router',
+                          r_stats[1], r_stats[2])
+
+            all_pcts = [s[0] for s in [h_stats, r_stats] if s]
+            max_pct  = max(all_pcts) if all_pcts else 0
+            ax_single.text(5, 1.15,
+                           'The Digital Twin synchronized in real time',
+                           ha='center', va='center', fontsize=11, color='#5F5E5A')
+            ax_single.text(5, 0.45,
+                           f'costs less than {int(max_pct) + 1}% of system capacity',
+                           ha='center', va='center', fontsize=14,
+                           fontweight='bold', color='#1D9E75')
+            ax_single.set_title('G5 — Twin Sync Overhead (cost of a live Digital Twin)',
+                                 fontweight='bold', fontsize=11, pad=10)
+            out_path = f'{base}_{panel_name}.png'
+            fig_single.tight_layout()
+            fig_single.savefig(out_path, dpi=150, bbox_inches='tight')
+            plt.close(fig_single)
+            print(f' Panel saved to {out_path}')
+            continue
+
+        # ── All other panels: copy lines, fills and texts ─────────────────────
+        fig_single, ax_single = plt.subplots(figsize=(8, 5))
+        for line in panel_ax.get_lines():
+            ax_single.plot(
+                line.get_xdata(), line.get_ydata(),
+                color=line.get_color(), linewidth=line.get_linewidth(),
+                linestyle=line.get_linestyle(), marker=line.get_marker(),
+                markersize=line.get_markersize(), label=line.get_label(),
+                zorder=line.get_zorder(),
+            )
+        for coll in panel_ax.collections:
+            if isinstance(coll, mcoll.PolyCollection):
+                for path in coll.get_paths():
+                    verts = path.vertices
+                    ax_single.fill(verts[:, 0], verts[:, 1],
+                                   color=coll.get_facecolor()[0],
+                                   alpha=coll.get_alpha() or 0.35,
+                                   zorder=coll.get_zorder())
+        for txt in panel_ax.texts:
+            ax_single.text(
+                txt.get_position()[0], txt.get_position()[1],
+                txt.get_text(),
+                transform=ax_single.transAxes
+                    if txt.get_transform() == panel_ax.transAxes
+                    else ax_single.transData,
+                fontsize=txt.get_fontsize(), color=txt.get_color(),
+                ha=txt.get_ha(), va=txt.get_va(), style=txt.get_style(),
+            )
+        ax_single.set_title(panel_ax.get_title(), fontweight='bold', fontsize=11)
+        ax_single.set_xlabel(panel_ax.get_xlabel())
+        ax_single.set_ylabel(panel_ax.get_ylabel())
+        ax_single.set_xlim(panel_ax.get_xlim())
+        ax_single.set_ylim(panel_ax.get_ylim())
+        ax_single.grid(True, alpha=0.3, linestyle='--')
+        if panel_ax.get_legend() is not None:
+            handles, labels = panel_ax.get_legend_handles_labels()
+            if handles:
+                ax_single.legend(handles=handles, labels=labels,
+                                 loc=panel_ax.get_legend()._loc, fontsize=9)
+        out_path = f'{base}_{panel_name}.png'
+        fig_single.tight_layout()
+        fig_single.savefig(out_path, dpi=150, bbox_inches='tight')
+        plt.close(fig_single)
+        print(f' Panel saved to {out_path}')
+
+
+
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 

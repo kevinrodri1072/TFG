@@ -326,6 +326,36 @@ if __name__ == '__main__':
             start_twin_heartbeat()
         threading.Thread(target=_start_twin_registration, daemon=True).start()
 
+        # 9b. Twin: pre-build XRF Docker images inside minikube context
+    if IS_TWIN:
+        def _build_xrf_images():
+            import os
+            while not xarxa.network_ready:
+                time.sleep(0.5)
+            try:
+                env = os.environ.copy()
+                result = subprocess.check_output(
+                    ['minikube', 'docker-env', '--shell=bash'],
+                    text=True, stderr=subprocess.DEVNULL
+                )
+                for line in result.splitlines():
+                    if line.startswith('export '):
+                        key, _, val = line[7:].partition('=')
+                        env[key] = val.strip('"')
+                xrf_base = os.path.join(os.path.dirname(__file__), 'XRFs')
+                for xrf in ['hops', 'neighbors', 'traffic', 'latency_matrix']:
+                    xrf_dir = os.path.join(xrf_base, xrf)
+                    tag = f'xrf-{xrf.replace("_", "-")}:latest'
+                    subprocess.call(
+                        ['docker', 'build', '-t', tag, xrf_dir],
+                        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+            except Exception:
+                pass
+        threading.Thread(target=_build_xrf_images, daemon=True).start()
+
+    # 10. Arrenca el ping del canal físic entre PCs (Original ↔ Twins)
+
     # 10. Arrenca el ping del canal físic entre PCs (Original ↔ Twins)
     p = threading.Thread(target=_ping_twin_channel)
     p.daemon = True
