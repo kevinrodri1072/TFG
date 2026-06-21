@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────
+# requirements.txt — Sistema federat de Network Digital Twins (XRF)
+# Kevin Manuel Rodríguez Flores — TFG ETSETB
+#
+# Dependències Python del backend (original i twins).
+# Instal·lar amb:  pip install -r requirements.txt
+#
+# NOTA: Mininet i FRRouting NO s'instal·len amb pip — són paquets de
+# sistema (apt) que requereixen permisos d'administrador. Open vSwitch
+# i iperf venen amb Mininet. Vegeu la secció d'instal·lació de la memòria.
+# ─────────────────────────────────────────────────────────────
+
+# ── Backend HTTP / API REST ──
+Flask>=3.0
+Werkzeug>=3.0           # servidor WSGI (ve amb Flask, fixat per reproductibilitat)
+
+# ── Servidor WebSocket (mètriques en temps real, port 5001) ──
+# S'usa async_mode='threading', per això NO calen eventlet ni gevent.
+Flask-SocketIO>=5.3
+
+# ── Mètriques de sistema (CPU/RAM) ──
+psutil>=5.9
+
+# ── Client HTTP (sincronització Original↔Twin, heartbeats, XRFs) ──
+requests>=2.31
+
+# ── Càlcul numèric i E/S de fitxers .mat (matriu d'adjacència) ──
+numpy>=1.26
+scipy>=1.11
+
+# ── Generació de gràfiques dels experiments (plotscripts/) ──
+matplotlib>=3.8
