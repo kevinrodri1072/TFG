@@ -1,9 +1,8 @@
 """
-sync_latency_test2.py — Digital Twin Sync Latency Study
+sync_latency_test.py — Digital Twin Sync Latency Study
 ======================================================
-Progressively scales the network using the same FIXED_SEQUENCE
-as scalability_test.py, recording individual sync latency
-measurements for every operation.
+Progressively scales the network using a FIXED_SEQUENCE, 
+recording individual sync latency measurements for every operation.
 
 Metrics recorded per operation:
   - op_type        : 'add_host' or 'add_router'
@@ -23,7 +22,7 @@ Generates:
     system RAM, host CPU usage, jitter per operation type
 
 Usage:
-    sudo python3 sync_latency_test2.py
+    sudo python3 sync_latency_test.py
 """
 
 import requests
