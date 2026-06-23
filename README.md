@@ -59,7 +59,7 @@ Flask-SocketIO, psutil, requests, numpy, scipy i matplotlib.
 
 ```bash
 # 1. Clona el repositori
-git clone <URL_DEL_REPO>
+git clone https://github.com/kevinrodri1072/TFG
 cd TFG_KEVF20
 
 # 2. (Recomanat) entorn virtual
