@@ -203,60 +203,54 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
                 }
                 socket.on('metrics_link_traffic', applyLinkColors);
 
-                // ── topology_update: refresca el graf quan el Twin rep un canvi ──
-                // L'Original emet 'topology_update' després de cada add_host/remove_node/
-                // add_router/set_routing_mode/load_network aplicat al Twin.
-                // En lloc de fer location.reload() (que perd l'estat del graf i talla el WS)
-                // tornem a fer fetch('/topology') i actualitzem els DataSets de vis.js en caliente.
+                // ── applyTopology: actualitza el graf vis.js amb dades fresques ──
+                function applyTopology(fresh) {
+                    topologyData = fresh;
+
+                    var newNodeIds = Object.keys(fresh.nodes)
+                        .filter(n => fresh.nodes[n].type !== 'switch');
+
+                    newNodeIds.forEach(function(name) {
+                        if (!nodes.get(name)) {
+                            var type  = fresh.nodes[name].type;
+                            var image = type === 'host' ? '/static/host.png' : '/static/router.png';
+                            nodes.add({ id: name, label: name, shape: 'image', image: image, size: 30 });
+                        }
+                    });
+
+                    nodes.get().forEach(function(n) {
+                        if (!fresh.nodes[n.id]) nodes.remove(n.id);
+                    });
+
+                    var newEdgeIds = new Set();
+                    fresh.links
+                        .filter(l => fresh.nodes[l.from] && fresh.nodes[l.to] &&
+                                     fresh.nodes[l.from].type !== 'switch' &&
+                                     fresh.nodes[l.to].type  !== 'switch')
+                        .forEach(function(l) {
+                            var id1 = l.from + '___' + l.to;
+                            var id2 = l.to   + '___' + l.from;
+                            var id  = edges.get(id2) ? id2 : id1;
+                            newEdgeIds.add(id);
+                            if (!edges.get(id1) && !edges.get(id2)) {
+                                edges.add({ id: id1, from: l.from, to: l.to,
+                                    color: { color: '#848484', highlight: '#848484', hover: '#848484' },
+                                    width: 2 });
+                            }
+                        });
+
+                    edges.get().forEach(function(e) {
+                        if (!newEdgeIds.has(e.id)) edges.remove(e.id);
+                    });
+                }
+
+                // Escolta l'event WebSocket del servidor (Original → Twin)
                 socket.on('topology_update', function() {
-                    fetch('/topology')
-                        .then(r => r.json())
-                        .then(function(fresh) {
-                            topologyData = fresh;
-
-                            var newNodeIds = Object.keys(fresh.nodes)
-                                .filter(n => fresh.nodes[n].type !== 'switch');
-
-                            newNodeIds.forEach(function(name) {
-                                if (!nodes.get(name)) {
-                                    var type  = fresh.nodes[name].type;
-                                    var image = type === 'host' ? '/static/host.png' : '/static/router.png';
-                                    nodes.add({ id: name, label: name, shape: 'image', image: image, size: 30 });
-                                }
-                            });
-
-                            nodes.get().forEach(function(n) {
-                                if (!fresh.nodes[n.id]) nodes.remove(n.id);
-                            });
-
-                            var newEdgeIds = new Set();
-                            fresh.links
-                                .filter(l => fresh.nodes[l.from] && fresh.nodes[l.to] &&
-                                             fresh.nodes[l.from].type !== 'switch' &&
-                                             fresh.nodes[l.to].type  !== 'switch')
-                                .forEach(function(l) {
-                                    var id1 = l.from + '___' + l.to;
-                                    var id2 = l.to   + '___' + l.from;
-                                    var id  = edges.get(id2) ? id2 : id1;
-                                    newEdgeIds.add(id);
-                                    if (!edges.get(id1) && !edges.get(id2)) {
-                                        edges.add({ id: id1, from: l.from, to: l.to,
-                                            color: { color: '#848484', highlight: '#848484', hover: '#848484' },
-                                            width: 2 });
-                                    }
-                                });
-
-                            edges.get().forEach(function(e) {
-                                if (!newEdgeIds.has(e.id)) edges.remove(e.id);
-                            });
-                        })
-                        .catch(function() {});
+                    fetch('/topology').then(r => r.json()).then(applyTopology).catch(function() {});
                 });
 
-                // ── Polling de topologia (fallback per al Twin) ──
-                // Comprova cada 3s si la topologia ha canviat comparant els noms de node.
-                // Si detecta un canvi dispara el listener topology_update existent,
-                // que ja sap actualitzar el graf en caliente sense recarregar la pàgina.
+                // ── Polling de topologia ──
+                // Comprova cada 3s si la topologia ha canviat i actualitza el graf directament.
                 var _topoHash = JSON.stringify(Object.keys(data.nodes).sort());
                 setInterval(function() {
                     fetch('/topology')
@@ -265,7 +259,7 @@ var socket = io(location.protocol + '//' + location.hostname + ':5001');
                             var freshHash = JSON.stringify(Object.keys(fresh.nodes).sort());
                             if (freshHash !== _topoHash) {
                                 _topoHash = freshHash;
-                                socket.emit('topology_update');
+                                applyTopology(fresh);
                             }
                         })
                         .catch(function() {});
