@@ -355,8 +355,6 @@ if __name__ == '__main__':
         threading.Thread(target=_build_xrf_images, daemon=True).start()
 
     # 10. Arrenca el ping del canal físic entre PCs (Original ↔ Twins)
-
-    # 10. Arrenca el ping del canal físic entre PCs (Original ↔ Twins)
     p = threading.Thread(target=_ping_twin_channel)
     p.daemon = True
     p.start()

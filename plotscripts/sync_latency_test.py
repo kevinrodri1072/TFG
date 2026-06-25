@@ -42,7 +42,7 @@ CSV_FILE     = f'sync_latency_{TIMESTAMP}.csv'
 PLOT_FILE    = f'sync_latency_{TIMESTAMP}.png'
 CHECKPOINTS  = [8, 16, 32, 64, 128]
 
-# ── FIXED_SEQUENCE (same as scalability_test.py) ──
+# ── FIXED_SEQUENCE ──
 FIXED_SEQUENCE = [
     {'type': 'host',   'name': 'h6',   'router': 'r1'},
     {'type': 'router', 'name': 'r3',   'connected_routers': ['r1']},

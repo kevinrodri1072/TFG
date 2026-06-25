@@ -1,5 +1,5 @@
 """
-merge_runs.py — Fusió de múltiples runs del sync_latency_test2
+merge_runs.py — Fusió de múltiples runs del sync_latency_test
 ==============================================================
 Agrupa per (op_type, op_name) i calcula la mitjana de totes les
 columnes numèriques. El CSV resultant té el mateix format que els
@@ -123,7 +123,7 @@ def write_csv(rows, path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Merge multiple sync_latency_test2 CSV runs into one averaged CSV.'
+        description='Merge multiple sync_latency_test CSV runs into one averaged CSV.'
     )
     parser.add_argument('csvfiles', nargs='+', metavar='CSV',
                         help='Input CSV files (at least 2)')
@@ -153,11 +153,11 @@ def main():
     print(f'  Output       : {out_path}')
 
     # ── Generate plot ────────────────────────────────────────────────────────
-    # Load generate_plots from sync_latency_test2.py (same directory)
+    # Load generate_plots from sync_latency_test.py (same directory)
     script_dir = Path(__file__).parent
-    slt_path   = script_dir / 'sync_latency_test2.py'
+    slt_path   = script_dir / 'sync_latency_test.py'
     if not slt_path.exists():
-        print(f'  Warning: sync_latency_test2.py not found at {slt_path} — skipping plot.')
+        print(f'  Warning: sync_latency_test.py not found at {slt_path} — skipping plot.')
         return
 
     import importlib.util

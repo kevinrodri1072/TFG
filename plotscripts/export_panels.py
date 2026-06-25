@@ -17,7 +17,7 @@ matplotlib.use('Agg')
 # Importa generate_plots del script principal
 import importlib.util
 spec = importlib.util.spec_from_file_location(
-    'slt', Path(__file__).parent / 'sync_latency_test2.py'
+    'slt', Path(__file__).parent / 'sync_latency_test.py'
 )
 slt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(slt)
