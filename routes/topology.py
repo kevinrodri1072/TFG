@@ -204,23 +204,6 @@ def load_network():
 def xrfs_page():
     return render_template('xrfs.html')
 
-@bp.route('/network_snapshot')
-def network_snapshot():
-    """
-    Retorna l'estat complet de la xarxa (nodes + matriu + routing_mode).
-    Usat pels Twins a l'arrencada per sincronitzar-se amb l'estat actual
-    de l'Original ABANS d'arrencar Mininet, evitant que un Twin nou
-    comenci amb la topologia per defecte quan l'Original ja ha canviat.
-    """
-    nodes_snap  = dict(_xarxa.nodes)
-    matrix_snap = [row[:] for row in _xarxa.network_matrix]
-    return jsonify({
-        'nodes':        nodes_snap,
-        'matrix':       matrix_snap,
-        'routing_mode': _xarxa.routing_mode,
-    })
-
-
 @bp.route('/is_twin')
 def is_twin():
     return jsonify({'is_twin': _IS_TWIN})
