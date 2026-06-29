@@ -567,6 +567,18 @@ class Xarxa:
             lan_intfs = [k for k in props['ips'] if k != 'lan' and k not in p2p_intfs]
             router_lan_intf[name] = lan_intfs[0] if lan_intfs else 'eth0'
 
+        # Per-switch port counter: assigns explicit interface names
+        # (sw1-eth1, sw1-eth2, ...) to every switch-side link.
+        # Without this, Mininet auto-assigns names that can collide when
+        # rebuilding a topology that was grown incrementally (e.g. a Twin
+        # loading a snapshot from the Original that has extra nodes).
+        _sw_port = {}   # {switch_name: next_port_number}
+
+        def _next_sw_intf(sw_name):
+            port = _sw_port.get(sw_name, 1)
+            _sw_port[sw_name] = port + 1
+            return f'{sw_name}-eth{port}'
+
         for i in range(len(self.network_matrix)):
             for j in range(i + 1, len(self.network_matrix)):
                 if self.network_matrix[i][j] == 0:
@@ -592,21 +604,25 @@ class Xarxa:
                     intf_i = router_lan_intf.get(node_i, 'eth0')
                     self.net.addLink(self.mininet_nodes[node_i],
                                      self.mininet_nodes[node_j],
-                                     intfName1=f'{node_i}-{intf_i}')
+                                     intfName1=f'{node_i}-{intf_i}',
+                                     intfName2=_next_sw_intf(node_j))
                 elif type_i == 'switch' and type_j == 'router':
                     intf_j = router_lan_intf.get(node_j, 'eth0')
                     self.net.addLink(self.mininet_nodes[node_i],
                                      self.mininet_nodes[node_j],
+                                     intfName1=_next_sw_intf(node_i),
                                      intfName2=f'{node_j}-{intf_j}')
 
                 # host ↔ switch
                 elif type_i == 'host' and type_j == 'switch':
                     self.net.addLink(self.mininet_nodes[node_i],
                                      self.mininet_nodes[node_j],
-                                     intfName1=f'{node_i}-eth0')
+                                     intfName1=f'{node_i}-eth0',
+                                     intfName2=_next_sw_intf(node_j))
                 elif type_i == 'switch' and type_j == 'host':
                     self.net.addLink(self.mininet_nodes[node_i],
                                      self.mininet_nodes[node_j],
+                                     intfName1=_next_sw_intf(node_i),
                                      intfName2=f'{node_j}-eth0')
 
                 # fallback (no debería ocurrir)
