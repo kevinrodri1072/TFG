@@ -12,6 +12,7 @@ import threading
 import time
 
 import psutil
+import requests
 from flask import Flask
 from flask_socketio import SocketIO
 
@@ -295,6 +296,32 @@ if __name__ == '__main__':
     init_routing(xarxa)
     init_xrfs(IS_TWIN, socketio)
     init_proposals(xarxa, IS_TWIN)
+
+    # 5b. Twin: obtenir l'estat actual de l'Original ABANS d'arrencar Mininet.
+    #     Si l'Original ja ha modificat la xarxa (nodes afegits/eliminats, canvi
+    #     de mode de routing), el Twin arrenca directament amb aquest estat
+    #     en lloc de la topologia per defecte. Si l'Original no és accessible
+    #     (encara no ha arrencat), el Twin arrenca amb DEFAULT_MATRIX/DEFAULT_NODES.
+    if IS_TWIN:
+        try:
+            _r = requests.get(
+                f'http://{args.original_ip}:5000/network_snapshot',
+                timeout=10,
+            )
+            if _r.status_code == 200:
+                _snap = _r.json()
+                xarxa.nodes.clear()
+                xarxa.nodes.update(_snap['nodes'])
+                xarxa.network_matrix.clear()
+                for _row in _snap['matrix']:
+                    xarxa.network_matrix.append(_row)
+                if 'routing_mode' in _snap:
+                    xarxa.routing_mode = _snap['routing_mode']
+                print(f'[sync] Twin loaded current topology from Original '
+                      f'({len(_snap["nodes"])} nodes, mode={xarxa.routing_mode})')
+        except Exception as _e:
+            print(f'[sync] Could not reach Original — starting with default '
+                  f'topology: {_e}')
 
     # 6. Arrenca Mininet en un thread de background
     #    (start_network() és bloquejant: crea nodes, links, arrenca OSPF)
